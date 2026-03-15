@@ -23,6 +23,8 @@ const CFG = {
   PROXIES: [
     u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
     u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+    u => `https://thingproxy.freeboard.io/fetch/${u}`,
   ],
   GW_WEIGHTS: {
     'FDR Jangka Pendek': { GK:.35, DEF:.30, MID:.30, FWD:.35 },
@@ -161,13 +163,46 @@ const Cache = {
 // 4. FETCH LAYER  (semua request melalui Cache)
 // ═══════════════════════════════════════════════════════
 const Fetch = {
-  async _net(url, timeout = 10000) {
-    for (const px of CFG.PROXIES) {
-      try {
-        const r = await fetch(px(url), { signal: AbortSignal.timeout(timeout) });
-        if (r.ok) return await r.json();
-      } catch {}
+  async _net(url, timeout = 12000) {
+    const errors = [];
+
+    // 1) Try direct fetch first (works in some browsers/networks without CORS issue)
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(timeout) });
+      if (r.ok) {
+        console.log(`[FPL] ✓ Direct fetch OK: ${url.slice(-40)}`);
+        return await r.json();
+      }
+      errors.push(`direct: HTTP ${r.status}`);
+    } catch (e) {
+      errors.push(`direct: ${e.name||e.message}`);
     }
+
+    // 2) Try each CORS proxy in order
+    for (let i = 0; i < CFG.PROXIES.length; i++) {
+      const px = CFG.PROXIES[i];
+      const proxyUrl = px(url);
+      try {
+        const r = await fetch(proxyUrl, { signal: AbortSignal.timeout(timeout) });
+        if (r.ok) {
+          const text = await r.text();
+          try {
+            const data = JSON.parse(text);
+            console.log(`[FPL] ✓ Proxy #${i+1} OK: ${url.slice(-40)}`);
+            return data;
+          } catch {
+            errors.push(`proxy#${i+1}: invalid JSON`);
+          }
+        } else {
+          errors.push(`proxy#${i+1}: HTTP ${r.status}`);
+        }
+      } catch (e) {
+        errors.push(`proxy#${i+1}: ${e.name||e.message}`);
+      }
+    }
+
+    console.warn(`[FPL] ✗ All fetch failed for ${url.slice(-50)}:`, errors);
+    Store._lastFetchErrors = errors;
     return null;
   },
 
@@ -208,14 +243,81 @@ const Fetch = {
     const hit = Cache.get(url);
     if (hit) return hit.data;
     try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(12000) });
-      if (r.ok) {
-        const d = await r.json();
+      const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      if (!r.ok) {
+        console.warn(`[Sheets] HTTP ${r.status} for ${url.slice(0,60)}…`);
+        return null;
+      }
+      const text = await r.text();
+
+      // Try JSON first (Apps Script Web App)
+      try {
+        const d = JSON.parse(text);
+        console.log(`[Sheets] ✓ JSON parsed OK`);
         Cache.set(url, d, Cache.TTL.SHEETS);
         return d;
+      } catch {}
+
+      // Try CSV parsing (Google Sheets gviz/tq?tqx=out:csv)
+      if (text.includes(',') && (text.includes('\n') || text.includes('\r'))) {
+        console.log(`[Sheets] Attempting CSV parse…`);
+        const parsed = this._parseCSV(text);
+        if (parsed?.length) {
+          const d = { players: parsed, meta: { gw: Store.currentGW || '?' } };
+          console.log(`[Sheets] ✓ CSV parsed: ${parsed.length} rows`);
+          Cache.set(url, d, Cache.TTL.SHEETS);
+          return d;
+        }
       }
-    } catch {}
-    return null;
+
+      console.warn(`[Sheets] Could not parse response (not JSON, not valid CSV). First 200 chars:`, text.slice(0,200));
+      return null;
+    } catch (e) {
+      console.warn(`[Sheets] Fetch error:`, e.message);
+      return null;
+    }
+  },
+
+  // Simple CSV parser for Google Sheets export
+  _parseCSV(text) {
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) return null;
+
+    // Parse header
+    const headers = this._csvSplitRow(lines[0]);
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+      const vals = this._csvSplitRow(lines[i]);
+      if (vals.length < 2) continue;
+      const obj = {};
+      headers.forEach((h, j) => {
+        let v = vals[j] ?? '';
+        // Auto-convert numbers
+        if (v !== '' && !isNaN(v)) v = +v;
+        obj[h.trim()] = v;
+      });
+      rows.push(obj);
+    }
+    return rows;
+  },
+
+  _csvSplitRow(line) {
+    const result = [];
+    let current = '', inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (inQuotes) {
+        if (ch === '"' && line[i+1] === '"') { current += '"'; i++; }
+        else if (ch === '"') { inQuotes = false; }
+        else { current += ch; }
+      } else {
+        if (ch === '"') { inQuotes = true; }
+        else if (ch === ',') { result.push(current); current = ''; }
+        else { current += ch; }
+      }
+    }
+    result.push(current);
+    return result;
   },
 
   bootstrap()          { return this.fpl('bootstrap-static/'); },
@@ -1237,8 +1339,15 @@ const Render = {
 
   // ── Scout Recommendation ───────────────────────────────
   scoutRec() {
+    // Try sheets pre-computed first
     const sr = Store.sheetsData?.scoutRec || [];
-    if (!sr.length) return H.info('Data Scout Recommendation memerlukan Google Sheets (ScoutRecommendation sheet).');
+    if (sr.length) return this._scoutRecFromSheets(sr);
+
+    // Generate from FPL API data
+    return this._scoutRecFromAPI();
+  },
+
+  _scoutRecFromSheets(sr) {
     const byPlayer = {};
     sr.forEach(r => {
       const k = `${r.squad_role}__${r.Player}`;
@@ -1278,7 +1387,241 @@ const Render = {
         </div>
       </div>`;
     }).join('');
-    return `<div class="section-title">Scout Recommendation</div>${blocks}`;
+    return `<div class="section-title">Scout Recommendation (Google Sheets)</div>${blocks}`;
+  },
+
+  _scoutRecFromAPI() {
+    const squad = Store.mySquadData;
+    const allPlayers = Store.scoredPlayers;
+    if (!allPlayers.length) return H.error('Data pemain belum dimuat. Klik Refresh.');
+
+    // If no squad: show best-per-position recommendations
+    if (!squad?.length) {
+      if (!CFG.myTeamId) {
+        return H.info(`Untuk rekomendasi berdasarkan skuad Anda, masukkan <b>FPL Team ID</b> di tab ⚙ Settings.<br><br>
+          Temukan ID di URL profil FPL: <code>fantasy.premierleague.com/entry/<b>ID</b>/…</code>
+          <br><br>Sementara itu, berikut <b>Top Pick per posisi</b> berdasarkan GW Score:`)
+          + this._topPicksFallback(allPlayers);
+      }
+      return H.info('Skuad Anda sedang dimuat. Tunggu beberapa detik atau klik Refresh.')
+        + this._topPicksFallback(allPlayers);
+    }
+
+    const squadIds = new Set(squad.map(p => p.id));
+    const mi = Store.myManagerInfo;
+    const bank = mi?.last_deadline_bank ? mi.last_deadline_bank / 10 : 0;
+    const teamValue = mi?.last_deadline_total_value ? mi.last_deadline_total_value / 10 : 0;
+
+    // Team map for fixture display
+    const teamMap = {};
+    Store.bootstrap?.teams?.forEach(t=>{ teamMap[t.id]=t.short_name; });
+
+    // For each squad player, find their full data from scoredPlayers
+    const analysis = squad.map(sq => {
+      const full = allPlayers.find(p => p.id === sq.id);
+      const gwScore = full?.GWScore ?? sq.ScoutScore ?? 0;
+      const pos = sq.Position;
+      const sellingPrice = sq.Price; // approximate (FPL uses purchase price logic)
+
+      // Candidates: same position, NOT in squad, sorted by GWScore desc
+      const candidates = allPlayers
+        .filter(p => p.Position === pos && !squadIds.has(p.id))
+        .sort((a, b) => b.GWScore - a.GWScore)
+        .slice(0, 5)
+        .map(c => {
+          const delta = +(c.GWScore - gwScore).toFixed(2);
+          const affordable = (c.Price <= sellingPrice + bank);
+          const priceDiff = +(c.Price - sellingPrice).toFixed(1);
+
+          // Next 3 fixtures from element-summary (if loaded)
+          const pf = Store.playerFixtures[c.id];
+          let fixHtml = '';
+          if (pf?.fixtures?.length) {
+            const next3 = pf.fixtures.filter(f=>!f.finished).slice(0,3);
+            fixHtml = next3.map(fx=>{
+              const isHome = fx.is_home;
+              const opp = teamMap[isHome?fx.team_a:fx.team_h]||'?';
+              const diff = fx.difficulty;
+              const cls = diff<=2?'fix-easy':diff<=3?'fix-med':'fix-hard';
+              return `<span class="sc-fix ${cls}" title="GW${fx.event} FDR:${diff}">${isHome?'':'@'}${opp}</span>`;
+            }).join('');
+          }
+
+          let verdict, vcls;
+          if (delta >= 1.5 && affordable) {
+            verdict = '✓ Transfer masuk'; vcls = 'verdict-good';
+          } else if (delta >= 0.5 && affordable) {
+            verdict = '↔ Pertimbangkan'; vcls = 'verdict-marg';
+          } else if (delta > 0 && !affordable) {
+            verdict = '💰 Over budget'; vcls = 'verdict-warn';
+          } else {
+            verdict = '— Tidak perlu'; vcls = 'verdict-keep';
+          }
+          return { ...c, delta, verdict, vcls, affordable, priceDiff, fixHtml };
+        });
+
+      // Determine urgency
+      const bestDelta = candidates[0]?.delta || 0;
+      let urgency, urgCls;
+      if (gwScore <= 2 || (sq.status === 'i' || sq.status === 'u')) {
+        urgency = '🔴 Segera'; urgCls = 'urg-high';
+      } else if (sq.status === 'd' || gwScore <= 3.5) {
+        urgency = '🟡 Pantau'; urgCls = 'urg-mid';
+      } else if (bestDelta >= 2) {
+        urgency = '🟡 Upgrade'; urgCls = 'urg-mid';
+      } else {
+        urgency = '🟢 Aman'; urgCls = 'urg-low';
+      }
+
+      // Next fixtures for current player
+      const myPf = Store.playerFixtures[sq.id];
+      let myFixHtml = '';
+      if (myPf?.fixtures?.length) {
+        const next3 = myPf.fixtures.filter(f=>!f.finished).slice(0,3);
+        myFixHtml = next3.map(fx=>{
+          const isHome = fx.is_home;
+          const opp = teamMap[isHome?fx.team_a:fx.team_h]||'?';
+          const diff = fx.difficulty;
+          const cls = diff<=2?'fix-easy':diff<=3?'fix-med':'fix-hard';
+          return `<span class="sc-fix ${cls}" title="GW${fx.event} FDR:${diff}">${isHome?'':'@'}${opp}</span>`;
+        }).join('');
+      }
+
+      return {
+        ...sq, gwScore, candidates, urgency, urgCls,
+        full, myFixHtml,
+      };
+    });
+
+    // Sort: Starting XI first, then by urgency (high → low), then by gwScore ascending
+    const urgOrder = {'🔴 Segera':0, '🟡 Pantau':1, '🟡 Upgrade':1, '🟢 Aman':2};
+    const roleOrder = {'Captain':0,'Vice Captain':1,'Starting XI':2,'Bench':3};
+    analysis.sort((a, b) => {
+      const ra = roleOrder[a.squad_role] ?? 9, rb = roleOrder[b.squad_role] ?? 9;
+      if (ra !== rb) return ra - rb;
+      const ua = urgOrder[a.urgency] ?? 9, ub = urgOrder[b.urgency] ?? 9;
+      if (ua !== ub) return ua - ub;
+      return a.gwScore - b.gwScore;
+    });
+
+    // Count urgencies
+    const urgCounts = { high:0, mid:0, low:0 };
+    analysis.forEach(a => {
+      if (a.urgency.includes('🔴')) urgCounts.high++;
+      else if (a.urgency.includes('🟡')) urgCounts.mid++;
+      else urgCounts.low++;
+    });
+
+    // Build HTML
+    let html = `
+      <div class="eval-summary-strip">
+        <div class="eval-stat">
+          <div class="eval-stat-label">Skuad</div>
+          <div class="eval-stat-val">${squad.length} pemain</div>
+        </div>
+        <div class="eval-stat">
+          <div class="eval-stat-label">Bank</div>
+          <div class="eval-stat-val" style="color:var(--text2)">£${bank.toFixed(1)}</div>
+        </div>
+        ${teamValue?`<div class="eval-stat">
+          <div class="eval-stat-label">Team Value</div>
+          <div class="eval-stat-val" style="color:var(--text2)">£${teamValue.toFixed(1)}</div>
+        </div>`:''}
+        <div class="eval-stat" ${urgCounts.high?'style="border-color:rgba(255,82,82,.3)"':''}>
+          <div class="eval-stat-label">🔴 Transfer Segera</div>
+          <div class="eval-stat-val" style="color:${urgCounts.high?'var(--red)':'var(--green)'}">${urgCounts.high}</div>
+        </div>
+        <div class="eval-stat">
+          <div class="eval-stat-label">🟡 Perlu Pantau</div>
+          <div class="eval-stat-val" style="color:var(--gold)">${urgCounts.mid}</div>
+        </div>
+        <div class="eval-stat">
+          <div class="eval-stat-label">🟢 Aman</div>
+          <div class="eval-stat-val" style="color:var(--green)">${urgCounts.low}</div>
+        </div>
+      </div>
+      <div class="section-title">Scout Recommendation — GW ${Store.currentGW||'–'} (dari FPL API)</div>
+    `;
+
+    // Player blocks
+    analysis.forEach(a => {
+      const crows = a.candidates.map(c => {
+        const dCls = c.delta > 0 ? 's-hi' : c.delta < 0 ? 's-lo' : 'dim';
+        return `<tr>
+          <td style="font-weight:600">${c.Player}${c.doubt?' <span class="doubt-tag">⚠</span>':''}</td>
+          <td>${H.teamTag(c.Team)}</td>
+          <td class="mono r">£${c.Price.toFixed(1)}</td>
+          <td class="mono r ${H.scoreClass(c.GWScore)}">${c.GWScore.toFixed(2)}</td>
+          <td class="mono r ${dCls}" style="font-weight:700">${c.delta>=0?'+':''}${c.delta.toFixed(2)}</td>
+          <td class="mono dim r">${H.numFmt(c.FDR_next,1)}</td>
+          <td class="c">${c.isHome?'🏠':'✈'} <span class="dim" style="font-size:10px">${c.opponent||'?'}</span></td>
+          <td class="mono r">${H.numFmt(c.Form,1)}</td>
+          <td class="mono r">${H.numFmt(c.PPG,1)}</td>
+          ${c.fixHtml?`<td style="font-size:10px">${c.fixHtml}</td>`:'<td class="dim" style="font-size:10px">–</td>'}
+          <td class="${c.vcls}">${c.verdict}</td>
+        </tr>`;
+      }).join('');
+
+      const statusBadge = a.status === 'i' ? '<span class="rec-status-badge status-inj">Cedera</span>'
+                        : a.status === 'u' ? '<span class="rec-status-badge status-una">Tidak tersedia</span>'
+                        : a.status === 'd' ? '<span class="rec-status-badge status-dbt">Meragukan</span>'
+                        : '';
+
+      html += `<div class="rec-player-block ${a.urgCls}">
+        <div class="rec-header">
+          <span class="pos-pill pos-${a.Position}">${a.Position}</span>
+          <span class="rec-player-name">${a.Player}</span>
+          ${statusBadge}
+          <span class="dim" style="font-size:11px">${a.squad_role}</span>
+          <span class="rec-score-badge">${a.gwScore.toFixed(2)}</span>
+          <span class="rec-urgency ${a.urgCls}">${a.urgency}</span>
+          <span class="dim" style="font-size:11px;margin-left:auto">£${a.Price.toFixed(1)} · ${H.teamTag(a.Team)}${a.myFixHtml?' · '+a.myFixHtml:''}</span>
+        </div>
+        ${crows ? `<div class="rec-candidates">
+          <table>
+            <thead><tr>
+              <th>Kandidat</th><th>Tim</th><th class="r">£</th><th class="r">Score</th>
+              <th class="r">Δ</th><th class="r">FDR</th><th class="c">H/A</th>
+              <th class="r">Form</th><th class="r">PPG</th><th>Next 3</th><th>Verdict</th>
+            </tr></thead>
+            <tbody>${crows}</tbody>
+          </table>
+        </div>` : ''}
+      </div>`;
+    });
+
+    return html;
+  },
+
+  // Fallback: show top picks per position when no squad data
+  _topPicksFallback(allPlayers) {
+    const positions = ['GK','DEF','MID','FWD'];
+    let html = '<div style="margin-top:16px">';
+    positions.forEach(pos => {
+      const top5 = allPlayers.filter(p=>p.Position===pos).sort((a,b)=>b.GWScore-a.GWScore).slice(0,5);
+      if (!top5.length) return;
+      html += `<div class="rec-player-block" style="margin-bottom:12px">
+        <div class="rec-header">
+          <span class="pos-pill pos-${pos}">${pos}</span>
+          <span class="rec-player-name">Top 5 ${pos}</span>
+        </div>
+        <div class="rec-candidates"><table>
+          <thead><tr><th>Pemain</th><th>Tim</th><th class="r">£</th><th class="r">GWScore</th><th class="r">FDR</th><th class="c">H/A</th><th class="r">Form</th><th class="r">PPG</th></tr></thead>
+          <tbody>${top5.map(p=>`<tr>
+            <td style="font-weight:600">${p.Player}${p.doubt?' <span class="doubt-tag">⚠</span>':''}</td>
+            <td>${H.teamTag(p.Team)}</td>
+            <td class="mono r">£${p.Price.toFixed(1)}</td>
+            <td class="mono r ${H.scoreClass(p.GWScore)}">${p.GWScore.toFixed(2)}</td>
+            <td class="mono dim r">${H.numFmt(p.FDR_next,1)}</td>
+            <td class="c">${p.isHome?'🏠':'✈'} <span class="dim" style="font-size:10px">${p.opponent||'?'}</span></td>
+            <td class="mono r">${H.numFmt(p.Form,1)}</td>
+            <td class="mono r">${H.numFmt(p.PPG,1)}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>
+      </div>`;
+    });
+    html += '</div>';
+    return html;
   },
 
   // ── FDR Matrix ──────────────────────────────────────────
@@ -1833,6 +2176,19 @@ const Render = {
         </div>
 
         <div class="settings-card">
+          <h3>🔌 Proxy Diagnostik</h3>
+          <div class="hint" style="margin-bottom:12px">
+            FPL API memerlukan CORS proxy. Klik tombol di bawah untuk test semua proxy dan temukan yang bekerja dari koneksi Anda.
+          </div>
+          <div id="proxy-test-results" style="font-family:'JetBrains Mono',monospace;font-size:12px;line-height:2.2;margin-bottom:14px">
+            Belum ditest. Klik tombol di bawah.
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-primary" onclick="UI.testProxies()">🧪 Test Semua Proxy</button>
+          </div>
+        </div>
+
+        <div class="settings-card">
           <h3>FPL API Endpoints</h3>
           <div class="hint" style="font-size:12px;line-height:2">
             <b style="color:var(--green)">✓ bootstrap-static/</b> — pemain, tim, event<br>
@@ -2121,6 +2477,48 @@ const UI = {
     this.updateCacheStats();
   },
 
+  async testProxies() {
+    const el = document.getElementById('proxy-test-results');
+    if (!el) return;
+    const testUrl = CFG.FPL + 'bootstrap-static/';
+    const names = ['Direct (tanpa proxy)', ...CFG.PROXIES.map((_,i)=>`Proxy #${i+1}`)];
+    const urls  = [testUrl, ...CFG.PROXIES.map(px=>px(testUrl))];
+
+    el.innerHTML = '<div style="color:var(--gold)">⏳ Testing… mohon tunggu 15–30 detik.</div>';
+    const results = [];
+
+    for (let i = 0; i < urls.length; i++) {
+      const name = names[i];
+      const url  = urls[i];
+      const t0   = performance.now();
+      try {
+        const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+        const ms = Math.round(performance.now() - t0);
+        if (r.ok) {
+          const text = await r.text();
+          const isJson = text.startsWith('{');
+          results.push({ name, ok:true, ms, note: isJson?`✓ OK (${ms}ms, valid JSON)`:`⚠ OK tapi bukan JSON` });
+        } else {
+          results.push({ name, ok:false, ms, note: `✗ HTTP ${r.status} (${ms}ms)` });
+        }
+      } catch (e) {
+        const ms = Math.round(performance.now() - t0);
+        results.push({ name, ok:false, ms, note: `✗ ${e.name}: ${e.message} (${ms}ms)` });
+      }
+
+      // Update live
+      el.innerHTML = results.map(r =>
+        `<div style="color:${r.ok?'var(--green)':'var(--red)'}">${r.name}: ${r.note}</div>`
+      ).join('') + (i < urls.length-1 ? `<div style="color:var(--gold)">⏳ Testing ${names[i+1]}…</div>` : '');
+    }
+
+    const working = results.filter(r=>r.ok);
+    const summary = working.length
+      ? `<div style="margin-top:8px;color:var(--green);font-weight:700">✓ ${working.length}/${results.length} proxy bekerja. Yang tercepat: ${working.sort((a,b)=>a.ms-b.ms)[0].name} (${working[0].ms}ms)</div>`
+      : `<div style="margin-top:8px;color:var(--red);font-weight:700">✗ Semua proxy gagal. Kemungkinan jaringan memblokir akses ke FPL API. Gunakan Google Sheets sebagai data source.</div>`;
+    el.innerHTML += summary;
+  },
+
   updateWeightTotals(prefix='gwt') {
     ['GK','DEF','MID','FWD'].forEach(pos=>{
       const inputs=document.querySelectorAll(`.weight-input[data-pos="${pos}"]`);
@@ -2241,7 +2639,21 @@ const App = {
         return;
       }
       UI.setSrc('error');
-      if (cont) cont.innerHTML = H.error('FPL API tidak dapat diakses dan tidak ada Google Sheets URL. Periksa koneksi internet atau tambahkan Sheets URL di Settings.');
+      const errs = Store._lastFetchErrors || [];
+      const errDetail = errs.length
+        ? `<br><br><b style="color:var(--text2)">Detail kegagalan:</b><br><span style="font-family:'JetBrains Mono',monospace;font-size:11px;line-height:2">${errs.map(e=>`• ${e}`).join('<br>')}</span>`
+        : '';
+      const sheetsNote = sheetsUrl
+        ? `<br><br><b style="color:var(--text2)">Google Sheets fallback:</b> URL ditemukan tapi ${sd===null?'gagal fetch/parse — pastikan format output JSON (Apps Script Web App) atau CSV (gviz export).':'tidak ada data player di response.'}`
+        : '<br><br><b style="color:var(--orange)">Google Sheets URL kosong.</b> Tambahkan di Settings sebagai fallback.';
+      if (cont) cont.innerHTML = H.error(
+        `FPL API tidak dapat diakses melalui semua CORS proxy.${errDetail}${sheetsNote}`
+        + `<br><br><b>Solusi:</b>`
+        + `<br>1. Buka <a href="https://fantasy.premierleague.com/api/bootstrap-static/" target="_blank" style="color:var(--blue)">FPL API langsung</a> — jika bisa dibuka, berarti CORS proxy yang bermasalah.`
+        + `<br>2. Coba lagi dalam beberapa menit (proxy sering pulih sendiri).`
+        + `<br>3. Buka Console browser (F12) untuk detail error.`
+        + `<br>4. Gunakan Google Sheets sebagai alternatif data source.`
+      );
       return;
     }
 
