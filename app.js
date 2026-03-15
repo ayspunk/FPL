@@ -60,9 +60,11 @@ const Store = {
   fixtures:      null,   // fixtures
   liveEvent:     null,   // event/{GW}/live  (current GW live stats)
   leagueData:    null,   // leagues-classic/{ID}/standings
-  managerInfos:  {},     // {entryId: entry data}
-  managerHistory:{},     // {entryId: history data}  ← event/{TID}/history
-  managerTransfers:{},   // {entryId: transfers}     ← entry/{TID}/transfers
+  managerInfos:  {},     // {entryId: entry data}        ← entry/{TID}/
+  managerHistory:{},     // {entryId: history data}       ← entry/{TID}/history
+  managerTransfers:{},   // {entryId: transfers}          ← entry/{TID}/transfers
+  playerFixtures:{},     // {elementId: element-summary}  ← element-summary/{EID}/
+  myManagerInfo: null,   // entry/{myTeamId}/
   myPicks:       null,   // entry/{TID}/event/{GW}/picks
   myTransfers:   null,   // entry/{TID}/transfers
 
@@ -575,10 +577,21 @@ const Process = {
     const defP = this.pickN(DEF, nD, gkP);
     const midP = this.pickN(MID, nM, [...gkP,...defP]);
     const fwdP = this.pickN(FWD, nF, [...gkP,...defP,...midP]);
+    const all  = [...gkP,...defP,...midP,...fwdP];
     const field= [...defP,...midP,...fwdP].sort((a,b)=>b.GWScore-a.GWScore);
-    const total= +[...gkP,...defP,...midP,...fwdP].reduce((s,p)=>s+(p.GWScore||0),0).toFixed(2);
+    const total= +all.reduce((s,p)=>s+(p.GWScore||0),0).toFixed(2);
+    const cap  = field[0]||null;
+    const vc   = field[1]||null;
+
+    // Actual points calculation
+    const hasLive     = all.some(p => p.livePoints != null);
+    const totalActual = all.reduce((s,p) => s + (p.livePoints ?? 0), 0);
+    const capBonus    = cap && cap.livePoints != null ? cap.livePoints : 0;
+    const totalWithCap= totalActual + capBonus;
+
     return { gk:gkP[0]||null, def:defP, mid:midP, fwd:fwdP,
-             cap:field[0]||null, vc:field[1]||null, total };
+             cap, vc, total, all,
+             hasLive, totalActual, totalWithCap, capBonus };
   },
 
   buildAllFormations(pl) {
@@ -596,7 +609,7 @@ const Process = {
 // 5. NAVIGATION
 // ═══════════════════════════════════════════════════════
 const SUBTABS = {
-  lineup:  [{k:'gwrec',    l:'GW Recommendation'},{k:'gwscoring',l:'GW Scoring'},{k:'wlineup',l:'WLineUp'}],
+  lineup:  [{k:'gwrec',    l:'GW Recommendation'},{k:'gweval',l:'Evaluasi Poin'},{k:'gwscoring',l:'GW Scoring'},{k:'wlineup',l:'WLineUp'}],
   scout:   [{k:'sscoring', l:'Scout Scoring'},    {k:'srec',     l:'Scout Recommendation'},{k:'swt',l:'Scout Weights'}],
   fdr:     [{k:'fdr-def',  l:'DEF Matrix'},       {k:'fdr-atk',  l:'ATK Matrix'},{k:'fdr-ovr',l:'OVR Matrix'},{k:'fdrinfo',l:'Team Strength'}],
   epl:     [],
@@ -653,6 +666,7 @@ const H = {
 
   scoreClass: s => +s>=6?'s-hi':+s>=4?'s-mid':+s>=1?'s-lo':'s-null',
   scoreColor: s => +s>=6?'var(--green)':+s>=4?'var(--gold)':'var(--orange)',
+  ptsClass:   p => p==null?'dim':+p>=8?'pts-great':+p>=5?'pts-good':+p>=2?'pts-ok':'pts-bad',
 
   fdrClass(v) {
     if (!v||v<=0) return 'fdr-none';
@@ -696,7 +710,7 @@ const Render = {
     const el = document.getElementById(`content-${tab}`);
     if (!el) return;
     const map = {
-      lineup:  { gwrec:this.lineupRec,  gwscoring:this.lineupScoring, wlineup:this.lineupWLineup },
+      lineup:  { gwrec:this.lineupRec, gweval:this.lineupEval, gwscoring:this.lineupScoring, wlineup:this.lineupWLineup },
       scout:   { sscoring:this.scoutScoring, srec:this.scoutRec, swt:this.scoutWeight },
       fdr:     { 'fdr-def':()=>this.fdrMatrix('def'), 'fdr-atk':()=>this.fdrMatrix('atk'),
                  'fdr-ovr':()=>this.fdrMatrix('ovr'), fdrinfo:this.fdrInfo },
@@ -812,19 +826,65 @@ const Render = {
     if (!fms.length) return H.error('Data belum siap.');
     const sel=Store.selectedForm, f=fms[sel];
     const rankColors={1:'var(--gold)',2:'#90caf9',3:'var(--purple)'};
+    const hasLive = f.hasLive;
 
-    const cards = fms.map((fm,i)=>`
+    // Sort by actual pts for "pts rank"
+    const byPts = [...fms].sort((a,b)=>(b.totalWithCap||0)-(a.totalWithCap||0));
+
+    const cards = fms.map((fm,i)=>{
+      const ptsRank = byPts.findIndex(x=>x.name===fm.name)+1;
+      const ptsLabel = hasLive
+        ? `<div class="rc-pts">${fm.totalWithCap} <span>pts</span></div>
+           <div class="rc-pts-rank">#${ptsRank} pts</div>`
+        : '';
+      return `
       <div class="rank-card rank-${fm.rank} ${i===sel?'selected':''}"
            style="--rc:${rankColors[fm.rank]||'var(--border2)'}"
            onclick="UI.selectForm(${i})">
         <div class="rc-rank">${fm.rank}</div>
         <div class="rc-name">${fm.name}</div>
         <div class="rc-score">${fm.total.toFixed(2)}</div>
-        <div class="rc-label">Total Score</div>
-      </div>`).join('');
+        <div class="rc-label">GW Score</div>
+        ${ptsLabel}
+      </div>`;
+    }).join('');
+
+    // Summary strip
+    const bestPtsForm = hasLive ? byPts[0] : null;
+    const summaryStrip = `
+      <div class="eval-summary-strip">
+        <div class="eval-stat">
+          <div class="eval-stat-label">Formasi</div>
+          <div class="eval-stat-val">${f.name}</div>
+        </div>
+        <div class="eval-stat">
+          <div class="eval-stat-label">GW Score</div>
+          <div class="eval-stat-val" style="color:var(--blue)">${f.total.toFixed(2)}</div>
+        </div>
+        ${hasLive ? `
+        <div class="eval-stat">
+          <div class="eval-stat-label">Poin 11 Pemain</div>
+          <div class="eval-stat-val" style="color:var(--text)">${f.totalActual}</div>
+        </div>
+        <div class="eval-stat">
+          <div class="eval-stat-label">+ Captain (×2)</div>
+          <div class="eval-stat-val" style="color:var(--gold)">+${f.capBonus}</div>
+        </div>
+        <div class="eval-stat highlight">
+          <div class="eval-stat-label">Total Poin</div>
+          <div class="eval-stat-val" style="color:var(--green);font-size:24px">${f.totalWithCap}</div>
+        </div>
+        ` : `
+        <div class="eval-stat">
+          <div class="eval-stat-label">Poin Aktual</div>
+          <div class="eval-stat-val dim">Menunggu GW</div>
+        </div>
+        `}
+      </div>`;
 
     return `
       <div class="rank-grid">${cards}</div>
+      ${summaryStrip}
       <div class="lineup-container">
         <div>
           <div class="section-title">Lineup — Formasi ${f.name}</div>
@@ -832,9 +892,9 @@ const Render = {
             <table>
               <thead><tr>
                 <th>Slot</th><th>Pemain</th><th>Tim</th><th>Lawan</th>
-                <th class="r">GWScore</th><th class="r">FDR</th><th class="r">PPG</th><th class="r">£</th>
+                <th class="r">GWScore</th>${hasLive?'<th class="r">Poin</th>':''}<th class="r">FDR</th><th class="r">PPG</th><th class="r">£</th>
               </tr></thead>
-              <tbody>${this._lineupRows(f)}</tbody>
+              <tbody>${this._lineupRows(f, hasLive)}</tbody>
             </table>
           </div>
         </div>
@@ -842,31 +902,28 @@ const Render = {
       </div>`;
   },
 
-  _lineupRows(f) {
+  _lineupRows(f, hasLive=false) {
+    const ptsCol = hasLive;
+    const emptyPts = ptsCol ? '<td></td>' : '';
     const R = (slot,p,cls='')=>{
-      if(!p) return `<tr class="${cls}"><td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text3);width:70px">${slot}</td><td class="dim">–</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>`;
+      if(!p) return `<tr class="${cls}"><td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text3);width:70px">${slot}</td><td class="dim">–</td><td></td><td></td><td></td>${emptyPts}<td></td><td></td><td></td></tr>`;
       const sc=p.GWScore, d=p.doubt?'<span class="doubt-tag">⚠</span>':'';
       const dgw=p.isDGW?'<span style="color:var(--blue);font-size:10px"> 2GW</span>':'';
-      return `<tr class="${cls}">
+      const isCap = f.cap && p.id===f.cap.id;
+      const isVC  = f.vc && p.id===f.vc.id;
+      const badge = isCap?'<span class="cap-tag">★ C</span>':isVC?'<span class="vc-tag">☆ V</span>':'';
+      const ptsCell = ptsCol
+        ? `<td class="mono r ${H.ptsClass(p.livePoints)}" style="font-weight:700">
+            ${p.livePoints!=null?p.livePoints:'–'}${isCap&&p.livePoints!=null?`<span class="cap-x2"> ×2=${p.livePoints*2}</span>`:''}
+           </td>`
+        : '';
+      return `<tr class="${cls}${isCap?' row-cap':''}${isVC?' row-vc':''}">
         <td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text3)">${slot}</td>
-        <td style="font-size:15px;font-weight:600">${p.Player}${d}${dgw}</td>
+        <td style="font-size:15px;font-weight:600">${p.Player}${d}${dgw}${badge}</td>
         <td>${H.teamTag(p.Team)}</td>
         <td class="dim" style="font-size:12px">${p.isHome?'🏠':'✈'} ${p.opponent||'?'}</td>
         <td class="mono r ${H.scoreClass(sc)}">${sc.toFixed(2)}</td>
-        <td class="mono dim r">${H.numFmt(p.FDR_next,1)}</td>
-        <td class="mono dim r">${H.numFmt(p.PPG,1)}</td>
-        <td class="mono dim r">£${p.Price.toFixed(1)}</td>
-      </tr>`;
-    };
-    const C=(slot,p,cls='')=>{
-      if(!p) return R(slot,null,cls);
-      const sc=p.GWScore, d=p.doubt?'<span class="doubt-tag">⚠</span>':'';
-      return `<tr class="row-cap ${cls}">
-        <td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text3)">${slot}</td>
-        <td style="font-size:15px;font-weight:700">${p.Player}${d} <span class="cap-tag">★</span></td>
-        <td>${H.teamTag(p.Team)}</td>
-        <td class="dim" style="font-size:12px">${p.isHome?'🏠':'✈'} ${p.opponent||'?'}</td>
-        <td class="mono r ${H.scoreClass(sc)}">${sc.toFixed(2)}</td>
+        ${ptsCell}
         <td class="mono dim r">${H.numFmt(p.FDR_next,1)}</td>
         <td class="mono dim r">${H.numFmt(p.PPG,1)}</td>
         <td class="mono dim r">£${p.Price.toFixed(1)}</td>
@@ -878,33 +935,59 @@ const Render = {
     pad(f.def,5).forEach((p,i)=>rows.push(R(`DEF ${i+1}`,p,i===0?'row-sep':'')));
     pad(f.mid,5).forEach((p,i)=>rows.push(R(`MID ${i+1}`,p,i===0?'row-sep':'')));
     pad(f.fwd,3).forEach((p,i)=>rows.push(R(`FWD ${i+1}`,p,i===0?'row-sep':'')));
-    rows.push(C('⭐ Captain', f.cap,'row-sep'));
-    rows.push(C('🌟 Vice Cap',f.vc,''));
-    rows.push(`<tr class="row-total">
-      <td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text3)">Total</td>
-      <td colspan="3" class="dim" style="font-size:12px">GK + 10 outfield (tanpa C/VC)</td>
-      <td class="mono r" style="font-size:18px;font-weight:700;color:var(--green)">${f.total.toFixed(2)}</td>
-      <td></td><td></td><td></td></tr>`);
+
+    // Total & Rank rows
+    if (ptsCol) {
+      rows.push(`<tr class="row-total">
+        <td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text3)">Total</td>
+        <td colspan="3" class="dim" style="font-size:12px">11 pemain</td>
+        <td class="mono r" style="font-size:18px;font-weight:700;color:var(--blue)">${f.total.toFixed(2)}</td>
+        <td class="mono r" style="font-size:14px;color:var(--text2)">${f.totalActual}</td>
+        <td></td><td></td><td></td></tr>`);
+      rows.push(`<tr class="row-total-pts">
+        <td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--gold)">+ Captain</td>
+        <td colspan="3" class="dim" style="font-size:12px">${f.cap?f.cap.Player+' ×2':''}</td>
+        <td></td>
+        <td class="mono r" style="font-size:20px;font-weight:800;color:var(--green)">${f.totalWithCap}</td>
+        <td></td><td></td><td></td></tr>`);
+    } else {
+      rows.push(`<tr class="row-total">
+        <td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text3)">Total</td>
+        <td colspan="3" class="dim" style="font-size:12px">GK + 10 outfield</td>
+        <td class="mono r" style="font-size:18px;font-weight:700;color:var(--green)">${f.total.toFixed(2)}</td>
+        <td></td><td></td><td></td></tr>`);
+    }
     rows.push(`<tr class="row-rank">
       <td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text3)">Rank</td>
       <td colspan="3" class="dim" style="font-size:12px">dari ${Store.formations.length} formasi</td>
       <td class="mono r" style="font-size:20px;font-weight:800;color:${f.rank===1?'var(--gold)':f.rank===2?'#90caf9':f.rank===3?'var(--purple)':'var(--text2)'}">#${f.rank}</td>
-      <td></td><td></td><td></td></tr>`);
+      ${ptsCol?'<td></td>':''}<td></td><td></td><td></td></tr>`);
     return rows.join('');
   },
 
   _pitch(f) {
+    const hasLive = f.hasLive;
     const chip=(p,ex='')=>{
       if(!p) return `<div class="player-chip empty"><div class="p-shirt sh-default"></div></div>`;
       const d=p.doubt?' doubt':'';
+      const isCap = f.cap && p.id===f.cap.id;
+      const isVC  = f.vc && p.id===f.vc.id;
+      const capCls = isCap ? ' cap-s' : isVC ? ' vc-s' : '';
+      const ptsHtml = hasLive && p.livePoints!=null
+        ? `<div class="p-chip-pts ${H.ptsClass(p.livePoints)}">${isCap ? p.livePoints*2 : p.livePoints}</div>`
+        : '';
       return `<div class="player-chip">
-        <div class="p-shirt sh-${p.Team||'default'} ${ex}">${p.Team||'?'}</div>
-        <div class="p-chip-name">${p.Player.split(' ').slice(-1)[0]}</div>
+        <div class="p-shirt sh-${p.Team||'default'}${capCls} ${ex}">${p.Team||'?'}</div>
+        <div class="p-chip-name">${p.Player.split(' ').slice(-1)[0]}${isCap?' ★':isVC?' ☆':''}</div>
         <div class="p-chip-score${d}">${p.GWScore.toFixed(1)}</div>
+        ${ptsHtml}
       </div>`;
     };
+    const ptsHeader = hasLive
+      ? ` — <span style="color:var(--green)">${f.totalWithCap} pts</span>`
+      : '';
     return `<div class="pitch-wrap">
-      <div class="section-title">Pitch View</div>
+      <div class="section-title">Pitch View${ptsHeader}</div>
       <div class="pitch">
         <svg class="pitch-lines" viewBox="0 0 100 150" preserveAspectRatio="none">
           <rect x="5" y="5" width="90" height="140" rx="1" stroke="white" stroke-width=".8" fill="none"/>
@@ -920,10 +1003,151 @@ const Render = {
           <div class="pitch-row" style="flex:1.4">${f.mid.map(p=>chip(p)).join('')}</div>
           <div class="pitch-row" style="flex:1.4">${f.def.map(p=>chip(p)).join('')}</div>
           <div class="pitch-row" style="flex:1">${chip(f.gk)}</div>
-          <div class="pitch-row" style="flex:1;background:rgba(0,0,0,.15)">${chip(f.cap,'cap-s')} ${chip(f.vc,'vc-s')}</div>
         </div>
       </div>
     </div>`;
+  },
+
+  // ── Evaluasi Poin — Perbandingan poin aktual semua formasi ──
+  lineupEval() {
+    const fms = Store.formations;
+    if (!fms.length) return H.error('Data belum siap.');
+    const hasLive = fms[0]?.hasLive;
+
+    if (!hasLive)
+      return H.info('Data poin aktual belum tersedia untuk GW ini. Poin akan muncul setelah pertandingan berlangsung.');
+
+    // Sort formations by actual pts
+    const byPts = [...fms].sort((a,b)=>b.totalWithCap-a.totalWithCap);
+    const maxPts = Math.max(...byPts.map(f=>f.totalWithCap), 1);
+    const bestForm = byPts[0];
+
+    // Summary
+    let html = `
+      <div class="eval-summary-strip">
+        <div class="eval-stat highlight">
+          <div class="eval-stat-label">Formasi Terbaik (Poin)</div>
+          <div class="eval-stat-val" style="color:var(--gold)">${bestForm.name}</div>
+        </div>
+        <div class="eval-stat">
+          <div class="eval-stat-label">Total Poin Tertinggi</div>
+          <div class="eval-stat-val" style="color:var(--green)">${bestForm.totalWithCap}</div>
+        </div>
+        <div class="eval-stat">
+          <div class="eval-stat-label">GW Score Tertinggi</div>
+          <div class="eval-stat-val" style="color:var(--blue)">${[...fms].sort((a,b)=>b.total-a.total)[0].name} (${[...fms].sort((a,b)=>b.total-a.total)[0].total.toFixed(2)})</div>
+        </div>
+        <div class="eval-stat">
+          <div class="eval-stat-label">Captain Terbaik</div>
+          <div class="eval-stat-val" style="color:var(--gold)">${bestForm.cap?bestForm.cap.Player+' ('+((bestForm.cap.livePoints||0)*2)+' pts)':'–'}</div>
+        </div>
+      </div>`;
+
+    // Ranking table
+    html += `
+      <div class="section-title">Ranking Formasi — Poin Aktual GW ${Store.currentGW}</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th class="c">#</th><th>Formasi</th>
+            <th class="r">GW Score</th><th class="r">Rank Score</th>
+            <th class="r">Poin (11)</th><th class="r">Cap Bonus</th>
+            <th class="r">Total Poin</th><th class="r">Rank Poin</th>
+            <th>Bar</th>
+          </tr></thead>
+          <tbody>`;
+
+    byPts.forEach((fm, i) => {
+      const pct = Math.round(fm.totalWithCap / maxPts * 100);
+      const barColor = i===0?'var(--gold)':i===1?'var(--blue)':'var(--border2)';
+      html += `<tr class="${i===0?'row-best':''}">
+        <td class="c mono" style="font-size:18px;font-weight:800;color:${i===0?'var(--gold)':i===1?'#90caf9':i===2?'var(--purple)':'var(--text3)'}">${i+1}</td>
+        <td style="font-size:16px;font-weight:700;letter-spacing:1px">${fm.name}</td>
+        <td class="mono r ${H.scoreClass(fm.total/10)}">${fm.total.toFixed(2)}</td>
+        <td class="mono dim r">#${fm.rank}</td>
+        <td class="mono r">${fm.totalActual}</td>
+        <td class="mono r" style="color:var(--gold)">+${fm.capBonus}</td>
+        <td class="mono r" style="font-weight:800;font-size:16px;color:var(--green)">${fm.totalWithCap}</td>
+        <td class="mono c" style="font-weight:700;color:${i===0?'var(--gold)':'var(--text3)'}">#${i+1}</td>
+        <td style="min-width:160px">
+          <div class="eval-bar"><div class="eval-bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
+        </td>
+      </tr>`;
+    });
+    html += `</tbody></table></div>`;
+
+    // Detail pemain formasi terbaik
+    html += `
+      <div class="section-title" style="margin-top:24px">Detail Poin — ${bestForm.name} (Total: ${bestForm.totalWithCap} pts)</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Pos</th><th>Pemain</th><th>Tim</th><th>Lawan</th>
+            <th class="r">GWScore</th><th class="r">Poin</th><th class="c">Cap</th><th class="r">Kontribusi</th>
+          </tr></thead>
+          <tbody>`;
+
+    (bestForm.all||[]).forEach(p => {
+      const isCap = bestForm.cap && p.id===bestForm.cap.id;
+      const pts = p.livePoints ?? 0;
+      const contrib = isCap ? pts*2 : pts;
+      html += `<tr class="${isCap?'row-cap':''}">
+        <td>${H.posPill(p.Position)}</td>
+        <td style="font-weight:600">${p.Player}${p.doubt?' <span class="doubt-tag">⚠</span>':''}</td>
+        <td>${H.teamTag(p.Team)}</td>
+        <td class="dim" style="font-size:12px">${p.isHome?'🏠':'✈'} ${p.opponent||'?'}</td>
+        <td class="mono r ${H.scoreClass(p.GWScore)}">${p.GWScore.toFixed(2)}</td>
+        <td class="mono r ${H.ptsClass(p.livePoints)}" style="font-weight:700">${p.livePoints!=null?p.livePoints:'–'}</td>
+        <td class="c">${isCap?'<span style="background:var(--gold);color:#000;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:800">C ×2</span>':''}</td>
+        <td class="mono r" style="font-weight:700;color:${contrib>=8?'var(--green)':contrib>=4?'var(--blue)':'var(--text3)'}">${contrib}</td>
+      </tr>`;
+    });
+
+    const totalContrib = (bestForm.all||[]).reduce((s,p)=>{
+      const pts=p.livePoints??0;
+      return s+(bestForm.cap&&p.id===bestForm.cap.id?pts*2:pts);
+    },0);
+
+    html += `<tr class="row-total">
+      <td colspan="7" style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--text3)">Total Kontribusi (termasuk captain ×2)</td>
+      <td class="mono r" style="font-size:20px;font-weight:800;color:var(--green)">${totalContrib}</td>
+    </tr></tbody></table></div>`;
+
+    // Accuracy analysis
+    html += `
+      <div class="section-title" style="margin-top:24px">Akurasi Prediksi — GW Score vs Poin Aktual</div>
+      <div class="eval-accuracy-grid">`;
+
+    const allSelected = new Map();
+    fms.forEach(fm => (fm.all||[]).forEach(p => { if(!allSelected.has(p.id)) allSelected.set(p.id,p); }));
+    const uniquePlayers = [...allSelected.values()].sort((a,b)=>(b.livePoints??0)-(a.livePoints??0));
+
+    html += `<div class="table-wrap"><table>
+      <thead><tr><th>Pos</th><th>Pemain</th><th>Tim</th>
+        <th class="r">GWScore</th><th class="r">Poin Aktual</th><th class="r">Selisih</th><th>Akurasi</th>
+      </tr></thead><tbody>`;
+
+    uniquePlayers.forEach(p => {
+      const pts = p.livePoints ?? 0;
+      const diff = pts - p.GWScore;
+      const pct  = p.GWScore > 0 ? Math.min(100, Math.round(pts / p.GWScore * 100)) : 0;
+      html += `<tr>
+        <td>${H.posPill(p.Position)}</td>
+        <td style="font-weight:600">${p.Player}</td>
+        <td>${H.teamTag(p.Team)}</td>
+        <td class="mono r ${H.scoreClass(p.GWScore)}">${p.GWScore.toFixed(2)}</td>
+        <td class="mono r ${H.ptsClass(p.livePoints)}" style="font-weight:700">${p.livePoints!=null?p.livePoints:'–'}</td>
+        <td class="mono r" style="color:${diff>=0?'var(--green)':'var(--red)'}">
+          ${p.livePoints!=null?(diff>=0?'+':'')+diff.toFixed(1):'–'}
+        </td>
+        <td style="min-width:100px">
+          <div class="eval-bar"><div class="eval-bar-fill" style="width:${pct}%;background:${pct>=70?'var(--green)':pct>=40?'var(--gold)':'var(--red)'}"></div></div>
+        </td>
+      </tr>`;
+    });
+
+    html += `</tbody></table></div></div>`;
+    return html;
   },
 
   // ── Scout Weight (read-only) ───────────────────────────
@@ -1258,6 +1482,7 @@ const Render = {
 
     const currentGW = Store.currentGW || 0;
     const myName    = CFG.myTeamName.toLowerCase();
+    const hasInfos  = Object.keys(Store.managerInfos).length > 0;
 
     const rows = entries.map(e => {
       const isMe  = e.entryName.toLowerCase().includes(myName);
@@ -1266,6 +1491,10 @@ const Render = {
       const delta  = (e.lastRank||rnk) - rnk;
       const dCls  = delta>0?'trend-up':delta<0?'trend-down':'trend-same';
       const dStr  = delta>0?`⬆ +${delta}`:delta<0?`⬇ ${delta}`:'➡ =';
+      const info  = Store.managerInfos[e.entryId];
+      const ovrRank = info?.summary_overall_rank;
+      const tv    = info?.last_deadline_total_value;
+      const bank  = info?.last_deadline_bank;
       return `<tr class="${isMe?'highlight-row':''}">
         <td class="rekap-rank ${rCls}">${rnk}</td>
         <td class="${dCls}" style="font-size:14px">${dStr}</td>
@@ -1273,7 +1502,8 @@ const Render = {
         <td class="dim">${e.playerName||'–'}</td>
         <td class="rekap-ep">${e.eventTotal??'–'}</td>
         <td class="rekap-tp">${e.total||0}</td>
-        <td class="c mono dim">${delta>0?'+':delta<0?'':''}</td>
+        ${hasInfos?`<td class="mono dim r" style="font-size:12px" title="Overall Rank">${ovrRank?ovrRank.toLocaleString():'–'}</td>`:''}
+        ${hasInfos?`<td class="mono dim r" style="font-size:12px" title="Team Value">£${tv?(tv/10).toFixed(1):'–'}</td>`:''}
       </tr>`;
     }).join('');
 
@@ -1289,7 +1519,8 @@ const Render = {
         <table>
           <thead><tr>
             <th class="c">#</th><th>Trend</th><th>Tim</th><th>Manajer</th>
-            <th class="r">GW Pts</th><th class="r">Total Pts</th><th class="c">Δ</th>
+            <th class="r">GW Pts</th><th class="r">Total Pts</th>
+            ${hasInfos?'<th class="r">Overall Rank</th><th class="r">Team Value</th>':''}
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -1403,12 +1634,41 @@ const Render = {
         return H.info('Tambahkan FPL Team ID Anda di Settings untuk melihat skuad aktif.');
       return H.info('Skuad Anda sedang dimuat… Jika tidak muncul, pastikan Team ID benar.');
     }
+    const mi = Store.myManagerInfo;
+    const infoStrip = mi ? `
+      <div class="stat-strip">
+        <div class="stat-box"><div class="stat-label">Team Name</div><div class="stat-val" style="font-size:14px;color:var(--text)">${mi.name||'–'}</div></div>
+        <div class="stat-box"><div class="stat-label">Manager</div><div class="stat-val" style="font-size:14px;color:var(--text2)">${mi.player_first_name||''} ${mi.player_last_name||''}</div></div>
+        <div class="stat-box"><div class="stat-label">Overall Rank</div><div class="stat-val blue">${mi.summary_overall_rank?mi.summary_overall_rank.toLocaleString():'–'}</div></div>
+        <div class="stat-box"><div class="stat-label">Total Points</div><div class="stat-val gold">${mi.summary_overall_points||'–'}</div></div>
+        <div class="stat-box"><div class="stat-label">GW Points</div><div class="stat-val">${mi.summary_event_points||'–'}</div></div>
+        <div class="stat-box"><div class="stat-label">Team Value</div><div class="stat-val" style="color:var(--text2)">£${mi.last_deadline_total_value?(mi.last_deadline_total_value/10).toFixed(1):'–'}</div></div>
+        <div class="stat-box"><div class="stat-label">Bank</div><div class="stat-val" style="color:var(--text2)">£${mi.last_deadline_bank?(mi.last_deadline_bank/10).toFixed(1):'–'}</div></div>
+      </div>` : '';
+
     const roleMap = {'Captain':'captain','Vice Captain':'vc','Starting XI':'xi','Bench':'bench'};
     const cards = squad.map(p => {
       const roleKey = roleMap[p.squad_role]||'xi';
       const d = p.status==='d'?'<span class="doubt-tag">⚠ doubt</span>':'';
       const sc= p.ScoutScore||0;
       const live = p.livePoints!=null ? `<div style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--gold);margin-top:4px">${p.livePoints} pts live</div>` : '';
+      // Next fixtures from element-summary
+      const pf = Store.playerFixtures[p.id];
+      let fixHtml = '';
+      if (pf?.fixtures?.length) {
+        const next3 = pf.fixtures.filter(f=>!f.finished).slice(0,3);
+        if (next3.length) {
+          const teamMap = {};
+          Store.bootstrap?.teams?.forEach(t=>{ teamMap[t.id]=t.short_name; });
+          fixHtml = `<div class="sc-fixtures">${next3.map(fx=>{
+            const isHome = fx.is_home;
+            const opp = teamMap[isHome?fx.team_a:fx.team_h]||'?';
+            const diff = fx.difficulty;
+            const cls = diff<=2?'fix-easy':diff<=3?'fix-med':'fix-hard';
+            return `<span class="sc-fix ${cls}" title="GW${fx.event} FDR:${diff}">${isHome?'':'@'}${opp}</span>`;
+          }).join('')}</div>`;
+        }
+      }
       return `<div class="squad-card role-${roleKey} ${p.status==='d'?'status-d':''}">
         <div class="sc-role">${p.squad_role}${p.is_captain?' ⭐':p.is_vice_captain?' 🌟':''}</div>
         <div class="sc-name">${p.Player}${d}</div>
@@ -1425,9 +1685,11 @@ const Render = {
           <div class="sc-stat">xGI<span>${H.numFmt(p.xGI,2)}</span></div>
           <div class="sc-stat">FDR<span>${H.numFmt(p.FDR_next,1)}</span></div>
         </div>
+        ${fixHtml}
       </div>`;
     }).join('');
     return `<div class="section-title">My Squad — GW ${Store.currentGW||'–'}</div>
+      ${infoStrip}
       <div class="squad-grid">${cards}</div>`;
   },
 
@@ -1580,8 +1842,8 @@ const Render = {
             <b style="color:var(--green)">✓ entry/{TID}/history/</b> — ranking per GW<br>
             <b style="color:var(--green)">✓ entry/{TID}/transfers/</b> — transfer history<br>
             <b style="color:var(--green)">✓ entry/{TID}/event/{GW}/picks/</b> — skuad aktif<br>
-            <b style="color:var(--text2)">○ entry/{TID}/</b> — info manajer<br>
-            <b style="color:var(--text2)">○ element-summary/{EID}/</b> — fixture per pemain
+            <b style="color:var(--green)">✓ entry/{TID}/</b> — info manajer (overall rank, team value, bank)<br>
+            <b style="color:var(--green)">✓ element-summary/{EID}/</b> — fixture per pemain (next 3 GW)
           </div>
         </div>
       </div>
@@ -1798,6 +2060,7 @@ const UI = {
       { label:`event/${gw}/live/`,    path:`event/${gw}/live/`,           ttl:'5m',  tier:'LIVE'   },
       { label:`standings (liga)`,     path:`leagues-classic/${lid}/standings/?page_standings=1`, ttl:'30m', tier:'LEAGUE' },
       ...(tid ? [
+        { label:`entry/${tid}/`,              path:`entry/${tid}/`,              ttl:'30m', tier:'LEAGUE' },
         { label:`entry/${tid}/history/`,      path:`entry/${tid}/history/`,      ttl:'30m', tier:'LEAGUE' },
         { label:`entry/${tid}/transfers/`,    path:`entry/${tid}/transfers/`,    ttl:'30m', tier:'LEAGUE' },
         { label:`picks GW${gw}`,             path:`entry/${tid}/event/${gw}/picks/`, ttl:'5m', tier:'LIVE' },
@@ -2018,6 +2281,11 @@ const App = {
     const sheetsUrl = CFG.sheetsUrl || document.getElementById('sheets-url')?.value || '';
     if (sheetsUrl) this.loadSheets(sheetsUrl);
 
+    // ── Step 7: Player fixtures for recommended lineup (background) ──
+    const recPlayerIds = new Set();
+    Store.formations.forEach(fm => (fm.all||[]).forEach(p => recPlayerIds.add(p.id)));
+    this.loadPlayerFixtures([...recPlayerIds]);
+
     console.log(`[FPL] Load ${elapsed}ms | hits:${Store.cacheHits} miss:${Store.cacheMisses}`);
   },
 
@@ -2032,8 +2300,8 @@ const App = {
     const managers   = Process.processLeague(ls);
     Store.leagueManagers = managers;
 
-    // Fetch history + transfers for all managers (parallel, batched)
-    Store.loadProgress = { done:0, total: managers.length * 2 };
+    // Fetch history + transfers + info for all managers (parallel, batched)
+    Store.loadProgress = { done:0, total: managers.length * 3 };
 
     const histTasks = managers.map(m => async () => {
       const h = await Fetch.managerHistory(m.entryId);
@@ -2045,8 +2313,13 @@ const App = {
       if (t) Store.managerTransfers[m.entryId] = t;
       return t;
     });
+    const infoTasks = managers.map(m => async () => {
+      const i = await Fetch.managerInfo(m.entryId);
+      if (i) Store.managerInfos[m.entryId] = i;
+      return i;
+    });
 
-    await Fetch.batch([...histTasks, ...transTasks], 5);
+    await Fetch.batch([...histTasks, ...transTasks, ...infoTasks], 5);
 
     // Build matrices
     Store.leagueMatrix   = Process.buildLeagueRankMatrix(managers, Store.managerHistory);
@@ -2059,12 +2332,32 @@ const App = {
   },
 
   async loadMySquad(gw) {
-    const picks = await Fetch.managerPicks(CFG.myTeamId, gw);
+    const tid = CFG.myTeamId;
+    // Fetch picks + manager info in parallel
+    const [picks, info] = await Promise.all([
+      Fetch.managerPicks(tid, gw),
+      Fetch.managerInfo(tid),
+    ]);
+    if (info) Store.myManagerInfo = info;
     if (!picks) return;
     Store.myPicks    = picks;
     Store.mySquadData= Process.buildMySquad(picks, Store.bootstrap);
+
+    // Load element-summary for squad players (background, top 15)
+    this.loadPlayerFixtures((Store.mySquadData||[]).map(p=>p.id).slice(0,15));
+
     // Re-render if on other tab / mysquad
     if (Nav.current==='other' && Store.subtab['other']==='mysquad') Nav.goSubtab('other','mysquad');
+  },
+
+  async loadPlayerFixtures(playerIds) {
+    if (!playerIds?.length) return;
+    const tasks = playerIds.filter(id=>!Store.playerFixtures[id]).map(id => async () => {
+      const data = await Fetch.playerSummary(id);
+      if (data) Store.playerFixtures[id] = data;
+      return data;
+    });
+    if (tasks.length) await Fetch.batch(tasks, 4);
   },
 
   async loadSheets(url) {

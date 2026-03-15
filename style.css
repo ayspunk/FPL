@@ -952,3 +952,196 @@ code {
   border-radius: 3px;
   color: var(--green);
 }
+
+/* ══════════════════════════════════════════
+   POINTS CLASSES
+   ══════════════════════════════════════════ */
+.pts-great { color: #00e676; font-weight: 700; }
+.pts-good  { color: #448aff; }
+.pts-ok    { color: var(--text2); }
+.pts-bad   { color: #ff5252; }
+
+/* Captain / VC badge in lineup table */
+.cap-tag {
+  display: inline-block;
+  background: var(--gold);
+  color: #000;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  margin-left: 5px;
+  vertical-align: middle;
+}
+.vc-tag {
+  display: inline-block;
+  background: rgba(255,215,64,.18);
+  color: var(--gold);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  margin-left: 5px;
+  vertical-align: middle;
+}
+.cap-x2 {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--gold);
+  opacity: .85;
+}
+
+/* Row highlight for captain/vc */
+tr.row-cap  { background: rgba(255,215,64,.05); }
+tr.row-vc   { background: rgba(255,215,64,.02); }
+tr.row-best { background: rgba(255,215,64,.06); }
+
+/* Total pts row */
+tr.row-total-pts {
+  background: rgba(0,230,118,.04);
+}
+
+/* ══════════════════════════════════════════
+   EVALUATION SUMMARY STRIP
+   ══════════════════════════════════════════ */
+.eval-summary-strip {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.eval-stat {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  min-width: 120px;
+  flex: 1;
+}
+.eval-stat.highlight {
+  border-color: rgba(0,230,118,.25);
+  background: rgba(0,230,118,.04);
+}
+.eval-stat-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text3);
+  margin-bottom: 4px;
+}
+.eval-stat-val {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.eval-stat-val.dim {
+  color: var(--text3);
+  font-size: 12px;
+  font-weight: 400;
+  font-family: 'Barlow Condensed', sans-serif;
+}
+
+/* ══════════════════════════════════════════
+   EVALUATION BAR
+   ══════════════════════════════════════════ */
+.eval-bar {
+  height: 6px;
+  background: var(--bg4);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.eval-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width .6s ease;
+}
+
+/* ══════════════════════════════════════════
+   RANK CARD — pts extension
+   ══════════════════════════════════════════ */
+.rc-pts {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--gold);
+  margin-top: 6px;
+  line-height: 1;
+}
+.rc-pts span {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text3);
+  letter-spacing: .5px;
+}
+.rc-pts-rank {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text3);
+  letter-spacing: .5px;
+  margin-top: 2px;
+}
+
+/* ══════════════════════════════════════════
+   PITCH — pts chip on player
+   ══════════════════════════════════════════ */
+.p-chip-pts {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(0,0,0,.55);
+  margin-top: 1px;
+  text-shadow: 0 1px 2px rgba(0,0,0,.6);
+}
+.p-chip-pts.pts-great { color: #00e676; }
+.p-chip-pts.pts-good  { color: #448aff; }
+.p-chip-pts.pts-ok    { color: var(--text2); }
+.p-chip-pts.pts-bad   { color: #ff5252; }
+
+/* ══════════════════════════════════════════
+   EVAL ACCURACY GRID
+   ══════════════════════════════════════════ */
+.eval-accuracy-grid {
+  margin-top: 8px;
+}
+
+/* ══════════════════════════════════════════
+   SQUAD FIXTURE BADGES (element-summary)
+   ══════════════════════════════════════════ */
+.sc-fixtures {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.sc-fix {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.sc-fix.fix-easy {
+  background: rgba(0,200,83,.18);
+  color: #00e676;
+}
+.sc-fix.fix-med {
+  background: rgba(255,215,64,.15);
+  color: var(--gold);
+}
+.sc-fix.fix-hard {
+  background: rgba(255,82,82,.15);
+  color: #ff5252;
+}
