@@ -19,6 +19,9 @@ const CFG = {
   maxPerTeam:   3,
   sheetsUrl:    '',
   selectedLeagueIdx: 0,
+  // GitHub Pages JSON (same-origin, no CORS needed!)
+  // Set to '' to disable, or auto-detect from window.location
+  githubDataUrl: '',
   FPL: 'https://fantasy.premierleague.com/api/',
   PROXIES: [
     u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
@@ -335,6 +338,43 @@ const Fetch = {
   // force-fresh (bypass cache untuk data live)
   forceBootstrap()  { return this.fpl('bootstrap-static/', true); },
   forceLive(gw)     { return this.fpl('event/' + gw + '/live/', true); },
+
+  // GitHub Pages JSON (same-origin, no CORS proxy needed)
+  async githubJSON(filename) {
+    const base = CFG.githubDataUrl || this._detectGithubBase();
+    if (!base) return null;
+    const url = base + filename;
+    const hit = Cache.get(url);
+    if (hit) return hit.data;
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(8000), cache: 'no-cache' });
+      if (!r.ok) return null;
+      const data = await r.json();
+      Cache.set(url, data, Cache.TTL.LIVE); // 5 min cache
+      console.log(`[GitHub] ✓ ${filename}`);
+      return data;
+    } catch(e) {
+      console.log(`[GitHub] ✗ ${filename}: ${e.message}`);
+      return null;
+    }
+  },
+
+  _detectGithubBase() {
+    // Auto-detect if running on GitHub Pages
+    if (typeof window !== 'undefined' && window.location) {
+      const loc = window.location;
+      if (loc.hostname.includes('github.io')) {
+        const pathParts = loc.pathname.split('/').filter(Boolean);
+        const repoName = pathParts[0] || '';
+        return `${loc.origin}/${repoName}/data/`;
+      }
+      // Local development: try relative path
+      if (loc.hostname === 'localhost' || loc.hostname === '127.0.0.1' || loc.protocol === 'file:') {
+        return './data/';
+      }
+    }
+    return null;
+  },
 };
 
 // ═══════════════════════════════════════════════════════
@@ -2357,6 +2397,7 @@ const UI = {
     const map = {
       loading: ['Loading…',    ''],
       fpl:     ['✓ FPL API',   ''],
+      github:  ['✓ GitHub',    ''],
       cached:  ['⚡ Cached',    ''],
       sheets:  ['⚠ GSheets',   ' fallback'],
       error:   ['✗ Error',     ' error'],
@@ -2614,14 +2655,36 @@ const App = {
     if (bsCached) {
       if (cont) cont.innerHTML = H.loader(`⚡ Memuat dari cache…`);
     } else {
-      if (cont) cont.innerHTML = H.loader('Menghubungi FPL API…');
+      if (cont) cont.innerHTML = H.loader('Menghubungi data source…');
     }
 
-    // ── Step 1: Bootstrap + Fixtures (parallel, cached) ──
-    const [bootstrap, fixtures] = await Promise.all([
-      Fetch.bootstrap(),
-      Fetch.fixtures(),
-    ]);
+    // ── Step 0: Try GitHub Pages JSON (same-origin, no CORS) ──
+    const ghAll = await Fetch.githubJSON('all.json');
+    if (ghAll && !bsCached) {
+      // GitHub JSON available — use as sheetsData for computed data
+      Store.sheetsData = ghAll;
+      console.log('[App] GitHub JSON loaded as sheetsData');
+    }
+
+    // ── Step 0b: Try GitHub bootstrap.json (raw FPL data, same-origin) ──
+    let bootstrap = null, fixtures = null;
+    const ghBs = await Fetch.githubJSON('bootstrap.json');
+    const ghFx = await Fetch.githubJSON('fixtures.json');
+    if (ghBs && ghFx) {
+      bootstrap = ghBs;
+      fixtures  = ghFx;
+      console.log('[App] ✓ Using GitHub JSON as primary data source');
+      UI.setSrc('github');
+      Store.dataSource = 'github';
+    }
+
+    // ── Step 1: If no GitHub data, try FPL API via CORS proxy ──
+    if (!bootstrap) {
+      [bootstrap, fixtures] = await Promise.all([
+        Fetch.bootstrap(),
+        Fetch.fixtures(),
+      ]);
+    }
 
     if (!bootstrap) {
       const sheetsUrl = CFG.sheetsUrl || document.getElementById('sheets-url')?.value || '';
@@ -2667,8 +2730,9 @@ const App = {
     Store.currentGW = gw;
     document.getElementById('gw-badge').textContent = `GW ${gw}`;
 
-    // ── Step 2: Live event (cached 5m) ──
-    const liveData = await Fetch.liveEvent(gw);
+    // ── Step 2: Live event (try GitHub first, then CORS proxy) ──
+    let liveData = await Fetch.githubJSON('live.json');
+    if (!liveData) liveData = await Fetch.liveEvent(gw);
     Store.liveEvent = liveData;
 
     // ── Step 3: Process players ──
@@ -2677,7 +2741,7 @@ const App = {
     Process.applyScores(players);
 
     const elapsed = Date.now() - Store.loadStart;
-    const srcLabel = Store.cacheMisses === 0 ? 'cached' : 'fpl';
+    const srcLabel = Store.dataSource === 'github' ? 'github' : Store.cacheMisses === 0 ? 'cached' : 'fpl';
     UI.setSrc(srcLabel);
 
     // Render immediately
@@ -2745,11 +2809,22 @@ const App = {
 
   async loadMySquad(gw) {
     const tid = CFG.myTeamId;
-    // Fetch picks + manager info in parallel
-    const [picks, info] = await Promise.all([
+    // Fetch picks + manager info (try CORS proxy first, then GitHub fallback)
+    let [picks, info] = await Promise.all([
       Fetch.managerPicks(tid, gw),
       Fetch.managerInfo(tid),
     ]);
+
+    // GitHub fallback if CORS proxy failed
+    if (!picks) {
+      const ghPicks = await Fetch.githubJSON('picks.json');
+      if (ghPicks) { picks = ghPicks; console.log('[App] ✓ picks from GitHub fallback'); }
+    }
+    if (!info) {
+      const ghInfo = await Fetch.githubJSON('manager.json');
+      if (ghInfo) { info = ghInfo; console.log('[App] ✓ manager info from GitHub fallback'); }
+    }
+
     if (info) Store.myManagerInfo = info;
     if (!picks) return;
     Store.myPicks    = picks;
