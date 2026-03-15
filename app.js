@@ -1765,11 +1765,25 @@ const Render = {
   fdrInfo() {
     if (!Store.bootstrap) return H.info('Memerlukan FPL API.');
     const bs = Store.bootstrap;
-    const rows = [...bs.teams].sort((a,b)=>b.strength-a.strength).map((t,i) => {
-      const makebar = (v,col) => `<div class="score-bar-wrap" style="min-width:100px">
-        <div class="score-bar"><div class="score-bar-fill" style="width:${(v-1200)/4}%;background:${col}"></div></div>
+
+    // Min-max normalization from actual data
+    const allVals = bs.teams.flatMap(t => [
+      t.strength_attack_home, t.strength_attack_away,
+      t.strength_defence_home, t.strength_defence_away
+    ]);
+    const minV = Math.min(...allVals);
+    const maxV = Math.max(...allVals);
+    const range = maxV - minV || 1;
+
+    const makebar = (v,col) => {
+      const pct = Math.round(((v - minV) / range) * 100);
+      return `<div class="score-bar-wrap" style="min-width:100px">
+        <div class="score-bar"><div class="score-bar-fill" style="width:${pct}%;background:${col}"></div></div>
         <span class="mono dim" style="font-size:11px;min-width:36px">${v}</span>
       </div>`;
+    };
+
+    const rows = [...bs.teams].sort((a,b)=>b.strength-a.strength).map((t,i) => {
       return `<tr>
         <td class="dim">${i+1}</td>
         <td style="font-weight:700">${t.short_name}</td>
