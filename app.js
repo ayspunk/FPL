@@ -577,20 +577,27 @@ const Process = {
     }));
   },
 
-  // ── Manager History → Ranking array per GW ───────────
+  // ── Manager History → Overall Ranking array per GW ───────────
   buildRankingMatrix(managers, histories) {
     const allGWs = new Set();
-    Object.values(histories).forEach(h => {
-      const events = h?.current || (Array.isArray(h) ? h : []);
-      events.forEach(e => { if (e?.event) allGWs.add(e.event); });
-    });
-    const gwLabels = [...allGWs].sort((a,b)=>a-b);
+    const entryEvents = {};
+    for (const [key, val] of Object.entries(histories)) {
+      let events = [];
+      if (val && val.current && Array.isArray(val.current)) events = val.current;
+      else if (Array.isArray(val)) events = val;
+      entryEvents[key] = events;
+      events.forEach(e => {
+        const ev = Number(e.event || 0);
+        if (ev > 0) allGWs.add(ev);
+      });
+    }
+    const gwLabels = [...allGWs].sort((a,b) => a - b);
+    console.log(`[Matrix-Overall] GWs: ${gwLabels.length}`);
 
     const series = managers.map(m => {
-      const h = histories[m.entryId];
-      const hist = h?.current || (Array.isArray(h) ? h : []);
+      const hist = entryEvents[m.entryId] || entryEvents[String(m.entryId)] || [];
       const rankMap = {};
-      hist.forEach(e => { rankMap[e.event] = e.overall_rank; });
+      hist.forEach(e => { rankMap[Number(e.event)] = Number(e.overall_rank); });
       return {
         name:    m.entryName,
         entryId: m.entryId,
@@ -606,45 +613,55 @@ const Process = {
 
   // ── Manager History → League Ranking (position in league, not overall) ──
   buildLeagueRankMatrix(managers, histories) {
-    // Build position-in-league per GW from cumulative total_points
     const allGWs = new Set();
 
-    // Debug: log first history entry structure
-    const firstKey = Object.keys(histories)[0];
-    if (firstKey) {
-      const sample = histories[firstKey];
-      console.log('[Matrix] Sample history structure:', {
-        type: typeof sample,
-        isArray: Array.isArray(sample),
-        keys: sample ? Object.keys(sample).slice(0,5) : 'null',
-        hasCurrent: !!sample?.current,
-        currentLen: sample?.current?.length,
+    // Extract events from all history entries (handle any format)
+    const entryEvents = {}; // {entryId: [{event, points, ...}]}
+    for (const [key, val] of Object.entries(histories)) {
+      let events = [];
+      if (val && val.current && Array.isArray(val.current)) {
+        events = val.current;
+      } else if (Array.isArray(val)) {
+        events = val;
+      }
+      entryEvents[key] = events;
+      events.forEach(e => {
+        const ev = Number(e.event || e.Event || 0);
+        if (ev > 0) allGWs.add(ev);
       });
     }
 
-    Object.values(histories).forEach(h => {
-      // Handle both formats: {current:[...]} or raw array [...]
-      const events = h?.current || (Array.isArray(h) ? h : []);
-      events.forEach(e => { if (e?.event) allGWs.add(e.event); });
-    });
-    const gwLabels = [...allGWs].sort((a,b)=>a-b);
-    console.log(`[Matrix] GW labels: ${gwLabels.length} (${gwLabels.slice(0,5).join(',')}…)`);
+    const gwLabels = [...allGWs].sort((a,b) => a - b);
+    console.log(`[Matrix-League] Entries: ${Object.keys(entryEvents).length}, GWs: ${gwLabels.length}, sample keys: ${Object.keys(entryEvents).slice(0,3)}`);
 
-    // Per GW: rank all managers by cumulative total at that GW
+    if (!gwLabels.length) {
+      // Debug: show what we got
+      const firstKey = Object.keys(histories)[0];
+      if (firstKey) {
+        const v = histories[firstKey];
+        const c = v?.current;
+        console.warn('[Matrix-League] 0 GWs! First entry:', {
+          key: firstKey, type: typeof v, isArr: Array.isArray(v),
+          hasCurrent: !!c, currentIsArr: Array.isArray(c), currentLen: c?.length,
+          sample: c ? JSON.stringify(c[0]).slice(0,120) : (Array.isArray(v) ? JSON.stringify(v[0]).slice(0,120) : 'N/A'),
+        });
+      }
+    }
+
+    // Build cumulative points per GW per manager
     const ptsByGW = {};
     managers.forEach(m => {
-      const h = histories[m.entryId];
-      const hist = h?.current || (Array.isArray(h) ? h : []);
+      // Try both number and string key
+      const hist = entryEvents[m.entryId] || entryEvents[String(m.entryId)] || [];
       let cum = 0;
       gwLabels.forEach(gw => {
-        const ev = hist.find(e=>e.event===gw);
-        cum += ev?.points ?? 0;
+        const ev = hist.find(e => Number(e.event) === gw);
+        cum += Number(ev?.points) || 0;
         if (!ptsByGW[gw]) ptsByGW[gw] = {};
         ptsByGW[gw][m.entryId] = cum;
       });
     });
 
-    // Compute league rank per GW
     const series = managers.map(m => ({
       name:    m.entryName,
       entryId: m.entryId,
@@ -652,8 +669,7 @@ const Process = {
       ranks:   gwLabels.map(gw => {
         const pts = ptsByGW[gw] || {};
         const myPts = pts[m.entryId] ?? 0;
-        const rank  = Object.values(pts).filter(v=>v>myPts).length + 1;
-        return rank;
+        return Object.values(pts).filter(v => v > myPts).length + 1;
       }),
       totalPts: m.total,
       eventPts: m.eventTotal,
@@ -664,23 +680,30 @@ const Process = {
 
   // ── Transfer heatmap data ─────────────────────────────
   buildTransferMatrix(managers, transfers) {
-    // transfers = {entryId: [{event, element_in, element_out, ...}] or non-array}
+    if (!transfers || typeof transfers !== 'object') return { gwLabels:[], managers, rows:[] };
+
     const allGWs = new Set();
-    Object.values(transfers).forEach(arr => {
-      if (Array.isArray(arr)) arr.forEach(t => { if (t?.event) allGWs.add(t.event); });
-    });
-    const gwLabels = [...allGWs].sort((a,b)=>a-b);
+    for (const [key, val] of Object.entries(transfers)) {
+      if (Array.isArray(val)) {
+        val.forEach(t => {
+          const ev = Number(t?.event || 0);
+          if (ev > 0) allGWs.add(ev);
+        });
+      }
+    }
+    const gwLabels = [...allGWs].sort((a,b) => a - b);
 
     const rows = gwLabels.map(gw => {
       const row = { gw };
       managers.forEach(m => {
-        const trs = Array.isArray(transfers[m.entryId])
-          ? transfers[m.entryId].filter(t=>t.event===gw)
-          : [];
+        const arr = transfers[m.entryId] || transfers[String(m.entryId)];
+        const trs = Array.isArray(arr) ? arr.filter(t => Number(t.event) === gw) : [];
+
         // Check chips from history
-        const h = Store.managerHistory[m.entryId];
-        const chips = h?.chips || (Array.isArray(h) ? [] : []);
-        const chipThisGW = chips.find(c=>c.event===gw);
+        const h = Store.managerHistory[m.entryId] || Store.managerHistory[String(m.entryId)];
+        const chips = Array.isArray(h?.chips) ? h.chips : [];
+        const chipThisGW = chips.find(c => Number(c.event) === gw);
+
         row[m.entryId] = {
           count: trs.length,
           chip:  chipThisGW?.name || null,
