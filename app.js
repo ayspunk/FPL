@@ -24,10 +24,9 @@ const CFG = {
   githubDataUrl: '',
   FPL: 'https://fantasy.premierleague.com/api/',
   PROXIES: [
-    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
     u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
-    u => `https://thingproxy.freeboard.io/fetch/${u}`,
+    u => `https://corsproxy.org/?url=${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
   ],
   GW_WEIGHTS: {
     'FDR Jangka Pendek': { GK:.35, DEF:.30, MID:.30, FWD:.35 },
@@ -1822,7 +1821,7 @@ const Render = {
         <div class="table-wrap max-h"><table>
           <thead><tr><th class="c">#</th><th>Klub</th>
             <th class="c">P</th><th class="c">W</th><th class="c">D</th><th class="c">L</th>
-            <th class="c">GD</th><th class="c">Pts</th><th>Form</th><th class="c">Strength</th>
+            <th class="c">GF</th><th class="c">GA</th><th class="c">GD</th><th class="c">Pts</th><th>Form</th><th class="c">Strength</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table></div>`;
@@ -1834,6 +1833,7 @@ const Render = {
       <td class="epl-pos">${i+1}</td>
       <td class="epl-team">${t.club} <span class="epl-short">${t.short}</span></td>
       <td class="c dim">–</td><td class="c dim">–</td><td class="c dim">–</td><td class="c dim">–</td>
+      <td class="c dim">–</td><td class="c dim">–</td>
       <td class="c dim">–</td><td class="epl-pts" style="color:var(--text2)">–</td>
       <td><div class="epl-form"></div></td>
       <td class="epl-str c">${t.strength}</td>
@@ -1844,7 +1844,7 @@ const Render = {
       <div class="table-wrap max-h"><table>
         <thead><tr><th class="c">#</th><th>Klub</th>
           <th class="c">P</th><th class="c">W</th><th class="c">D</th><th class="c">L</th>
-          <th class="c">GD</th><th class="c">Pts</th><th>Form</th><th class="c">Strength</th>
+          <th class="c">GF</th><th class="c">GA</th><th class="c">GD</th><th class="c">Pts</th><th>Form</th><th class="c">Strength</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table></div>`;
@@ -1860,6 +1860,8 @@ const Render = {
       <td class="epl-team">${t.club||t.name||'?'} <span class="epl-short">${t.short||t.short_name||''}</span></td>
       <td class="c mono dim">${t.p||0}</td><td class="c mono">${t.w||0}</td>
       <td class="c mono dim">${t.d||0}</td><td class="c mono dim">${t.l||0}</td>
+      <td class="c mono" style="color:var(--green)">${t.gf||0}</td>
+      <td class="c mono" style="color:var(--red)">${t.ga||0}</td>
       <td class="c mono ${(t.gd||0)>0?'s-hi':(t.gd||0)<0?'s-lo':''}">${(t.gd||0)>0?'+':''}${t.gd||0}</td>
       <td class="epl-pts">${t.pts||0}</td>
       <td><div class="epl-form">${dots}</div></td>
@@ -1875,7 +1877,7 @@ const Render = {
     const entries  = ls ? Process.processLeague(ls) : managers;
 
     if (!entries.length)
-      return H.info('Data Liga belum tersedia. Pastikan League ID benar di Settings dan klik Refresh.');
+      return UI.leagueSelectHTML() + H.info('Data Liga belum tersedia. Klik Refresh atau tunggu data dimuat dari FPL API.');
 
     const currentGW = Store.currentGW || 0;
     const myName    = CFG.myTeamName.toLowerCase();
@@ -1905,6 +1907,7 @@ const Render = {
     }).join('');
 
     return `
+      ${UI.leagueSelectHTML()}
       <div class="stat-strip">
         <div class="stat-box"><div class="stat-label">Peserta</div><div class="stat-val">${entries.length}</div></div>
         <div class="stat-box"><div class="stat-label">GW Aktif</div><div class="stat-val blue">${currentGW}</div></div>
@@ -1927,6 +1930,7 @@ const Render = {
   // ── League Charts ──────────────────────────────────────
   leagueCharts() {
     return `
+      ${UI.leagueSelectHTML()}
       <div class="section-title">Grafik Liga</div>
       <div class="charts-grid">
         <div class="chart-card wide">
@@ -1946,14 +1950,14 @@ const Render = {
 
   // ── Transfer & Chips ───────────────────────────────────
   leagueTransfer() {
+    const selHTML = UI.leagueSelectHTML();
     const matrix = Store.transferMatrix;
     if (!matrix?.rows?.length) {
-      // Try sheets fallback
       const sd = Store.sheetsData?.league;
-      if (sd?.transfer?.length && sd?.managers?.length) return this._transferFromSheets(sd);
-      return H.info('Data Transfer & Chips sedang dimuat dari FPL API, atau tambahkan Google Sheets URL di Settings.');
+      if (sd?.transfer?.length && sd?.managers?.length) return selHTML + this._transferFromSheets(sd);
+      return selHTML + H.info('Data Transfer & Chips sedang dimuat dari FPL API, atau tambahkan Google Sheets URL di Settings.');
     }
-    return this._renderTransferHeatmap(matrix);
+    return selHTML + this._renderTransferHeatmap(matrix);
   },
 
   _renderTransferHeatmap(matrix) {
@@ -2129,13 +2133,10 @@ const Render = {
           oninput="UI.updateWeightTotals('swt')"></td>`).join('')}
       </tr>`).join('');
     const wTots = pos.map(p=>`<td class="wt-total" id="swt-${p}">–</td>`).join('');
-    const leagues = CFG.leagues.map((l,i)=>
-      `<option value="${i}" ${i===CFG.selectedLeagueIdx?'selected':''}>${l.name} (ID: ${l.id})</option>`
-    ).join('');
     return `
       <div class="settings-grid">
         <div class="settings-card">
-          <h3>Identitas & Liga</h3>
+          <h3>Identitas</h3>
           <div class="field-group">
             <label>FPL Team ID Saya <span style="color:var(--text3)">(untuk My Squad, Transfer)</span></label>
             <input type="number" id="my-team-id" value="${CFG.myTeamId||''}" placeholder="contoh: 1234567">
@@ -2144,10 +2145,6 @@ const Render = {
           <div class="field-group">
             <label>Nama Tim Saya <span style="color:var(--text3)">(untuk highlight di tabel)</span></label>
             <input type="text" id="my-team-name" value="${CFG.myTeamName}" placeholder="r00kie">
-          </div>
-          <div class="field-group">
-            <label>Liga Aktif</label>
-            <select id="league-idx-sel">${leagues}</select>
           </div>
           <div class="field-group">
             <label>Min Menit Dimainkan</label>
@@ -2274,10 +2271,13 @@ const Charts = {
   },
 
   buildAll() {
-    const matrix = Store.leagueMatrix;
-    if (matrix?.series?.length) {
-      this.buildBump(matrix);
-      this.buildRankingLine(matrix);
+    const leagueMatrix = Store.leagueMatrix;
+    if (leagueMatrix?.series?.length) {
+      this.buildBump(leagueMatrix);
+    }
+    const overallMatrix = Store.overallRankMatrix;
+    if (overallMatrix?.series?.length) {
+      this.buildRankingLine(overallMatrix);
     }
     if (Store.leagueManagers?.length) this.buildStandingsBar(Store.leagueManagers);
   },
@@ -2351,6 +2351,7 @@ const Charts = {
     this.destroy('ranking');
     const canvas=document.getElementById('chart-ranking'); if(!canvas) return;
     const { gwLabels, series } = matrix;
+    if (!gwLabels?.length) return;
     const datasets=series.map((s,i)=>({
       label: s.name,
       data:  s.ranks,
@@ -2363,11 +2364,17 @@ const Charts = {
       type:'line', data:{labels:gwLabels.map(g=>`GW${g}`), datasets},
       options:{
         responsive:true, maintainAspectRatio:false,
-        plugins:{ legend:{display:false}, tooltip:{mode:'index',intersect:false} },
+        plugins:{ legend:{display:false}, tooltip:{mode:'index',intersect:false,
+          callbacks:{label:ctx=>`${ctx.dataset.label}: #${(ctx.raw||0).toLocaleString()}`}
+        }},
         scales:{
           x:{grid:{color:'rgba(30,48,72,.5)'},ticks:{color:'#4a6a88',font:{size:10}}},
-          y:{reverse:true,min:1,grid:{color:'rgba(30,48,72,.5)'},
-             ticks:{color:'#4a6a88',stepSize:1,callback:v=>`#${v}`}},
+          y:{reverse:true, grid:{color:'rgba(30,48,72,.5)'},
+             ticks:{color:'#4a6a88',callback:v=>{
+               if(v>=1e6) return (v/1e6).toFixed(1)+'M';
+               if(v>=1e3) return (v/1e3).toFixed(0)+'K';
+               return '#'+v;
+             }}},
         },
       },
     });
@@ -2612,11 +2619,37 @@ const UI = {
   },
 
   buildLeagueSelect() {
-    const sel=document.getElementById('league-select'); if(!sel) return;
-    sel.innerHTML=CFG.leagues.map((l,i)=>
-      `<option value="${i}" ${i===CFG.selectedLeagueIdx?'selected':''}>${l.name}</option>`
+    // No-op: league selector is now inline in League tab renderers
+  },
+
+  leagueSelectHTML() {
+    const leagues = CFG.leagues.map((l,i)=>
+      `<option value="${i}" ${i===CFG.selectedLeagueIdx?'selected':''}>${l.name} (ID: ${l.id})</option>`
     ).join('');
-    sel.onchange=e=>{ CFG.selectedLeagueIdx=+e.target.value; App.refresh(); };
+    return `<div class="league-sel-bar">
+      <label class="league-sel-label">🏆 Liga Aktif</label>
+      <select class="league-sel" onchange="UI.switchLeague(+this.value)">${leagues}</select>
+    </div>`;
+  },
+
+  switchLeague(idx) {
+    CFG.selectedLeagueIdx = idx;
+    try {
+      const saved = JSON.parse(localStorage.getItem('fplDashCfg')||'{}');
+      saved.selectedLeagueIdx = idx;
+      localStorage.setItem('fplDashCfg', JSON.stringify(saved));
+    } catch {}
+    // Reload league data only (not full refresh)
+    Store.leagueData = null;
+    Store.leagueManagers = [];
+    Store.leagueMatrix = null;
+    Store.overallRankMatrix = null;
+    Store.transferMatrix = null;
+    Store.managerHistory = {};
+    Store.managerTransfers = {};
+    Store.managerInfos = {};
+    Nav.goTab('league');
+    App.loadLeagueData(Store.currentGW);
   },
 
   saveSettings() {
@@ -2625,7 +2658,6 @@ const UI = {
     CFG.sheetsUrl  = document.getElementById('sheets-url')?.value    || '';
     CFG.minMinutes = +document.getElementById('min-minutes')?.value  || 450;
     CFG.maxPerTeam = +document.getElementById('max-per-team')?.value || 3;
-    CFG.selectedLeagueIdx = +document.getElementById('league-idx-sel')?.value || 0;
     try {
       localStorage.setItem('fplDashCfg', JSON.stringify({
         myTeamId:CFG.myTeamId, myTeamName:CFG.myTeamName,
@@ -2812,8 +2844,9 @@ const App = {
     await Fetch.batch([...histTasks, ...transTasks, ...infoTasks], 5);
 
     // Build matrices
-    Store.leagueMatrix   = Process.buildLeagueRankMatrix(managers, Store.managerHistory);
-    Store.transferMatrix = Process.buildTransferMatrix(managers, Store.managerTransfers);
+    Store.leagueMatrix       = Process.buildLeagueRankMatrix(managers, Store.managerHistory);
+    Store.overallRankMatrix  = Process.buildRankingMatrix(managers, Store.managerHistory);
+    Store.transferMatrix     = Process.buildTransferMatrix(managers, Store.managerTransfers);
 
     UI.setSrc('fpl');
 
