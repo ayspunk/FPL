@@ -75,6 +75,37 @@
   --chip-wc: #7c3aed; --chip-fh: #0284c7; --chip-bb: #059669; --chip-tc: #d97706;
 }
 
+/* ── Steel Theme (mid-tone) ── */
+[data-theme="steel"] {
+  --bg:       #1e2633;
+  --bg2:      #252e3c;
+  --bg3:      #2c3644;
+  --bg4:      #34404f;
+  --bg5:      #3c4a5a;
+  --border:   #3e4f62;
+  --border2:  #506378;
+  --border3:  #627890;
+  --green:    #34d399;
+  --green2:   #10b981;
+  --green3:   #065f46;
+  --gold:     #fbbf24;
+  --gold2:    #f59e0b;
+  --blue:     #60a5fa;
+  --blue2:    #3b82f6;
+  --red:      #f87171;
+  --red2:     #b91c1c;
+  --orange:   #fb923c;
+  --purple:   #a78bfa;
+  --text:     #e2e8f0;
+  --text2:    #94a3b8;
+  --text3:    #64748b;
+  --text4:    #475569;
+  --pitch-bg: linear-gradient(180deg,#1a3628 0%,#1e4030 30%,#224838 60%,#1e4030 80%,#1a3628 100%);
+  --hdr-bg:   linear-gradient(135deg, #1e2633 0%, #252e3c 100%);
+  --fdr1: #34d399; --fdr2: #a3e635; --fdr3: #facc15; --fdr4: #fb923c; --fdr5: #f87171;
+  --chip-wc: #8b5cf6; --chip-fh: #38bdf8; --chip-bb: #34d399; --chip-tc: #fbbf24;
+}
+
 /* ── Midnight Theme ── */
 [data-theme="midnight"] {
   --bg:       #0f0f1a;
