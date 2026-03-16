@@ -181,45 +181,61 @@ const Cache = {
 // 4. FETCH LAYER  (semua request melalui Cache)
 // ═══════════════════════════════════════════════════════
 const Fetch = {
+  _lastWorkingProxy: -1, // -1 = direct, 0+ = proxy index
+  _requestCount: 0,
+
   async _net(url, timeout = 12000) {
     const errors = [];
+    this._requestCount++;
 
-    // 1) Try direct fetch first (works in some browsers/networks without CORS issue)
-    try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(timeout) });
-      if (r.ok) {
-        console.log(`[FPL] ✓ Direct fetch OK: ${url.slice(-40)}`);
-        return await r.json();
-      }
-      errors.push(`direct: HTTP ${r.status}`);
-    } catch (e) {
-      errors.push(`direct: ${e.name||e.message}`);
+    // Rate-limit protection: small delay every 3rd request
+    if (this._requestCount > 1 && this._requestCount % 3 === 0) {
+      await new Promise(r => setTimeout(r, 300));
     }
 
-    // 2) Try each CORS proxy in order
+    // Build ordered list: try last working method first
+    const methods = [];
+    if (this._lastWorkingProxy === -1) {
+      methods.push({ type:'direct', idx:-1 });
+    }
+    // Add last working proxy first
+    if (this._lastWorkingProxy >= 0) {
+      methods.push({ type:'proxy', idx:this._lastWorkingProxy });
+    }
+    // Then direct if not already
+    if (this._lastWorkingProxy !== -1) {
+      methods.push({ type:'direct', idx:-1 });
+    }
+    // Then remaining proxies
     for (let i = 0; i < CFG.PROXIES.length; i++) {
-      const px = CFG.PROXIES[i];
-      const proxyUrl = px(url);
+      if (i !== this._lastWorkingProxy) {
+        methods.push({ type:'proxy', idx:i });
+      }
+    }
+
+    for (const method of methods) {
+      const fetchUrl = method.type === 'direct' ? url : CFG.PROXIES[method.idx](url);
+      const label = method.type === 'direct' ? 'direct' : `proxy#${method.idx+1}`;
       try {
-        const r = await fetch(proxyUrl, { signal: AbortSignal.timeout(timeout) });
+        const r = await fetch(fetchUrl, { signal: AbortSignal.timeout(timeout) });
         if (r.ok) {
           const text = await r.text();
           try {
             const data = JSON.parse(text);
-            console.log(`[FPL] ✓ Proxy #${i+1} OK: ${url.slice(-40)}`);
+            this._lastWorkingProxy = method.idx;
             return data;
           } catch {
-            errors.push(`proxy#${i+1}: invalid JSON`);
+            errors.push(`${label}: invalid JSON`);
           }
         } else {
-          errors.push(`proxy#${i+1}: HTTP ${r.status}`);
+          errors.push(`${label}: HTTP ${r.status}`);
         }
       } catch (e) {
-        errors.push(`proxy#${i+1}: ${e.name||e.message}`);
+        errors.push(`${label}: ${e.name||e.message}`);
       }
     }
 
-    console.warn(`[FPL] ✗ All fetch failed for ${url.slice(-50)}:`, errors);
+    console.warn(`[FPL] ✗ All failed for ${url.split('/').slice(-3).join('/')}:`, errors.join(', '));
     Store._lastFetchErrors = errors;
     return null;
   },
@@ -1942,13 +1958,47 @@ const Render = {
 
   // ── League Charts ──────────────────────────────────────
   leagueCharts() {
+    const managers = Store.leagueManagers || [];
+    const histCount = Object.keys(Store.managerHistory).length;
+    const hasMatrix = Store.leagueMatrix?.gwLabels?.length > 0;
+    const ligaName = Store.leagueData?.league?.name || CFG.leagues[CFG.selectedLeagueIdx]?.name || '–';
+
+    // Data status bar
+    const statusHtml = `<div class="eval-summary-strip" style="margin-bottom:12px">
+      <div class="eval-stat">
+        <div class="eval-stat-label">Liga</div>
+        <div class="eval-stat-val" style="font-size:13px">${ligaName}</div>
+      </div>
+      <div class="eval-stat">
+        <div class="eval-stat-label">Manajer</div>
+        <div class="eval-stat-val">${managers.length}</div>
+      </div>
+      <div class="eval-stat" ${histCount===0?'style="border-color:rgba(255,82,82,.3)"':''}>
+        <div class="eval-stat-label">History Loaded</div>
+        <div class="eval-stat-val" style="color:${histCount>0?'var(--green)':'var(--red)'}">${histCount} / ${managers.length}</div>
+      </div>
+      <div class="eval-stat">
+        <div class="eval-stat-label">GW Data</div>
+        <div class="eval-stat-val" style="color:${hasMatrix?'var(--green)':'var(--red)'}">${hasMatrix?Store.leagueMatrix.gwLabels.length+' GW':'–'}</div>
+      </div>
+      ${histCount===0&&managers.length>0?`<div class="eval-stat" style="flex:2">
+        <div class="eval-stat-label" style="color:var(--red)">⚠ History fetch gagal</div>
+        <div class="eval-stat-val dim" style="font-size:11px">CORS proxy mungkin rate-limited. Klik Retry atau buka Console (F12) untuk detail.</div>
+      </div>`:''}
+    </div>
+    ${histCount===0&&managers.length>0?`<div class="btn-row" style="margin-bottom:16px">
+      <button class="btn btn-primary" onclick="App.loadLeagueData(Store.currentGW)">↻ Retry Fetch History</button>
+      <button class="btn btn-secondary" onclick="UI.clearCache('all');App.loadLeagueData(Store.currentGW)">🗑 Clear Cache & Retry</button>
+    </div>`:''}`;
+
     return `
       ${UI.leagueSelectHTML()}
+      ${statusHtml}
       <div class="section-title">Grafik Liga</div>
       <div class="charts-grid">
         <div class="chart-card wide">
           <div class="chart-title">📈 Ranking per GW — Bump Chart (posisi dalam liga)</div>
-          <div id="bump-chart-wrap" class="bump-svg-wrap">${H.loader('Membangun chart…')}</div>
+          <div id="bump-chart-wrap" class="bump-svg-wrap">${hasMatrix?H.loader('Membangun chart…'):H.info('Data ranking per GW belum tersedia. History manajer perlu dimuat terlebih dahulu.')}</div>
         </div>
         <div class="chart-card">
           <div class="chart-title">📉 Overall Rank Trend</div>
@@ -2988,58 +3038,96 @@ const App = {
       if (cont && !Store.leagueManagers?.length) cont.innerHTML = H.loader('Memuat data liga…');
     }
 
-    // Fetch standings (force fresh if Store was cleared = league switch)
+    // Fetch standings (force fresh if league was switched)
     let ls = null;
     const forceFresh = !Store.leagueManagers?.length;
     try {
-      if (forceFresh) {
-        // Force bypass cache for league switch
-        ls = await Fetch.fpl('leagues-classic/' + lid + '/standings/?page_standings=1', true);
-      } else {
-        ls = await Fetch.leagueStandings(lid);
-      }
-    } catch(e) { console.warn('[League]', e); }
+      ls = forceFresh
+        ? await Fetch.fpl('leagues-classic/' + lid + '/standings/?page_standings=1', true)
+        : await Fetch.leagueStandings(lid);
+    } catch(e) { console.warn('[League] standings error:', e); }
+
     if (!ls) {
       if (Nav.current === 'league') Nav.goTab('league');
       return;
     }
     Store.leagueData = ls;
-    const managers   = Process.processLeague(ls);
+    const managers = Process.processLeague(ls);
     Store.leagueManagers = managers;
+    console.log(`[League] Standings OK: ${managers.length} managers in ${ls.league?.name||'?'}`);
 
-    // Quick render rekap while history loads
+    // Quick render rekap
     if (Nav.current === 'league') Nav.goTab('league');
 
-    // Fetch history + transfers + info
-    Store.loadProgress = { done:0, total: managers.length * 3 };
+    // ── Fetch history for ALL managers (priority #1 for charts) ──
+    // Use lower concurrency + delay to avoid proxy rate-limiting
+    console.log(`[League] Fetching history for ${managers.length} managers…`);
+    let histOK = 0, histFail = 0;
 
     const histTasks = managers.map(m => async () => {
-      try { const h = await Fetch.managerHistory(m.entryId); if (h) Store.managerHistory[m.entryId] = h; } catch {}
-    });
-    const transTasks = managers.map(m => async () => {
-      try { const t = await Fetch.managerTransfers(m.entryId); if (t) Store.managerTransfers[m.entryId] = t; } catch {}
-    });
-    const infoTasks = managers.map(m => async () => {
-      try { const i = await Fetch.managerInfo(m.entryId); if (i) Store.managerInfos[m.entryId] = i; } catch {}
+      try {
+        const h = await Fetch.managerHistory(m.entryId);
+        if (h) {
+          Store.managerHistory[m.entryId] = h;
+          histOK++;
+        } else { histFail++; }
+      } catch { histFail++; }
     });
 
-    await Fetch.batch([...histTasks, ...transTasks, ...infoTasks], 5);
+    // Concurrency 3 (not 5) to reduce proxy rate-limit
+    await Fetch.batch(histTasks, 3);
+    console.log(`[League] History via proxy: ${histOK} OK, ${histFail} failed (of ${managers.length})`);
 
-    // Build matrices
-    const histCount = Object.keys(Store.managerHistory).length;
-    console.log(`[League] History: ${histCount}/${managers.length}`);
+    // GitHub fallback: if proxy failed, try loading history.json
+    if (histOK === 0 && managers.length > 0) {
+      console.log('[League] Trying GitHub history.json fallback…');
+      const ghHist = await Fetch.githubJSON('history.json');
+      if (ghHist && Array.isArray(ghHist) && ghHist.length > 0) {
+        // Group by entry_id
+        const entryIds = new Set(managers.map(m => m.entryId));
+        const grouped = {};
+        ghHist.forEach(row => {
+          const eid = row.entry_id;
+          if (!entryIds.has(eid)) return;
+          if (!grouped[eid]) grouped[eid] = { current: [] };
+          grouped[eid].current.push(row);
+        });
+        Object.assign(Store.managerHistory, grouped);
+        histOK = Object.keys(grouped).length;
+        console.log(`[League] GitHub fallback: ${histOK} managers loaded from history.json`);
+      }
+    }
 
-    if (histCount > 0) {
+    // Build matrices immediately after history (don't wait for transfers)
+    if (histOK > 0) {
       Store.leagueMatrix      = Process.buildLeagueRankMatrix(managers, Store.managerHistory);
       Store.overallRankMatrix  = Process.buildRankingMatrix(managers, Store.managerHistory);
+      console.log(`[League] Matrix built: ${Store.leagueMatrix?.gwLabels?.length} GWs, ${Store.leagueMatrix?.series?.length} series`);
+    } else {
+      console.warn(`[League] ⚠ No history data — charts will not render. Proxy may be rate-limiting.`);
     }
-    Store.transferMatrix = Process.buildTransferMatrix(managers, Store.managerTransfers);
 
-    // Re-render with full data + charts
+    // Re-render with chart data available
     if (Nav.current === 'league') {
       Nav.goTab('league');
       if (Store.subtab['league'] === 'charts') setTimeout(()=>Charts.buildAll(), 200);
     }
+
+    // ── Fetch transfers + info in background (lower priority) ──
+    const bgTasks = [
+      ...managers.map(m => async () => {
+        try { const t = await Fetch.managerTransfers(m.entryId); if (t) Store.managerTransfers[m.entryId] = t; } catch {}
+      }),
+      ...managers.map(m => async () => {
+        try { const i = await Fetch.managerInfo(m.entryId); if (i) Store.managerInfos[m.entryId] = i; } catch {}
+      }),
+    ];
+    await Fetch.batch(bgTasks, 3);
+    Store.transferMatrix = Process.buildTransferMatrix(managers, Store.managerTransfers);
+    console.log(`[League] Transfers+Info done. Transfer matrix: ${Store.transferMatrix?.rows?.length||0} GWs`);
+
+    // Final re-render
+    if (Nav.current === 'league') Nav.goTab('league');
   },
 
   async loadMySquad(gw) {
