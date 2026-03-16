@@ -2519,8 +2519,8 @@ const Charts = {
 // 9. UI HELPERS
 // ═══════════════════════════════════════════════════════
 const UI = {
-  THEMES: ['dark','light','midnight'],
-  THEME_ICONS: {dark:'🌙',light:'☀️',midnight:'🌌'},
+  THEMES: ['dark','steel','light','midnight'],
+  THEME_ICONS: {dark:'🌙',steel:'🌤',light:'☀️',midnight:'🌌'},
 
   initTheme() {
     const saved = localStorage.getItem('fplDashTheme') || 'dark';
@@ -2790,7 +2790,8 @@ const UI = {
       saved.selectedLeagueIdx = idx;
       localStorage.setItem('fplDashCfg', JSON.stringify(saved));
     } catch {}
-    // Reload league data only (not full refresh)
+
+    // Clear ALL league-related data
     Store.leagueData = null;
     Store.leagueManagers = [];
     Store.leagueMatrix = null;
@@ -2799,7 +2800,17 @@ const UI = {
     Store.managerHistory = {};
     Store.managerTransfers = {};
     Store.managerInfos = {};
-    Nav.goTab('league');
+
+    // Invalidate cache for ALL leagues (standings + manager data)
+    CFG.leagues.forEach(l => {
+      Cache.invalidate(CFG.FPL + 'leagues-classic/' + l.id + '/standings/?page_standings=1');
+    });
+
+    // Show loading immediately
+    const cont = document.getElementById('content-league');
+    if (cont) cont.innerHTML = H.loader(`Memuat data ${CFG.leagues[idx]?.name || 'liga'}…`);
+
+    // Fetch new league data
     App.loadLeagueData(Store.currentGW);
   },
 
@@ -2977,9 +2988,17 @@ const App = {
       if (cont && !Store.leagueManagers?.length) cont.innerHTML = H.loader('Memuat data liga…');
     }
 
-    // Fetch standings
+    // Fetch standings (force fresh if Store was cleared = league switch)
     let ls = null;
-    try { ls = await Fetch.leagueStandings(lid); } catch(e) { console.warn('[League]', e); }
+    const forceFresh = !Store.leagueManagers?.length;
+    try {
+      if (forceFresh) {
+        // Force bypass cache for league switch
+        ls = await Fetch.fpl('leagues-classic/' + lid + '/standings/?page_standings=1', true);
+      } else {
+        ls = await Fetch.leagueStandings(lid);
+      }
+    } catch(e) { console.warn('[League]', e); }
     if (!ls) {
       if (Nav.current === 'league') Nav.goTab('league');
       return;
