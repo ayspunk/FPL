@@ -579,16 +579,16 @@ const Process = {
 
   // ── Manager History → Ranking array per GW ───────────
   buildRankingMatrix(managers, histories) {
-    // histories = {entryId: history_data}
-    // Returns: {gwLabels:[], series:[{name, entryId, ranks:[]}]}
     const allGWs = new Set();
     Object.values(histories).forEach(h => {
-      (h?.current||[]).forEach(e => allGWs.add(e.event));
+      const events = h?.current || (Array.isArray(h) ? h : []);
+      events.forEach(e => { if (e?.event) allGWs.add(e.event); });
     });
     const gwLabels = [...allGWs].sort((a,b)=>a-b);
 
     const series = managers.map(m => {
-      const hist = histories[m.entryId]?.current || [];
+      const h = histories[m.entryId];
+      const hist = h?.current || (Array.isArray(h) ? h : []);
       const rankMap = {};
       hist.forEach(e => { rankMap[e.event] = e.overall_rank; });
       return {
@@ -608,15 +608,33 @@ const Process = {
   buildLeagueRankMatrix(managers, histories) {
     // Build position-in-league per GW from cumulative total_points
     const allGWs = new Set();
+
+    // Debug: log first history entry structure
+    const firstKey = Object.keys(histories)[0];
+    if (firstKey) {
+      const sample = histories[firstKey];
+      console.log('[Matrix] Sample history structure:', {
+        type: typeof sample,
+        isArray: Array.isArray(sample),
+        keys: sample ? Object.keys(sample).slice(0,5) : 'null',
+        hasCurrent: !!sample?.current,
+        currentLen: sample?.current?.length,
+      });
+    }
+
     Object.values(histories).forEach(h => {
-      (h?.current||[]).forEach(e => allGWs.add(e.event));
+      // Handle both formats: {current:[...]} or raw array [...]
+      const events = h?.current || (Array.isArray(h) ? h : []);
+      events.forEach(e => { if (e?.event) allGWs.add(e.event); });
     });
     const gwLabels = [...allGWs].sort((a,b)=>a-b);
+    console.log(`[Matrix] GW labels: ${gwLabels.length} (${gwLabels.slice(0,5).join(',')}…)`);
 
     // Per GW: rank all managers by cumulative total at that GW
     const ptsByGW = {};
     managers.forEach(m => {
-      const hist = histories[m.entryId]?.current || [];
+      const h = histories[m.entryId];
+      const hist = h?.current || (Array.isArray(h) ? h : []);
       let cum = 0;
       gwLabels.forEach(gw => {
         const ev = hist.find(e=>e.event===gw);
@@ -646,18 +664,23 @@ const Process = {
 
   // ── Transfer heatmap data ─────────────────────────────
   buildTransferMatrix(managers, transfers) {
-    // transfers = {entryId: [{event, element_in, element_out, ...}]}
+    // transfers = {entryId: [{event, element_in, element_out, ...}] or non-array}
     const allGWs = new Set();
-    Object.values(transfers).forEach(arr => arr?.forEach(t => allGWs.add(t.event)));
+    Object.values(transfers).forEach(arr => {
+      if (Array.isArray(arr)) arr.forEach(t => { if (t?.event) allGWs.add(t.event); });
+    });
     const gwLabels = [...allGWs].sort((a,b)=>a-b);
 
     const rows = gwLabels.map(gw => {
       const row = { gw };
       managers.forEach(m => {
-        const trs = (transfers[m.entryId]||[]).filter(t=>t.event===gw);
+        const trs = Array.isArray(transfers[m.entryId])
+          ? transfers[m.entryId].filter(t=>t.event===gw)
+          : [];
         // Check chips from history
-        const chipThisGW = Store.managerHistory[m.entryId]?.chips
-                          ?.find(c=>c.event===gw);
+        const h = Store.managerHistory[m.entryId];
+        const chips = h?.chips || (Array.isArray(h) ? [] : []);
+        const chipThisGW = chips.find(c=>c.event===gw);
         row[m.entryId] = {
           count: trs.length,
           chip:  chipThisGW?.name || null,
@@ -2195,7 +2218,8 @@ const Render = {
 
     // Detect chips already used
     const hist = Store.managerHistory[CFG.myTeamId];
-    const usedChips = new Set((hist?.chips || []).map(c => c.name.toLowerCase().replace(/[_ ]/g,'')));
+    const chipList = hist?.chips || [];
+    const usedChips = new Set(chipList.map(c => c.name.toLowerCase().replace(/[_ ]/g,'')));
     const allChips = [
       { key:'wildcard',  label:'🃏 Wildcard',      short:'WC',  used: usedChips.has('wildcard'), desc:'Ganti seluruh 15 pemain tanpa penalti poin.' },
       { key:'freehit',   label:'🎯 Free Hit',      short:'FH',  used: usedChips.has('freehit'),  desc:'Skuad berubah 1 GW saja, lalu kembali.' },
