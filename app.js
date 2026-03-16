@@ -37,6 +37,21 @@ const CFG = {
     'Saves (GK)':        { GK:.20, DEF:.00, MID:.00, FWD:.00 },
     'Double GW':         { GK:.00, DEF:.00, MID:.00, FWD:.00 },
   },
+  SCOUT_WEIGHTS: {
+    'FDR Jangka Pendek':  {GK:.15,DEF:.15,MID:.15,FWD:.15},
+    'FDR Jangka Menengah':{GK:.10,DEF:.10,MID:.10,FWD:.10},
+    'Home Advantage':     {GK:.10,DEF:.05,MID:.05,FWD:.05},
+    'Form 3 GW':          {GK:.15,DEF:.10,MID:.15,FWD:.15},
+    'Points Per Game':    {GK:.20,DEF:.15,MID:.10,FWD:.10},
+    'xGI':                {GK:.00,DEF:.10,MID:.10,FWD:.20},
+    'xGC (Defensive)':    {GK:.00,DEF:.15,MID:.10,FWD:.00},
+    'Saves (GK)':         {GK:.15,DEF:.00,MID:.00,FWD:.00},
+    'ICT Index':          {GK:.00,DEF:.05,MID:.10,FWD:.10},
+    'Value (pts/£)':      {GK:.02,DEF:.02,MID:.02,FWD:.02},
+    'Transfer Momentum':  {GK:.08,DEF:.08,MID:.08,FWD:.08},
+    'Suspension Risk':    {GK:.05,DEF:.05,MID:.05,FWD:.05},
+    'Double GW':          {GK:.00,DEF:.00,MID:.00,FWD:.00},
+  },
 };
 
 const MANAGER_COLORS = [
@@ -79,6 +94,7 @@ const Store = {
   currentGW:     null,
   dataSource:    null,   // 'fpl' | 'sheets' | null
   gwWeights:     JSON.parse(JSON.stringify(CFG.GW_WEIGHTS)),
+  scoutWeights:  null,   // initialized in UI.loadSettings
   chartInstances:{},
   loadProgress:  { done:0, total:0 },
 };
@@ -1293,38 +1309,35 @@ const Render = {
 
   // ── Scout Weight (read-only) ───────────────────────────
   scoutWeight() {
-    const W = {
-      'FDR Jangka Pendek':  {GK:.15,DEF:.15,MID:.15,FWD:.15},
-      'FDR Jangka Menengah':{GK:.10,DEF:.10,MID:.10,FWD:.10},
-      'Home Advantage':     {GK:.10,DEF:.05,MID:.05,FWD:.05},
-      'Form 3 GW':          {GK:.15,DEF:.10,MID:.15,FWD:.15},
-      'Points Per Game':    {GK:.20,DEF:.15,MID:.10,FWD:.10},
-      'xGI':                {GK:.00,DEF:.10,MID:.10,FWD:.20},
-      'xGC (Defensive)':    {GK:.00,DEF:.15,MID:.10,FWD:.00},
-      'Saves (GK)':         {GK:.15,DEF:.00,MID:.00,FWD:.00},
-      'ICT Index':          {GK:.00,DEF:.05,MID:.10,FWD:.10},
-      'Value (pts/£)':      {GK:.02,DEF:.02,MID:.02,FWD:.02},
-      'Transfer Momentum':  {GK:.08,DEF:.08,MID:.08,FWD:.08},
-      'Suspension Risk':    {GK:.05,DEF:.05,MID:.05,FWD:.05},
-      'Double GW':          {GK:.00,DEF:.00,MID:.00,FWD:.00},
-    };
+    if (!Store.scoutWeights) Store.scoutWeights = JSON.parse(JSON.stringify(CFG.SCOUT_WEIGHTS));
+    const W = Store.scoutWeights;
     const pos=['GK','DEF','MID','FWD'];
-    const rows = Object.entries(W).map(([f,v])=>`
-      <tr><td>${f}</td>${pos.map(p=>`<td class="c mono">${(v[p]*100).toFixed(0)}%</td>`).join('')}</tr>`).join('');
-    const tots = pos.map(p=>{
-      const t=Object.values(W).reduce((s,v)=>s+(v[p]||0),0);
-      return `<td class="c mono wt-${Math.abs(t-1)<.01?'ok':'warn'}">${(t*100).toFixed(0)}%</td>`;
-    }).join('');
+    const rows = Object.entries(W).map(([f,vals])=>`
+      <tr><td>${f}</td>
+        ${pos.map(p=>`<td>
+          <input class="weight-input" type="number"
+            data-factor="${f}" data-pos="${p}"
+            value="${((vals[p]||0)*100).toFixed(0)}"
+            min="0" max="100" step="1"
+            oninput="UI.updateWeightTotals('scwt')">
+        </td>`).join('')}
+      </tr>`).join('');
+    const totRow = pos.map(p=>`<td class="wt-total" id="scwt-${p}">–</td>`).join('');
     return `
-      <div class="section-title">Scout Scoring Weights (Read-only — edit di Excel WeightTable)</div>
-      ${H.info('Bobot ini berasal dari Excel. Ubah di file Excel lalu refresh Google Sheets.')}
-      <div class="table-wrap" style="max-width:560px">
-        <table class="weight-table">
+      <div class="section-title">Scout Scoring Weights (Editable)</div>
+      ${H.info('Edit bobot lalu klik <b>Apply</b>. Total tiap posisi harus = 100%.')}
+      <div class="table-wrap" style="max-width:620px">
+        <table class="weight-table" id="scout-weight-table">
           <thead><tr><th>Faktor</th>${pos.map(p=>`<th>${p}</th>`).join('')}</tr></thead>
           <tbody>${rows}</tbody>
-          <tfoot><tr class="wt-trow"><td style="color:var(--text3)">Total</td>${tots}</tr></tfoot>
+          <tfoot><tr class="wt-trow"><td style="color:var(--text3)">Total</td>${totRow}</tr></tfoot>
         </table>
-      </div>`;
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="UI.applyScoutWeights()">✓ Apply</button>
+        <button class="btn btn-secondary" onclick="UI.resetScoutWeights()">↺ Reset Default</button>
+      </div>
+      <script>UI.updateWeightTotals('scwt')<\/script>`;
   },
 
   // ── Scout Scoring ──────────────────────────────────────
@@ -2096,8 +2109,14 @@ const Render = {
 
   // ── Chip Recommendation ────────────────────────────────
   otherChip() {
+    // Try sheets first
     const sd = Store.sheetsData?.chipRec || [];
-    if (!sd.length) return H.info('Data Chip Recommendation memerlukan Google Sheets (RecommendationChip sheet).');
+    if (sd.length) return this._chipRecFromSheets(sd);
+    // Generate from FPL API
+    return this._chipRecFromAPI();
+  },
+
+  _chipRecFromSheets(sd) {
     const currentGW = Store.currentGW||0;
     const cards = sd.map(r=>{
       const gw=r.GW||0, isActive=gw===currentGW;
@@ -2112,27 +2131,131 @@ const Render = {
           <div class="chip-score-item"><div class="csi-label">BB</div><div class="csi-val csi-bb">${H.numFmt(r['Skor BB'],1)}</div></div>
           <div class="chip-score-item"><div class="csi-label">TC</div><div class="csi-val csi-tc">${H.numFmt(r['Skor TC'],1)}</div></div>
         </div>
-        <div style="margin-top:10px;font-size:11px;color:var(--text3)">
-          FDR Skuad: <b style="color:var(--text2)">${H.numFmt(r['FDR Avg Skuadku'],2)}</b> &nbsp;|&nbsp;
-          Chip dipakai: <b style="color:var(--chip-wc)">${r['Chip Dipakai (H1)']||'–'}</b>
-        </div>
       </div>`;
     }).join('');
-    return `<div class="section-title">Chip Recommendation</div>
-      <div class="chip-grid">${cards}</div>`;
+    return `<div class="section-title">Chip Recommendation (Google Sheets)</div><div class="chip-grid">${cards}</div>`;
+  },
+
+  _chipRecFromAPI() {
+    if (!Store.bootstrap || !Store.fixtures) return H.info('Data FPL belum dimuat. Klik Refresh.');
+    const gw = Store.currentGW || 1;
+    const totalGW = Store.bootstrap.events.length;
+    const midSeason = Math.ceil(totalGW / 2);
+
+    // Detect chips already used
+    const hist = Store.managerHistory[CFG.myTeamId];
+    const usedChips = new Set((hist?.chips || []).map(c => c.name.toLowerCase().replace(/[_ ]/g,'')));
+    const allChips = [
+      { key:'wildcard',  label:'🃏 Wildcard',      short:'WC',  used: usedChips.has('wildcard'), desc:'Ganti seluruh 15 pemain tanpa penalti poin.' },
+      { key:'freehit',   label:'🎯 Free Hit',      short:'FH',  used: usedChips.has('freehit'),  desc:'Skuad berubah 1 GW saja, lalu kembali.' },
+      { key:'bboost',    label:'💺 Bench Boost',   short:'BB',  used: usedChips.has('bboost'),   desc:'Semua pemain bench ikut dihitung poinnya.' },
+      { key:'3xc',       label:'👑 Triple Captain', short:'TC', used: usedChips.has('3xc'),      desc:'Captain mendapat ×3 poin (bukan ×2).' },
+    ];
+    const remaining = allChips.filter(c => !c.used);
+
+    // Analyze upcoming GWs for DGW, blank GW, FDR
+    const upcoming = (Store.fixtures||[]).filter(f => !f.finished_provisional && f.event >= gw).sort((a,b)=>a.event-b.event);
+    const gwRange = [...new Set(upcoming.map(f=>f.event))].sort((a,b)=>a-b).slice(0,10);
+
+    const gwAnalysis = gwRange.map(gwNum => {
+      const gwFixes = upcoming.filter(f => f.event === gwNum);
+      const teamCounts = {};
+      gwFixes.forEach(f => {
+        teamCounts[f.team_h] = (teamCounts[f.team_h]||0) + 1;
+        teamCounts[f.team_a] = (teamCounts[f.team_a]||0) + 1;
+      });
+      const dgwTeams = Object.entries(teamCounts).filter(([_,c])=>c>1).length;
+      const totalMatches = gwFixes.length;
+      const isHalf = gwNum <= midSeason ? 'H1' : 'H2';
+      return { gw:gwNum, matches:totalMatches, dgwTeams, isHalf };
+    });
+
+    // Score each remaining chip for each GW
+    const recommendations = gwAnalysis.map(ga => {
+      const scores = {};
+      remaining.forEach(chip => {
+        let score = 5; // base
+        if (chip.key === 'freehit') {
+          if (ga.matches < 8)  score += 4; // blank GW — FH ideal
+          if (ga.dgwTeams > 2) score += 2;
+        }
+        if (chip.key === 'bboost') {
+          if (ga.dgwTeams >= 3) score += 4; // DGW with many doubles
+          if (ga.dgwTeams >= 5) score += 2;
+        }
+        if (chip.key === '3xc') {
+          if (ga.dgwTeams >= 2) score += 3; // TC on DGW captain
+        }
+        if (chip.key === 'wildcard') {
+          if (ga.dgwTeams >= 4) score += 2; // restructure for DGW
+          // WC better used early in half
+          if (ga.gw === gw || ga.gw === gw+1) score += 1;
+        }
+        scores[chip.short] = Math.min(10, score);
+      });
+      const best = remaining.reduce((b,c) => (!b || (scores[c.short]||0) > (scores[b.short]||0)) ? c : b, null);
+      return { ...ga, scores, best };
+    });
+
+    // Build HTML
+    let html = `
+      <div class="section-title">Chip Recommendation — dari FPL API</div>
+      <div class="eval-summary-strip">
+        <div class="eval-stat">
+          <div class="eval-stat-label">GW Saat Ini</div>
+          <div class="eval-stat-val">${gw}</div>
+        </div>
+        <div class="eval-stat">
+          <div class="eval-stat-label">Chip Tersisa</div>
+          <div class="eval-stat-val" style="color:var(--gold)">${remaining.length} / ${allChips.length}</div>
+        </div>
+        ${allChips.map(c => `
+        <div class="eval-stat" ${c.used?'style="opacity:.5"':''}>
+          <div class="eval-stat-label">${c.short}</div>
+          <div class="eval-stat-val" style="color:${c.used?'var(--red)':'var(--green)'}">
+            ${c.used?'✗ Terpakai':'✓ Tersedia'}
+          </div>
+        </div>`).join('')}
+      </div>`;
+
+    if (!remaining.length) {
+      html += H.info('Semua chip sudah digunakan musim ini.');
+      return html;
+    }
+
+    html += `<div class="chip-grid">`;
+    recommendations.forEach(r => {
+      const isNow = r.gw === gw;
+      const isDGW = r.dgwTeams > 0;
+      const isBlank = r.matches < 10;
+      html += `<div class="chip-card ${isNow?'active-gw':''}">
+        ${isNow?'<div style="position:absolute;top:10px;right:12px;font-size:10px;background:var(--green);color:#000;padding:2px 7px;border-radius:3px;font-weight:700;letter-spacing:1px">NOW</div>':''}
+        <div class="chip-gw">GW ${r.gw} — ${r.isHalf}${isDGW?' · <span style="color:var(--blue)">DGW ('+r.dgwTeams+' tim)</span>':''}${isBlank?' · <span style="color:var(--red)">Blank ('+r.matches+' match)</span>':''}</div>
+        <div class="chip-best">${r.best?r.best.label:'–'}</div>
+        <div class="chip-alasan" style="font-size:12px;margin:6px 0">${r.matches} pertandingan${isDGW?', '+r.dgwTeams+' tim DGW':''}</div>
+        <div class="chip-scores">
+          ${remaining.map(c=>`
+          <div class="chip-score-item">
+            <div class="csi-label">${c.short}</div>
+            <div class="csi-val csi-${c.short.toLowerCase()}">${r.scores[c.short]||0}</div>
+          </div>`).join('')}
+        </div>
+      </div>`;
+    });
+    html += `</div>`;
+
+    // Chip descriptions
+    html += `<div style="margin-top:20px">`;
+    remaining.forEach(c => {
+      html += `<div style="margin-bottom:6px;font-size:13px;color:var(--text2)">${c.label} — ${c.desc}</div>`;
+    });
+    html += `</div>`;
+
+    return html;
   },
 
   // ── Settings ───────────────────────────────────────────
   settings() {
-    const pos = ['GK','DEF','MID','FWD'];
-    const wRows = Object.entries(CFG.GW_WEIGHTS).map(([f,v])=>`
-      <tr><td>${f}</td>
-        ${pos.map(p=>`<td><input class="weight-input" type="number"
-          data-factor="${f}" data-pos="${p}"
-          value="${(v[p]*100).toFixed(0)}" min="0" max="100" step="5"
-          oninput="UI.updateWeightTotals('swt')"></td>`).join('')}
-      </tr>`).join('');
-    const wTots = pos.map(p=>`<td class="wt-total" id="swt-${p}">–</td>`).join('');
     return `
       <div class="settings-grid">
         <div class="settings-card">
@@ -2183,21 +2306,6 @@ const Render = {
           </div>
           <div class="btn-row">
             <button class="btn btn-primary" onclick="App.refresh()">↻ Refresh Data</button>
-          </div>
-        </div>
-
-        <div class="settings-card">
-          <h3>GW Scoring Weights</h3>
-          <div class="table-wrap">
-            <table class="weight-table">
-              <thead><tr><th>Faktor</th><th>GK</th><th>DEF</th><th>MID</th><th>FWD</th></tr></thead>
-              <tbody>${wRows}</tbody>
-              <tfoot><tr class="wt-trow"><td style="color:var(--text3)">Total</td>${wTots}</tr></tfoot>
-            </table>
-          </div>
-          <div class="btn-row">
-            <button class="btn btn-primary" onclick="UI.applyGWWeights()">Apply</button>
-            <button class="btn btn-secondary" onclick="UI.resetGWWeights()">Reset Default</button>
           </div>
         </div>
 
@@ -2255,7 +2363,6 @@ const Render = {
         </div>
       </div>
       <script>
-        UI.updateWeightTotals('swt');
         UI.updateCacheStats();
         UI.renderCacheEndpointList();
       <\/script>`;
@@ -2412,6 +2519,29 @@ const Charts = {
 // 9. UI HELPERS
 // ═══════════════════════════════════════════════════════
 const UI = {
+  THEMES: ['dark','light','midnight'],
+  THEME_ICONS: {dark:'🌙',light:'☀️',midnight:'🌌'},
+
+  initTheme() {
+    const saved = localStorage.getItem('fplDashTheme') || 'dark';
+    document.documentElement.setAttribute('data-theme', saved);
+    const btn = document.getElementById('theme-btn');
+    if (btn) btn.textContent = this.THEME_ICONS[saved] || '🌙';
+  },
+
+  cycleTheme() {
+    const current = document.documentElement.getAttribute('data-theme') || 'dark';
+    const idx = this.THEMES.indexOf(current);
+    const next = this.THEMES[(idx+1) % this.THEMES.length];
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('fplDashTheme', next);
+    const btn = document.getElementById('theme-btn');
+    if (btn) btn.textContent = this.THEME_ICONS[next] || '🌙';
+    // Rebuild charts with new colors if on charts tab
+    if (Nav.current==='league' && Store.subtab['league']==='charts') {
+      setTimeout(()=>Charts.buildAll(), 100);
+    }
+  },
   setSrc(type) {
     const el = document.getElementById('src-badge');
     if (!el) return;
@@ -2582,8 +2712,11 @@ const UI = {
   },
 
   updateWeightTotals(prefix='gwt') {
+    // Scope to the nearest table to avoid cross-tab contamination
+    const container = document.getElementById(`${prefix}-GK`)?.closest('table') 
+                   || document;
     ['GK','DEF','MID','FWD'].forEach(pos=>{
-      const inputs=document.querySelectorAll(`.weight-input[data-pos="${pos}"]`);
+      const inputs=container.querySelectorAll(`.weight-input[data-pos="${pos}"]`);
       const tot=Array.from(inputs).reduce((s,el)=>s+(parseFloat(el.value)||0),0);
       const el=document.getElementById(`${prefix}-${pos}`);
       if(el){el.textContent=`${tot}%`;el.className=`wt-total ${Math.abs(tot-100)<1?'wt-ok':'wt-warn'}`;}
@@ -2591,7 +2724,7 @@ const UI = {
   },
 
   applyGWWeights() {
-    document.querySelectorAll('.weight-input').forEach(el=>{
+    document.querySelectorAll('#content-lineup .weight-input').forEach(el=>{
       const f=el.dataset.factor, p=el.dataset.pos;
       if(!Store.gwWeights[f])Store.gwWeights[f]={};
       Store.gwWeights[f][p]=(parseFloat(el.value)||0)/100;
@@ -2600,6 +2733,24 @@ const UI = {
     });
     Process.applyScores(Store.players);
     Nav.goSubtab('lineup','gwscoring');
+  },
+
+  applyScoutWeights() {
+    document.querySelectorAll('#scout-weight-table .weight-input').forEach(el=>{
+      const f=el.dataset.factor, p=el.dataset.pos;
+      if(!Store.scoutWeights[f])Store.scoutWeights[f]={};
+      Store.scoutWeights[f][p]=(parseFloat(el.value)||0)/100;
+    });
+    try {
+      localStorage.setItem('fplDashScoutWeights', JSON.stringify(Store.scoutWeights));
+    } catch {}
+    Nav.goSubtab('scout','swt');
+  },
+
+  resetScoutWeights() {
+    Store.scoutWeights = JSON.parse(JSON.stringify(CFG.SCOUT_WEIGHTS));
+    try { localStorage.removeItem('fplDashScoutWeights'); } catch {}
+    Nav.goSubtab('scout','swt');
   },
 
   resetGWWeights() {
@@ -2680,6 +2831,11 @@ const UI = {
       if(saved.maxPerTeam)       CFG.maxPerTeam       = saved.maxPerTeam;
       if(saved.selectedLeagueIdx!==undefined) CFG.selectedLeagueIdx = saved.selectedLeagueIdx;
     } catch {}
+    // Load scout weights
+    try {
+      const sw = JSON.parse(localStorage.getItem('fplDashScoutWeights')||'null');
+      Store.scoutWeights = sw || JSON.parse(JSON.stringify(CFG.SCOUT_WEIGHTS));
+    } catch { Store.scoutWeights = JSON.parse(JSON.stringify(CFG.SCOUT_WEIGHTS)); }
   },
 };
 
@@ -2815,43 +2971,56 @@ const App = {
     const lid = CFG.leagues[CFG.selectedLeagueIdx]?.id;
     if (!lid) return;
 
+    // Show loading
+    if (Nav.current === 'league') {
+      const cont = document.getElementById('content-league');
+      if (cont && !Store.leagueManagers?.length) cont.innerHTML = H.loader('Memuat data liga…');
+    }
+
     // Fetch standings
-    const ls = await Fetch.leagueStandings(lid);
-    if (!ls) return;
+    let ls = null;
+    try { ls = await Fetch.leagueStandings(lid); } catch(e) { console.warn('[League]', e); }
+    if (!ls) {
+      if (Nav.current === 'league') Nav.goTab('league');
+      return;
+    }
     Store.leagueData = ls;
     const managers   = Process.processLeague(ls);
     Store.leagueManagers = managers;
 
-    // Fetch history + transfers + info for all managers (parallel, batched)
+    // Quick render rekap while history loads
+    if (Nav.current === 'league') Nav.goTab('league');
+
+    // Fetch history + transfers + info
     Store.loadProgress = { done:0, total: managers.length * 3 };
 
     const histTasks = managers.map(m => async () => {
-      const h = await Fetch.managerHistory(m.entryId);
-      if (h) Store.managerHistory[m.entryId] = h;
-      return h;
+      try { const h = await Fetch.managerHistory(m.entryId); if (h) Store.managerHistory[m.entryId] = h; } catch {}
     });
     const transTasks = managers.map(m => async () => {
-      const t = await Fetch.managerTransfers(m.entryId);
-      if (t) Store.managerTransfers[m.entryId] = t;
-      return t;
+      try { const t = await Fetch.managerTransfers(m.entryId); if (t) Store.managerTransfers[m.entryId] = t; } catch {}
     });
     const infoTasks = managers.map(m => async () => {
-      const i = await Fetch.managerInfo(m.entryId);
-      if (i) Store.managerInfos[m.entryId] = i;
-      return i;
+      try { const i = await Fetch.managerInfo(m.entryId); if (i) Store.managerInfos[m.entryId] = i; } catch {}
     });
 
     await Fetch.batch([...histTasks, ...transTasks, ...infoTasks], 5);
 
     // Build matrices
-    Store.leagueMatrix       = Process.buildLeagueRankMatrix(managers, Store.managerHistory);
-    Store.overallRankMatrix  = Process.buildRankingMatrix(managers, Store.managerHistory);
-    Store.transferMatrix     = Process.buildTransferMatrix(managers, Store.managerTransfers);
+    const histCount = Object.keys(Store.managerHistory).length;
+    console.log(`[League] History: ${histCount}/${managers.length}`);
 
-    UI.setSrc('fpl');
+    if (histCount > 0) {
+      Store.leagueMatrix      = Process.buildLeagueRankMatrix(managers, Store.managerHistory);
+      Store.overallRankMatrix  = Process.buildRankingMatrix(managers, Store.managerHistory);
+    }
+    Store.transferMatrix = Process.buildTransferMatrix(managers, Store.managerTransfers);
 
-    // Re-render if on league tab
-    if (Nav.current === 'league') Nav.goTab('league');
+    // Re-render with full data + charts
+    if (Nav.current === 'league') {
+      Nav.goTab('league');
+      if (Store.subtab['league'] === 'charts') setTimeout(()=>Charts.buildAll(), 200);
+    }
   },
 
   async loadMySquad(gw) {
@@ -2907,6 +3076,7 @@ const App = {
 
   init() {
     UI.loadSettings();
+    UI.initTheme();
     UI.buildLeagueSelect();
     Nav.init();
     this.refresh();
