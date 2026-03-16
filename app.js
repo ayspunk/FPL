@@ -257,12 +257,13 @@ const Fetch = {
     return data;
   },
 
-  async batch(tasks, concurrency = 5) {
+  async batch(tasks, concurrency = 5, delayMs = 0) {
     const results = new Array(tasks.length).fill(null);
     let idx = 0;
     const run = async () => {
       while (idx < tasks.length) {
         const i = idx++;
+        if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
         try { results[i] = await tasks[i](); } catch {}
         Store.loadProgress.done++;
         UI.updateProgress();
@@ -3056,15 +3057,22 @@ const App = {
     Store.leagueManagers = managers;
     console.log(`[League] Standings OK: ${managers.length} managers in ${ls.league?.name||'?'}`);
 
-    // Quick render rekap
-    if (Nav.current === 'league') Nav.goTab('league');
+    // Quick render rekap + show history loading indicator
+    if (Nav.current === 'league') {
+      Nav.goTab('league');
+      const cont = document.getElementById('content-league');
+      if (cont && managers.length > 0) {
+        cont.insertAdjacentHTML('beforeend',
+          `<div class="loader-wrap" id="hist-loader" style="padding:20px 0"><div class="spinner"></div><div class="loader-text">Memuat history 0/${managers.length} manajer…</div></div>`);
+      }
+    }
 
     // ── Fetch history for ALL managers (priority #1 for charts) ──
-    // Use lower concurrency + delay to avoid proxy rate-limiting
-    console.log(`[League] Fetching history for ${managers.length} managers…`);
+    // Use concurrency=2 + 600ms delay to avoid proxy rate-limiting
+    console.log(`[League] Fetching history for ${managers.length} managers (slow mode)…`);
     let histOK = 0, histFail = 0;
 
-    const histTasks = managers.map(m => async () => {
+    const histTasks = managers.map((m, mi) => async () => {
       try {
         const h = await Fetch.managerHistory(m.entryId);
         if (h) {
@@ -3072,10 +3080,18 @@ const App = {
           histOK++;
         } else { histFail++; }
       } catch { histFail++; }
+      // Progress update
+      if (Nav.current === 'league') {
+        const loaderText = document.querySelector('#hist-loader .loader-text');
+        if (loaderText) {
+          const pct = Math.round((histOK+histFail)/managers.length*100);
+          loaderText.textContent = `History: ${histOK+histFail}/${managers.length} (${histOK}✓ ${histFail}✗) ${pct}%`;
+        }
+      }
     });
 
-    // Concurrency 3 (not 5) to reduce proxy rate-limit
-    await Fetch.batch(histTasks, 3);
+    // Concurrency 2 + 600ms delay between each request
+    await Fetch.batch(histTasks, 2, 600);
     console.log(`[League] History via proxy: ${histOK} OK, ${histFail} failed (of ${managers.length})`);
 
     // GitHub fallback: if proxy failed, try loading history.json
@@ -3122,7 +3138,7 @@ const App = {
         try { const i = await Fetch.managerInfo(m.entryId); if (i) Store.managerInfos[m.entryId] = i; } catch {}
       }),
     ];
-    await Fetch.batch(bgTasks, 3);
+    await Fetch.batch(bgTasks, 2, 500);
     Store.transferMatrix = Process.buildTransferMatrix(managers, Store.managerTransfers);
     console.log(`[League] Transfers+Info done. Transfer matrix: ${Store.transferMatrix?.rows?.length||0} GWs`);
 
