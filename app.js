@@ -3482,81 +3482,79 @@ const App = {
     // ── Load GitHub data FIRST (instant, no proxy needed) ──
     // Picks
     console.log('[League] Loading GitHub JSON data…');
+    let histOK = 0;
+
+    // ── GitHub Picks ──
     const ghPicks = await Fetch.githubJSON('league-picks.json');
     if (ghPicks && typeof ghPicks === 'object' && !Array.isArray(ghPicks)) {
-      let cnt = 0;
-      Object.entries(ghPicks).forEach(([eid, p]) => {
-        if (p?.picks) { Store.leaguePicks[eid] = p; cnt++; }
+      const keys = Object.keys(ghPicks);
+      console.log(`[League] GitHub picks JSON: ${keys.length} keys, sample:`, keys[0], ghPicks[keys[0]] ? Object.keys(ghPicks[keys[0]]).join(',') : 'empty');
+      keys.forEach(eid => {
+        const entry = ghPicks[eid];
+        if (!entry) return;
+        // Data has structure: {picks:[...], entry_history:{...}, ...}
+        if (entry.picks && Array.isArray(entry.picks)) {
+          Store.leaguePicks[eid] = entry;
+          // Also store with numeric key for lookup compatibility
+          Store.leaguePicks[Number(eid)] = entry;
+        }
       });
-      console.log(`[League] GitHub picks: ${cnt} managers loaded`);
+      console.log(`[League] GitHub picks loaded: ${Math.floor(Object.keys(Store.leaguePicks).length/2)} managers`);
     } else {
-      console.log(`[League] GitHub picks: not available (${ghPicks ? typeof ghPicks : 'null'})`);
+      console.log(`[League] GitHub picks: not available`);
     }
 
-    // History
+    // ── GitHub History ──
     const ghHist = await Fetch.githubJSON('history.json');
     if (ghHist && Array.isArray(ghHist) && ghHist.length > 0) {
       const entryIds = new Set(managers.map(m => m.entryId));
       ghHist.forEach(row => {
         const eid = row.entry_id;
-        if (!entryIds.has(eid) && !entryIds.has(Number(eid))) return;
-        const key = entryIds.has(eid) ? eid : Number(eid);
+        const key = entryIds.has(eid) ? eid : (entryIds.has(Number(eid)) ? Number(eid) : null);
+        if (!key) return;
         if (!Store.managerHistory[key]) Store.managerHistory[key] = { current: [], chips: [] };
         Store.managerHistory[key].current.push(row);
       });
-      console.log(`[League] GitHub history: ${Object.keys(Store.managerHistory).length} managers`);
+      histOK = Object.keys(Store.managerHistory).length;
+      console.log(`[League] GitHub history: ${histOK} managers`);
     }
 
-    // If GitHub had enough history, skip slow proxy fetch
-    const ghHistCount = Object.keys(Store.managerHistory).length;
-    const needProxyHistory = ghHistCount < managers.length;
+    // ── Proxy: only fetch what GitHub doesn't have ──
+    const needProxy = histOK < managers.length;
+    if (needProxy) {
+      const missing = managers.filter(m => !Store.managerHistory[m.entryId] && !Store.managerHistory[String(m.entryId)]);
+      console.log(`[League] Proxy: fetching ${missing.length} missing history…`);
+      missing.forEach(m => Cache.invalidate(CFG.FPL + 'entry/' + m.entryId + '/history/'));
 
-    // ── Proxy fetch: only what GitHub doesn't have ──
-    if (needProxyHistory) {
-      managers.forEach(m => { Cache.invalidate(CFG.FPL + 'entry/' + m.entryId + '/history/'); });
-      console.log(`[League] Fetching history for ${managers.length - ghHistCount} missing managers via proxy…`);
-      let histOK = ghHistCount, histFail = 0;
+      const tasks = missing.map(m => async () => {
+        try {
+          let h = await Fetch.fpl('entry/' + m.entryId + '/history/', true);
+          if (h && !h.current && h.contents) h = typeof h.contents === 'string' ? JSON.parse(h.contents) : h.contents;
+          if (h?.current?.length) { Store.managerHistory[m.entryId] = h; histOK++; }
+        } catch {}
+        const lt = document.querySelector('#hist-loader .loader-text');
+        if (lt) lt.textContent = `History: ${histOK}/${managers.length}`;
+      });
 
-      const histTasks = managers
-        .filter(m => !Store.managerHistory[m.entryId] && !Store.managerHistory[String(m.entryId)])
-        .map((m, mi) => async () => {
-          try {
-            let h = await Fetch.fpl('entry/' + m.entryId + '/history/', true);
-            if (h) {
-              if (!h.current && h.contents) h = typeof h.contents === 'string' ? JSON.parse(h.contents) : h.contents;
-              if (!h.current && h.data) h = h.data;
-            }
-            if (h?.current && Array.isArray(h.current) && h.current.length > 0) {
-              Store.managerHistory[m.entryId] = h;
-              histOK++;
-            } else { histFail++; }
-          } catch { histFail++; }
-          const loaderText = document.querySelector('#hist-loader .loader-text');
-          if (loaderText) loaderText.textContent = `History: ${histOK}/${managers.length}`;
-        });
-
-      // Also fetch missing picks via proxy
-      const picksToFetch = managers.filter(m =>
-        !Store.leaguePicks[m.entryId] && !Store.leaguePicks[String(m.entryId)]
-      );
-      const picksTasks = picksToFetch.map(m => async () => {
+      // Also fetch missing picks
+      const missingPicks = managers.filter(m => !Store.leaguePicks[m.entryId] && !Store.leaguePicks[String(m.entryId)]);
+      const pTasks = missingPicks.map(m => async () => {
         try {
           const p = await Fetch.managerPicks(m.entryId, gw);
-          if (p?.picks) Store.leaguePicks[m.entryId] = p;
+          if (p?.picks) { Store.leaguePicks[m.entryId] = p; Store.leaguePicks[String(m.entryId)] = p; }
         } catch {}
       });
 
-      // Interleave remaining history + picks
       const allTasks = [];
-      const maxLen = Math.max(histTasks.length, picksTasks.length);
-      for (let i = 0; i < maxLen; i++) {
-        if (i < histTasks.length) allTasks.push(histTasks[i]);
-        if (i < picksTasks.length) allTasks.push(picksTasks[i]);
+      for (let i = 0; i < Math.max(tasks.length, pTasks.length); i++) {
+        if (i < tasks.length) allTasks.push(tasks[i]);
+        if (i < pTasks.length) allTasks.push(pTasks[i]);
       }
       if (allTasks.length) await Fetch.batch(allTasks, 2, 250);
-      console.log(`[League] Proxy done: History ${histOK}/${managers.length}, Picks ${Object.keys(Store.leaguePicks).length}/${managers.length}`);
+      histOK = Object.keys(Store.managerHistory).length;
+      console.log(`[League] After proxy: History ${histOK}, Picks ${Object.keys(Store.leaguePicks).length}`);
     } else {
-      console.log(`[League] GitHub had all history — skipping proxy`);
+      console.log(`[League] GitHub had all data — skipping proxy`);
     }
 
     // Build matrices immediately after history (don't wait for transfers)
