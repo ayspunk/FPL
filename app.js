@@ -3494,30 +3494,68 @@ const App = {
       if (Store.subtab['league'] === 'charts') setTimeout(()=>Charts.buildAll(), 200);
     }
 
-    // ── Phase 2: Picks for current GW (for captain highlights) ──
-    console.log(`[League] Fetching picks for GW${gw}…`);
-    const picksTasks = managers.map(m => async () => {
-      try {
-        const p = await Fetch.managerPicks(m.entryId, gw);
-        if (p?.picks) Store.leaguePicks[m.entryId] = p;
-      } catch {}
-    });
-    await Fetch.batch(picksTasks, 2, 500);
-    console.log(`[League] Picks loaded: ${Object.keys(Store.leaguePicks).length}/${managers.length}`);
+    // ── Phase 2: Picks for current GW (try GitHub first, then proxy) ──
+    const ghPicks = await Fetch.githubJSON('league-picks.json');
+    if (ghPicks && typeof ghPicks === 'object') {
+      Object.entries(ghPicks).forEach(([eid, p]) => {
+        if (p?.picks) Store.leaguePicks[eid] = p;
+      });
+      console.log(`[League] Picks from GitHub: ${Object.keys(Store.leaguePicks).length}`);
+    }
+
+    // If GitHub didn't have picks (or partial), try proxy for remaining
+    const picksNeeded = managers.filter(m =>
+      !Store.leaguePicks[m.entryId] && !Store.leaguePicks[String(m.entryId)]
+    );
+    if (picksNeeded.length > 0 && picksNeeded.length < managers.length * 0.8) {
+      // Only try proxy if we already have most from GitHub (avoid wasting quota)
+      console.log(`[League] Fetching ${picksNeeded.length} remaining picks via proxy…`);
+      const picksTasks = picksNeeded.map(m => async () => {
+        try {
+          const p = await Fetch.managerPicks(m.entryId, gw);
+          if (p?.picks) Store.leaguePicks[m.entryId] = p;
+        } catch {}
+      });
+      await Fetch.batch(picksTasks, 2, 500);
+    } else if (Object.keys(Store.leaguePicks).length === 0) {
+      // No GitHub data at all — try proxy for all
+      console.log(`[League] No GitHub picks, fetching all ${managers.length} via proxy…`);
+      const picksTasks = managers.map(m => async () => {
+        try {
+          const p = await Fetch.managerPicks(m.entryId, gw);
+          if (p?.picks) Store.leaguePicks[m.entryId] = p;
+        } catch {}
+      });
+      await Fetch.batch(picksTasks, 2, 500);
+    }
+    console.log(`[League] Picks total: ${Object.keys(Store.leaguePicks).length}/${managers.length}`);
 
     // Re-render with picks data (captain highlights now work)
     if (Nav.current === 'league') Nav.goTab('league');
 
-    // ── Phase 3: Transfers + Info (lowest priority, often rate-limited) ──
+    // ── Phase 3: Transfers + Info (try GitHub first) ──
+    const ghTransfers = await Fetch.githubJSON('transfers.json');
+    if (Array.isArray(ghTransfers) && ghTransfers.length > 0) {
+      // Group by entry_id
+      ghTransfers.forEach(t => {
+        const eid = t.entry_id;
+        if (!Store.managerTransfers[eid]) Store.managerTransfers[eid] = [];
+        Store.managerTransfers[eid].push(t);
+      });
+      console.log(`[League] Transfers from GitHub: ${Object.keys(Store.managerTransfers).length} managers`);
+    }
+
+    // Proxy fetch for remaining transfers + info
     const bgTasks = [
-      ...managers.map(m => async () => {
-        try { const t = await Fetch.managerTransfers(m.entryId); if (t) Store.managerTransfers[m.entryId] = t; } catch {}
-      }),
+      ...managers.filter(m => !Store.managerTransfers[m.entryId] && !Store.managerTransfers[String(m.entryId)])
+        .map(m => async () => {
+          try { const t = await Fetch.managerTransfers(m.entryId); if (t) Store.managerTransfers[m.entryId] = t; } catch {}
+        }),
       ...managers.map(m => async () => {
         try { const i = await Fetch.managerInfo(m.entryId); if (i) Store.managerInfos[m.entryId] = i; } catch {}
       }),
     ];
-    await Fetch.batch(bgTasks, 2, 500);
+    if (bgTasks.length) await Fetch.batch(bgTasks, 2, 500);
     Store.transferMatrix = Process.buildTransferMatrix(managers, Store.managerTransfers);
     console.log(`[League] Transfers+Info done. Transfer matrix: ${Store.transferMatrix?.rows?.length||0} GWs`);
 
