@@ -2676,6 +2676,11 @@ const Charts = {
     const { gwLabels, series } = matrix;
     if (!gwLabels?.length) { wrap.innerHTML = H.info('Data ranking per GW belum tersedia.'); return; }
 
+    // Theme-aware colors
+    const cs = getComputedStyle(document.documentElement);
+    const textColor = cs.getPropertyValue('--text3').trim() || '#4a6a88';
+    const gridStroke = cs.getPropertyValue('--border').trim() || 'rgba(30,48,72,.4)';
+
     const N=series.length, GW=gwLabels.length;
     const W=Math.max(800, GW*50), H_svg=N*26+60;
     const PL=16, PR=160, PT=28, PB=20;
@@ -2706,13 +2711,13 @@ const Charts = {
     }).join('');
 
     const gwHd=gwLabels.map((g,i)=>
-      `<text x="${xOf(i)}" y="${H_svg-PB+16}" fill="#4a6a88" font-size="10" text-anchor="middle" font-family="Barlow Condensed,sans-serif">GW${g}</text>`
+      `<text x="${xOf(i)}" y="${H_svg-PB+16}" fill="${textColor}" font-size="10" text-anchor="middle" font-family="Barlow Condensed,sans-serif">GW${g}</text>`
     ).join('');
     const rnkHd=Array.from({length:N},(_,i)=>
-      `<text x="${PL-4}" y="${yOf(i+1)+4}" fill="#4a6a88" font-size="9" text-anchor="end" font-family="JetBrains Mono,monospace">#${i+1}</text>`
+      `<text x="${PL-4}" y="${yOf(i+1)+4}" fill="${textColor}" font-size="9" text-anchor="end" font-family="JetBrains Mono,monospace">#${i+1}</text>`
     ).join('');
     const gridH=Array.from({length:GW},(_,i)=>
-      `<line x1="${xOf(i)}" y1="${PT}" x2="${xOf(i)}" y2="${H_svg-PB}" stroke="rgba(30,48,72,.4)" stroke-width=".5"/>`
+      `<line x1="${xOf(i)}" y1="${PT}" x2="${xOf(i)}" y2="${H_svg-PB}" stroke="${gridStroke}" stroke-width=".5" opacity=".5"/>`
     ).join('');
 
     wrap.innerHTML=`<svg class="bump-svg" width="${W}" height="${H_svg}" viewBox="0 0 ${W} ${H_svg}">
@@ -2744,19 +2749,63 @@ const Charts = {
     const tps   =sorted.map(m=>m.total||0);
     const gwpts =sorted.map(m=>m.eventTotal||0);
     const bgs   =labels.map(l=>l.toLowerCase().includes(myName)?'rgba(0,230,118,.8)':'rgba(68,138,255,.5)');
+    const gwBgs =labels.map(l=>l.toLowerCase().includes(myName)?'rgba(255,215,64,.85)':'rgba(255,215,64,.5)');
+
+    // Theme-aware grid/tick colors
+    const cs = getComputedStyle(document.documentElement);
+    const gridColor = cs.getPropertyValue('--border').trim() || 'rgba(30,48,72,.5)';
+    const tickColor = cs.getPropertyValue('--text3').trim() || '#4a6a88';
+    const labelColor = cs.getPropertyValue('--text2').trim() || '#7a9ab8';
 
     Store.chartInstances['standings']=new Chart(canvas,{
       type:'bar',
       data:{labels, datasets:[
-        {label:'Total Pts', data:tps, backgroundColor:bgs, borderRadius:3},
-        {label:'GW Pts',   data:gwpts, backgroundColor:'rgba(255,215,64,.4)', borderRadius:3},
+        {
+          label:'Total Pts',
+          data:tps,
+          backgroundColor:bgs,
+          borderRadius:3,
+          xAxisID:'x',
+          order:2,
+        },
+        {
+          label:'GW Pts',
+          data:gwpts,
+          backgroundColor:gwBgs,
+          borderRadius:3,
+          xAxisID:'x2',
+          order:1,
+        },
       ]},
       options:{
-        indexAxis:'y', responsive:true, maintainAspectRatio:false,
-        plugins:{legend:{labels:{color:'#7a9ab8',font:{size:10}}}},
+        indexAxis:'y',
+        responsive:true,
+        maintainAspectRatio:false,
+        plugins:{
+          legend:{labels:{color:labelColor,font:{size:10}}},
+          tooltip:{
+            callbacks:{
+              label: ctx => `${ctx.dataset.label}: ${ctx.raw} pts`,
+            }
+          },
+        },
         scales:{
-          x:{grid:{color:'rgba(30,48,72,.5)'},ticks:{color:'#4a6a88'}},
-          y:{grid:{color:'rgba(30,48,72,.3)'},ticks:{color:'#7a9ab8',font:{size:10}}},
+          x:{
+            position:'bottom',
+            grid:{color:gridColor},
+            ticks:{color:tickColor,font:{size:10}},
+            title:{display:true, text:'Total Pts', color:tickColor, font:{size:10}},
+          },
+          x2:{
+            position:'top',
+            grid:{drawOnChartArea:false},
+            ticks:{color:'rgba(255,215,64,.7)',font:{size:9}},
+            title:{display:true, text:'GW Pts', color:'rgba(255,215,64,.7)', font:{size:10}},
+          },
+          y:{
+            grid:{color:gridColor+'33'},
+            ticks:{color:labelColor,font:{size:10}},
+          },
         },
       },
     });
@@ -2785,9 +2834,10 @@ const UI = {
     localStorage.setItem('fplDashTheme', next);
     const btn = document.getElementById('theme-btn');
     if (btn) btn.textContent = this.THEME_ICONS[next] || '🌙';
-    // Rebuild charts with new colors if on charts tab
+    // Re-render current tab to pick up new theme colors (SVGs, charts)
+    Nav.goTab(Nav.current);
     if (Nav.current==='league' && Store.subtab['league']==='charts') {
-      setTimeout(()=>Charts.buildAll(), 100);
+      setTimeout(()=>Charts.buildAll(), 150);
     }
   },
   setSrc(type) {
