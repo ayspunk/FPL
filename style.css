@@ -842,11 +842,12 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 .highlights-list {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 2px 12px;
+  grid-auto-flow: column;
+  gap: 1px 14px;
   flex: 1;
   overflow-y: auto;
 }
-@media (max-width: 600px) { .highlights-list { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .highlights-list { grid-template-columns: 1fr; grid-auto-flow: row; } }
 .hl-item {
   display: flex;
   align-items: center;
