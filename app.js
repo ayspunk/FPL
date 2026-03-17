@@ -182,7 +182,7 @@ const Cache = {
 // 4. FETCH LAYER  (semua request melalui Cache)
 // ═══════════════════════════════════════════════════════
 const Fetch = {
-  _lastWorkingProxy: -1, // -1 = direct, 0+ = proxy index
+  _lastWorkingProxy: 0, // index into CFG.PROXIES
   _requestCount: 0,
 
   async _net(url, timeout = 12000) {
@@ -194,29 +194,17 @@ const Fetch = {
       await new Promise(r => setTimeout(r, 300));
     }
 
-    // Build ordered list: try last working method first
-    const methods = [];
-    if (this._lastWorkingProxy === -1) {
-      methods.push({ type:'direct', idx:-1 });
-    }
-    // Add last working proxy first
-    if (this._lastWorkingProxy >= 0) {
-      methods.push({ type:'proxy', idx:this._lastWorkingProxy });
-    }
-    // Then direct if not already
-    if (this._lastWorkingProxy !== -1) {
-      methods.push({ type:'direct', idx:-1 });
-    }
-    // Then remaining proxies
+    // Build proxy order: last working first, then others
+    const order = [this._lastWorkingProxy];
     for (let i = 0; i < CFG.PROXIES.length; i++) {
-      if (i !== this._lastWorkingProxy) {
-        methods.push({ type:'proxy', idx:i });
-      }
+      if (i !== this._lastWorkingProxy) order.push(i);
     }
 
-    for (const method of methods) {
-      const fetchUrl = method.type === 'direct' ? url : CFG.PROXIES[method.idx](url);
-      const label = method.type === 'direct' ? 'direct' : `proxy#${method.idx+1}`;
+    for (const idx of order) {
+      const px = CFG.PROXIES[idx];
+      if (!px) continue;
+      const fetchUrl = px(url);
+      const label = `proxy#${idx+1}`;
       try {
         const r = await fetch(fetchUrl, { signal: AbortSignal.timeout(timeout) });
         if (r.ok) {
@@ -229,7 +217,7 @@ const Fetch = {
             } else if (data && data.contents && typeof data.contents === 'object') {
               data = data.contents;
             }
-            this._lastWorkingProxy = method.idx;
+            this._lastWorkingProxy = idx;
             return data;
           } catch {
             errors.push(`${label}: invalid JSON`);
@@ -2730,7 +2718,7 @@ const Render = {
         <div class="settings-card">
           <h3>🔌 Proxy Diagnostik</h3>
           <div class="hint" style="margin-bottom:12px">
-            FPL API memerlukan CORS proxy. Klik tombol di bawah untuk test semua proxy dan temukan yang bekerja dari koneksi Anda.
+            FPL API tidak mendukung CORS — browser memblokir request langsung dari domain lain. Dashboard menggunakan CORS proxy sebagai perantara. Klik tombol di bawah untuk test proxy mana yang bekerja.
           </div>
           <div id="proxy-test-results" style="font-family:'JetBrains Mono',monospace;font-size:12px;line-height:2.2;margin-bottom:14px">
             Belum ditest. Klik tombol di bawah.
@@ -3079,10 +3067,11 @@ const UI = {
     const el = document.getElementById('proxy-test-results');
     if (!el) return;
     const testUrl = CFG.FPL + 'bootstrap-static/';
-    const names = ['Direct (tanpa proxy)', ...CFG.PROXIES.map((_,i)=>`Proxy #${i+1}`)];
-    const urls  = [testUrl, ...CFG.PROXIES.map(px=>px(testUrl))];
+    const names = CFG.PROXIES.map((_,i)=>`Proxy #${i+1}`);
+    const urls  = CFG.PROXIES.map(px=>px(testUrl));
 
-    el.innerHTML = '<div style="color:var(--gold)">⏳ Testing… mohon tunggu 15–30 detik.</div>';
+    el.innerHTML = '<div style="color:var(--text3);font-size:12px;margin-bottom:8px">ℹ Direct fetch ke FPL API selalu gagal dari browser karena CORS policy — ini normal. Dashboard menggunakan CORS proxy.</div>'
+      + '<div style="color:var(--gold)">⏳ Testing… mohon tunggu.</div>';
     const results = [];
 
     for (let i = 0; i < urls.length; i++) {
@@ -3105,7 +3094,8 @@ const UI = {
       }
 
       // Update live
-      el.innerHTML = results.map(r =>
+      el.innerHTML = '<div style="color:var(--text3);font-size:12px;margin-bottom:8px">ℹ Direct fetch ke FPL API selalu gagal dari browser karena CORS policy — ini normal.</div>'
+        + results.map(r =>
         `<div style="color:${r.ok?'var(--green)':'var(--red)'}">${r.name}: ${r.note}</div>`
       ).join('') + (i < urls.length-1 ? `<div style="color:var(--gold)">⏳ Testing ${names[i+1]}…</div>` : '');
     }
@@ -3113,7 +3103,7 @@ const UI = {
     const working = results.filter(r=>r.ok);
     const summary = working.length
       ? `<div style="margin-top:8px;color:var(--green);font-weight:700">✓ ${working.length}/${results.length} proxy bekerja. Yang tercepat: ${working.sort((a,b)=>a.ms-b.ms)[0].name} (${working[0].ms}ms)</div>`
-      : `<div style="margin-top:8px;color:var(--red);font-weight:700">✗ Semua proxy gagal. Kemungkinan jaringan memblokir akses ke FPL API. Gunakan Google Sheets sebagai data source.</div>`;
+      : `<div style="margin-top:8px;color:var(--red);font-weight:700">✗ Semua proxy gagal. Gunakan GitHub Actions atau Google Sheets sebagai data source alternatif.</div>`;
     el.innerHTML += summary;
   },
 
