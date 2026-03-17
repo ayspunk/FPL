@@ -3416,15 +3416,18 @@ const App = {
       }
     }
 
-    // ── Fetch history for ALL managers (priority #1 for charts) ──
-    // Clear history cache first (might have stale/bad entries)
+    // ── Fetch history + picks INTERLEAVED (maximize data from limited proxy) ──
     managers.forEach(m => {
       Cache.invalidate(CFG.FPL + 'entry/' + m.entryId + '/history/');
     });
-    console.log(`[League] Fetching history for ${managers.length} managers (slow mode, cache cleared)…`);
-    let histOK = 0, histFail = 0;
+    console.log(`[League] Fetching history+picks for ${managers.length} managers (interleaved)…`);
+    let histOK = 0, histFail = 0, picksOK = 0;
 
-    const histTasks = managers.map((m, mi) => async () => {
+    // Build interleaved tasks: [hist1, picks1, hist2, picks2, ...]
+    const interleavedTasks = [];
+    managers.forEach((m, mi) => {
+      // History task
+      interleavedTasks.push(async () => {
       try {
         let h = await Fetch.fpl('entry/' + m.entryId + '/history/', true); // force fresh
         
@@ -3464,11 +3467,18 @@ const App = {
           loaderText.textContent = `History: ${histOK+histFail}/${managers.length} (${histOK}✓ ${histFail}✗) ${pct}%`;
         }
       }
+      });
+      // Picks task for same manager
+      interleavedTasks.push(async () => {
+        try {
+          const p = await Fetch.managerPicks(m.entryId, gw);
+          if (p?.picks) { Store.leaguePicks[m.entryId] = p; picksOK++; }
+        } catch {}
+      });
     });
 
-    // Concurrency 2 + 600ms delay between each request
-    await Fetch.batch(histTasks, 2, 600);
-    console.log(`[League] History via proxy: ${histOK} OK, ${histFail} failed (of ${managers.length})`);
+    await Fetch.batch(interleavedTasks, 2, 400);
+    console.log(`[League] Interleaved: History ${histOK}/${managers.length}, Picks ${picksOK}/${managers.length}`);
 
     // GitHub fallback: if proxy failed, try loading history.json
     if (histOK === 0 && managers.length > 0) {
@@ -3505,46 +3515,18 @@ const App = {
       if (Store.subtab['league'] === 'charts') setTimeout(()=>Charts.buildAll(), 200);
     }
 
-    // ── Phase 2: Picks for current GW (try GitHub first, then proxy) ──
-    const ghPicks = await Fetch.githubJSON('league-picks.json');
-    if (ghPicks && typeof ghPicks === 'object') {
-      Object.entries(ghPicks).forEach(([eid, p]) => {
-        if (p?.picks) Store.leaguePicks[eid] = p;
-      });
-      console.log(`[League] Picks from GitHub: ${Object.keys(Store.leaguePicks).length}`);
+    // GitHub fallback for picks (if proxy failed)
+    if (picksOK === 0) {
+      const ghPicks = await Fetch.githubJSON('league-picks.json');
+      if (ghPicks && typeof ghPicks === 'object') {
+        Object.entries(ghPicks).forEach(([eid, p]) => {
+          if (p?.picks) { Store.leaguePicks[eid] = p; picksOK++; }
+        });
+        if (picksOK > 0) console.log(`[League] GitHub picks fallback: ${picksOK}`);
+      }
     }
 
-    // If GitHub didn't have picks (or partial), try proxy for remaining
-    const picksNeeded = managers.filter(m =>
-      !Store.leaguePicks[m.entryId] && !Store.leaguePicks[String(m.entryId)]
-    );
-    if (picksNeeded.length > 0 && picksNeeded.length < managers.length * 0.8) {
-      // Only try proxy if we already have most from GitHub (avoid wasting quota)
-      console.log(`[League] Fetching ${picksNeeded.length} remaining picks via proxy…`);
-      const picksTasks = picksNeeded.map(m => async () => {
-        try {
-          const p = await Fetch.managerPicks(m.entryId, gw);
-          if (p?.picks) Store.leaguePicks[m.entryId] = p;
-        } catch {}
-      });
-      await Fetch.batch(picksTasks, 2, 500);
-    } else if (Object.keys(Store.leaguePicks).length === 0) {
-      // No GitHub data at all — try proxy for all
-      console.log(`[League] No GitHub picks, fetching all ${managers.length} via proxy…`);
-      const picksTasks = managers.map(m => async () => {
-        try {
-          const p = await Fetch.managerPicks(m.entryId, gw);
-          if (p?.picks) Store.leaguePicks[m.entryId] = p;
-        } catch {}
-      });
-      await Fetch.batch(picksTasks, 2, 500);
-    }
-    console.log(`[League] Picks total: ${Object.keys(Store.leaguePicks).length}/${managers.length}`);
-
-    // Re-render with picks data (captain highlights now work)
-    if (Nav.current === 'league') Nav.goTab('league');
-
-    // ── Phase 3: Transfers + Info (try GitHub first) ──
+    // ── Phase 2: Transfers + Info (try GitHub first) ──
     const ghTransfers = await Fetch.githubJSON('transfers.json');
     if (Array.isArray(ghTransfers) && ghTransfers.length > 0) {
       // Group by entry_id
