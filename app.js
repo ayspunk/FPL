@@ -189,11 +189,6 @@ const Fetch = {
     const errors = [];
     this._requestCount++;
 
-    // Rate-limit protection: small delay every 3rd request
-    if (this._requestCount > 1 && this._requestCount % 3 === 0) {
-      await new Promise(r => setTimeout(r, 300));
-    }
-
     // Build proxy order: last working first, then others
     const order = [this._lastWorkingProxy];
     for (let i = 0; i < CFG.PROXIES.length; i++) {
@@ -2279,24 +2274,24 @@ const Render = {
         const picksCount = Object.keys(Store.leaguePicks).length;
         const picksSuffix = picksCount < managers.length ? ` (${picksCount}/${managers.length} picks)` : '';
 
-        if (capData.length) {
+        if (capData.length >= 2) {
           // Best: highest effective captain pts
           capData.sort((a,b) => b.effectivePts - a.effectivePts || b.gwPts - a.gwPts);
           const best = capData[0];
           items.push({ icon:'👑', label:`Best Captain Pick${picksSuffix}`, val:`${best.effectivePts} pts`, sub:`${best.player} (${best.basePts}×${best.mult}) — ${best.name}`, cls:'s-hi' });
 
-          // Worst: lowest effective captain pts, prefer different captain than best
+          // Worst: different manager with lowest captain pts
           capData.sort((a,b) => a.effectivePts - b.effectivePts || a.gwPts - b.gwPts);
-          // Try to find someone with a different captain than best
-          let worst = capData[0];
-          const diffCap = capData.find(c => c.elementId !== best.elementId);
-          if (diffCap && diffCap.effectivePts <= worst.effectivePts) worst = diffCap;
-          // If worst is same as best (everyone picked same captain), still show but note it
-          if (worst.effectivePts === best.effectivePts && worst.elementId === best.elementId) {
-            items.push({ icon:'💀', label:`Worst Captain Pick${picksSuffix}`, val:`${worst.effectivePts} pts`, sub:`Semua (${capData.length}) pilih ${worst.player}`, cls:'' });
-          } else {
+          const worst = capData.find(c => c.entryId !== best.entryId);
+          if (worst) {
             items.push({ icon:'💀', label:`Worst Captain Pick${picksSuffix}`, val:`${worst.effectivePts} pts`, sub:`${worst.player} (${worst.basePts}×${worst.mult}) — ${worst.name}`, cls:'s-lo' });
+          } else {
+            items.push({ icon:'💀', label:`Worst Captain Pick${picksSuffix}`, val:'–', sub:`Data tidak cukup (semua picks sama)` });
           }
+        } else if (capData.length === 1) {
+          const best = capData[0];
+          items.push({ icon:'👑', label:`Best Captain Pick${picksSuffix}`, val:`${best.effectivePts} pts`, sub:`${best.player} (${best.basePts}×${best.mult}) — ${best.name}`, cls:'s-hi' });
+          items.push({ icon:'💀', label:`Worst Captain Pick${picksSuffix}`, val:'–', sub:`Perlu ≥2 picks (baru ${picksCount})` });
         } else {
           items.push({ icon:'👑', label:'Best Captain Pick', val:'–', sub:'Belum ada data picks' });
           items.push({ icon:'💀', label:'Worst Captain Pick', val:'–', sub:'Belum ada data picks' });
@@ -3495,7 +3490,7 @@ const App = {
       });
     });
 
-    await Fetch.batch(interleavedTasks, 2, 400);
+    await Fetch.batch(interleavedTasks, 2, 250);
     console.log(`[League] Interleaved: History ${histOK}/${managers.length}, Picks ${picksOK}/${managers.length}`);
 
     // GitHub fallback: if proxy failed, try loading history.json
