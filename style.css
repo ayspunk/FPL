@@ -822,7 +822,7 @@ tr.row-rank { background: rgba(0,230,118,.03); }
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 16px;
-  min-height: 360px;
+  min-height: 320px;
   display: flex;
   flex-direction: column;
 }
@@ -840,32 +840,33 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 
 /* Manager Highlights */
 .highlights-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 12px;
   flex: 1;
   overflow-y: auto;
 }
+@media (max-width: 600px) { .highlights-list { grid-template-columns: 1fr; } }
 .hl-item {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 10px;
-  border-radius: 6px;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
   transition: background .15s;
 }
 .hl-item:hover { background: rgba(255,255,255,.03); }
-.hl-icon { font-size: 18px; flex-shrink: 0; width: 28px; text-align: center; }
+.hl-icon { font-size: 15px; flex-shrink: 0; width: 22px; text-align: center; }
 .hl-content { flex: 1; min-width: 0; }
-.hl-label { font-size: 10px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--text3); }
+.hl-label { font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--text3); }
 .hl-val {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 16px; font-weight: 700; color: var(--text);
+  font-size: 14px; font-weight: 700; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .hl-val.s-hi { color: var(--green); }
 .hl-val.s-lo { color: var(--red); }
-.hl-sub { font-size: 12px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hl-sub { font-size: 11px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Bump chart */
 .bump-svg-wrap {
