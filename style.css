@@ -223,6 +223,9 @@ body {
   padding: 0 20px;
   gap: 2px;
   overflow-x: auto;
+  position: sticky;
+  top: 52px;
+  z-index: 190;
 }
 #main-nav::-webkit-scrollbar { height: 0; }
 
@@ -251,6 +254,9 @@ body {
   padding: 0 20px;
   gap: 0;
   min-height: 38px;
+  position: sticky;
+  top: 93px; /* 52px header + 41px nav */
+  z-index: 180;
 }
 .subtab-bar.hidden { display: none; }
 .subtab {
