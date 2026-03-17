@@ -366,14 +366,19 @@ const Fetch = {
     const base = CFG.githubDataUrl || this._detectGithubBase();
     if (!base) return null;
     const url = base + filename;
-    const hit = Cache.get(url);
-    if (hit) return hit.data;
+    // League data files: always bust cache (CDN may be stale)
+    const volatile = ['league-picks','history','transfers','live'].some(k => filename.includes(k));
+    if (!volatile) {
+      const hit = Cache.get(url);
+      if (hit) return hit.data;
+    }
     try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(8000), cache: 'no-cache' });
+      const fetchUrl = volatile ? `${url}?_=${Date.now()}` : url;
+      const r = await fetch(fetchUrl, { signal: AbortSignal.timeout(8000), cache: 'no-store' });
       if (!r.ok) return null;
       const data = await r.json();
-      Cache.set(url, data, Cache.TTL.LIVE); // 5 min cache
-      console.log(`[GitHub] ✓ ${filename}`);
+      if (!volatile) Cache.set(url, data, Cache.TTL.LIVE);
+      console.log(`[GitHub] ✓ ${filename}${volatile?' (fresh)':''}`);
       return data;
     } catch(e) {
       console.log(`[GitHub] ✗ ${filename}: ${e.message}`);
@@ -3488,20 +3493,25 @@ const App = {
     const ghPicks = await Fetch.githubJSON('league-picks.json');
     if (ghPicks && typeof ghPicks === 'object' && !Array.isArray(ghPicks)) {
       const keys = Object.keys(ghPicks);
-      console.log(`[League] GitHub picks JSON: ${keys.length} keys, sample:`, keys[0], ghPicks[keys[0]] ? Object.keys(ghPicks[keys[0]]).join(',') : 'empty');
-      keys.forEach(eid => {
-        const entry = ghPicks[eid];
-        if (!entry) return;
-        // Data has structure: {picks:[...], entry_history:{...}, ...}
-        if (entry.picks && Array.isArray(entry.picks)) {
-          Store.leaguePicks[eid] = entry;
-          // Also store with numeric key for lookup compatibility
-          Store.leaguePicks[Number(eid)] = entry;
-        }
-      });
-      console.log(`[League] GitHub picks loaded: ${Math.floor(Object.keys(Store.leaguePicks).length/2)} managers`);
+      const firstKey = keys[0];
+      const firstVal = ghPicks[firstKey];
+      console.log(`[League] GitHub picks: ${keys.length} keys, first="${firstKey}", firstHasPicks=${!!firstVal?.picks}`);
+
+      // Validate format: {entryId: {picks:[...], ...}} not {elements:[...]}
+      if (firstVal?.picks && Array.isArray(firstVal.picks)) {
+        keys.forEach(eid => {
+          const entry = ghPicks[eid];
+          if (entry?.picks && Array.isArray(entry.picks)) {
+            Store.leaguePicks[eid] = entry;
+            Store.leaguePicks[Number(eid)] = entry;
+          }
+        });
+        console.log(`[League] ✓ GitHub picks: ${keys.length} managers`);
+      } else {
+        console.warn(`[League] ✗ GitHub picks: wrong format. Expected {id:{picks:[...]}}, got key="${firstKey}". File may be stale — re-run GitHub Actions.`);
+      }
     } else {
-      console.log(`[League] GitHub picks: not available`);
+      console.log(`[League] GitHub picks: file not found or empty`);
     }
 
     // ── GitHub History ──
