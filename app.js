@@ -660,17 +660,31 @@ const Process = {
       }
     }
 
-    // Build cumulative points per GW per manager
+    // Build cumulative points + transfers per GW per manager
     const ptsByGW = {};
+    const transByGW = {};  // cumulative transfers (excluding chip GWs)
     managers.forEach(m => {
-      // Try both number and string key
       const hist = entryEvents[m.entryId] || entryEvents[String(m.entryId)] || [];
-      let cum = 0;
+      // Identify chip GWs (wildcard & freehit = unlimited transfers, don't count)
+      const h = histories[m.entryId] || histories[String(m.entryId)];
+      const chips = h?.chips || [];
+      const chipGWs = new Set(chips.filter(c => {
+        const n = (c.name||'').toLowerCase().replace(/[_ ]/g,'');
+        return n.includes('wildcard') || n.includes('freehit');
+      }).map(c => Number(c.event)));
+
+      let cumPts = 0, cumTrans = 0;
       gwLabels.forEach(gw => {
         const ev = hist.find(e => Number(e.event) === gw);
-        cum += Number(ev?.points) || 0;
+        cumPts += Number(ev?.points) || 0;
+        // Only count transfers in non-chip GWs
+        if (ev && !chipGWs.has(gw)) {
+          cumTrans += Number(ev.event_transfers) || 0;
+        }
         if (!ptsByGW[gw]) ptsByGW[gw] = {};
-        ptsByGW[gw][m.entryId] = cum;
+        if (!transByGW[gw]) transByGW[gw] = {};
+        ptsByGW[gw][m.entryId] = cumPts;
+        transByGW[gw][m.entryId] = cumTrans;
       });
     });
 
@@ -680,8 +694,16 @@ const Process = {
       isMe:    m.entryName.toLowerCase().includes(CFG.myTeamName.toLowerCase()),
       ranks:   gwLabels.map(gw => {
         const pts = ptsByGW[gw] || {};
-        const myPts = pts[m.entryId] ?? 0;
-        return Object.values(pts).filter(v => v > myPts).length + 1;
+        const trans = transByGW[gw] || {};
+        const myPts   = pts[m.entryId] ?? 0;
+        const myTrans = trans[m.entryId] ?? 0;
+        // Rank: higher pts = better. If tied, fewer transfers = better.
+        const rank = Object.keys(pts).filter(eid => {
+          const oPts   = pts[eid] ?? 0;
+          const oTrans = trans[eid] ?? 0;
+          return oPts > myPts || (oPts === myPts && oTrans < myTrans);
+        }).length + 1;
+        return rank;
       }),
       totalPts: m.total,
       eventPts: m.eventTotal,
@@ -1962,7 +1984,7 @@ const Render = {
     // Build from FPL league standings + manager history
     const managers = Store.leagueManagers || [];
     const ls       = Store.leagueData;
-    const entries  = ls ? Process.processLeague(ls) : managers;
+    let entries    = ls ? Process.processLeague(ls) : [...managers];
 
     if (!entries.length)
       return UI.leagueSelectHTML() + H.info('Data Liga belum tersedia. Klik Refresh atau tunggu data dimuat dari FPL API.');
@@ -1970,18 +1992,53 @@ const Render = {
     const currentGW = Store.currentGW || 0;
     const myName    = CFG.myTeamName.toLowerCase();
     const hasInfos  = Object.keys(Store.managerInfos).length > 0;
+    const hasHist   = Object.keys(Store.managerHistory).length > 0;
+
+    // Calculate total transfers per manager (excluding chip GWs: WC, FH)
+    const totalTransfers = {};
+    if (hasHist) {
+      entries.forEach(e => {
+        const h = Store.managerHistory[e.entryId] || Store.managerHistory[String(e.entryId)];
+        const events = h?.current || (Array.isArray(h) ? h : []);
+        const chips = h?.chips || [];
+        const chipGWs = new Set(chips.filter(c => {
+          const n = (c.name||'').toLowerCase().replace(/[_ ]/g,'');
+          return n.includes('wildcard') || n.includes('freehit');
+        }).map(c => Number(c.event)));
+
+        let trans = 0;
+        events.forEach(ev => {
+          if (!chipGWs.has(Number(ev.event))) {
+            trans += Number(ev.event_transfers) || 0;
+          }
+        });
+        totalTransfers[e.entryId] = trans;
+      });
+
+      // Re-sort: higher total pts first, then fewer transfers
+      entries.sort((a, b) => {
+        if ((b.total||0) !== (a.total||0)) return (b.total||0) - (a.total||0);
+        return (totalTransfers[a.entryId]||0) - (totalTransfers[b.entryId]||0);
+      });
+
+      // Re-assign rank
+      entries.forEach((e, i) => {
+        e._prevRank = e.rank;
+        e.rank = i + 1;
+      });
+    }
 
     const rows = entries.map(e => {
       const isMe  = e.entryName.toLowerCase().includes(myName);
       const rnk   = e.rank;
       const rCls  = rnk===1?'r1':rnk===2?'r2':rnk===3?'r3':'';
-      const delta  = (e.lastRank||rnk) - rnk;
+      const delta  = (e.lastRank || e._prevRank || rnk) - rnk;
       const dCls  = delta>0?'trend-up':delta<0?'trend-down':'trend-same';
       const dStr  = delta>0?`⬆ +${delta}`:delta<0?`⬇ ${delta}`:'➡ =';
       const info  = Store.managerInfos[e.entryId];
       const ovrRank = info?.summary_overall_rank;
       const tv    = info?.last_deadline_total_value;
-      const bank  = info?.last_deadline_bank;
+      const trans = totalTransfers[e.entryId];
       return `<tr class="${isMe?'highlight-row':''}">
         <td class="rekap-rank ${rCls}">${rnk}</td>
         <td class="${dCls}" style="font-size:14px">${dStr}</td>
@@ -1989,6 +2046,7 @@ const Render = {
         <td class="dim">${e.playerName||'–'}</td>
         <td class="rekap-ep">${e.eventTotal??'–'}</td>
         <td class="rekap-tp">${e.total||0}</td>
+        ${hasHist?`<td class="mono dim r" style="font-size:12px" title="Transfer tanpa chip WC/FH">${trans!=null?trans:'–'}</td>`:''}
         ${hasInfos?`<td class="mono dim r" style="font-size:12px" title="Overall Rank">${ovrRank?ovrRank.toLocaleString():'–'}</td>`:''}
         ${hasInfos?`<td class="mono dim r" style="font-size:12px" title="Team Value">£${tv?(tv/10).toFixed(1):'–'}</td>`:''}
       </tr>`;
@@ -2003,11 +2061,13 @@ const Render = {
         <div class="stat-box"><div class="stat-label">Pts Tertinggi</div><div class="stat-val gold">${entries[0]?.total||0}</div></div>
       </div>
       <div class="section-title">Rekap Liga — ${Store.leagueData?.league?.name||CFG.leagues[CFG.selectedLeagueIdx]?.name||'–'}</div>
+      ${hasHist?'':'<div class="info-box" style="margin-bottom:12px">ℹ Data transfer belum dimuat. Tiebreaker (poin sama → transfer lebih sedikit = rank lebih baik) akan aktif setelah history dimuat.</div>'}
       <div class="table-wrap max-h">
         <table>
           <thead><tr>
             <th class="c">#</th><th>Trend</th><th>Tim</th><th>Manajer</th>
             <th class="r">GW Pts</th><th class="r">Total Pts</th>
+            ${hasHist?'<th class="r">Transfers</th>':''}
             ${hasInfos?'<th class="r">Overall Rank</th><th class="r">Team Value</th>':''}
           </tr></thead>
           <tbody>${rows}</tbody>
