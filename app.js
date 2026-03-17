@@ -650,11 +650,11 @@ const Process = {
     }
 
     // Build cumulative points + transfers per GW per manager
+    // Use total_points from history (official FPL cumulative) for accuracy
     const ptsByGW = {};
-    const transByGW = {};  // cumulative transfers (excluding chip GWs)
+    const transByGW = {};
     managers.forEach(m => {
       const hist = entryEvents[m.entryId] || entryEvents[String(m.entryId)] || [];
-      // Identify chip GWs (wildcard & freehit = unlimited transfers, don't count)
       const h = histories[m.entryId] || histories[String(m.entryId)];
       const chips = h?.chips || [];
       const chipGWs = new Set(chips.filter(c => {
@@ -662,11 +662,11 @@ const Process = {
         return n.includes('wildcard') || n.includes('freehit');
       }).map(c => Number(c.event)));
 
-      let cumPts = 0, cumTrans = 0;
+      let cumTrans = 0;
       gwLabels.forEach(gw => {
         const ev = hist.find(e => Number(e.event) === gw);
-        cumPts += Number(ev?.points) || 0;
-        // Only count transfers in non-chip GWs
+        // Use total_points (official cumulative) instead of summing points manually
+        const cumPts = Number(ev?.total_points) || 0;
         if (ev && !chipGWs.has(gw)) {
           cumTrans += Number(ev.event_transfers) || 0;
         }
@@ -2002,6 +2002,10 @@ const Render = {
           }
         });
         totalTransfers[e.entryId] = trans;
+
+        // Use total_points from history (same source as bump chart)
+        const lastGW = events.reduce((a, b) => Number(b.event) > Number(a.event) ? b : a, events[0]);
+        if (lastGW?.total_points) e.total = Number(lastGW.total_points);
       });
 
       // Re-sort: higher total pts first, then fewer transfers
@@ -2171,21 +2175,28 @@ const Render = {
         });
       });
 
-      // ── League position delta ──
+      // ── League position delta (use total_points from history for consistency) ──
       const cumThis = {}, cumPrev = {};
       gwData.forEach(d => {
         const h = Store.managerHistory[d.entryId] || Store.managerHistory[String(d.entryId)];
         const events = h?.current || (Array.isArray(h) ? h : []);
-        let cT = 0, cP = 0;
-        events.forEach(e => {
-          if (Number(e.event) <= gw) cT += Number(e.points) || 0;
-          if (Number(e.event) <= gw - 1) cP += Number(e.points) || 0;
-        });
-        cumThis[d.entryId] = cT; cumPrev[d.entryId] = cP;
+        const thisEv = events.find(e => Number(e.event) === gw);
+        const prevEv = events.find(e => Number(e.event) === gw - 1);
+        cumThis[d.entryId] = Number(thisEv?.total_points) || 0;
+        cumPrev[d.entryId] = Number(prevEv?.total_points) || 0;
       });
+      // Rank with transfer tiebreaker (same logic as bump chart and rekap)
+      const transAccum = {};
+      gwData.forEach(d => { transAccum[d.entryId] = d.totalTrans; });
       gwData.forEach(d => {
-        const posNow = gwData.filter(x => cumThis[x.entryId] > cumThis[d.entryId]).length + 1;
-        const posPrev = gwData.filter(x => cumPrev[x.entryId] > cumPrev[d.entryId]).length + 1;
+        const posNow = gwData.filter(x =>
+          cumThis[x.entryId] > cumThis[d.entryId] ||
+          (cumThis[x.entryId] === cumThis[d.entryId] && (transAccum[x.entryId]||0) < (transAccum[d.entryId]||0))
+        ).length + 1;
+        const posPrev = gwData.filter(x =>
+          cumPrev[x.entryId] > cumPrev[d.entryId] ||
+          (cumPrev[x.entryId] === cumPrev[d.entryId] && (transAccum[x.entryId]||0) < (transAccum[d.entryId]||0))
+        ).length + 1;
         d._leagueDelta = posPrev - posNow;
         d._leaguePos = posNow;
       });
