@@ -2246,6 +2246,7 @@ const Render = {
 
       // 7. Best Captain Pick this Week
       // 8. Worst Captain Pick this Week
+      const minPicksNeeded = Math.max(2, Math.ceil(managers.length * 0.5));
       if (hasPicks && Object.keys(liveMap).length > 0) {
         const capData = [];
         managers.forEach(m => {
@@ -2266,39 +2267,30 @@ const Render = {
           });
         });
 
-        // Debug
-        const uniqueCaps = [...new Set(capData.map(c => c.elementId))];
-        console.log(`[Highlights] Captain data: ${capData.length} picks, ${uniqueCaps.length} unique captains`);
-        if (capData.length) console.log(`[Highlights] Captain pts range: ${Math.min(...capData.map(c=>c.effectivePts))} — ${Math.max(...capData.map(c=>c.effectivePts))}`);
-
         const picksCount = Object.keys(Store.leaguePicks).length;
-        const picksSuffix = picksCount < managers.length ? ` (${picksCount}/${managers.length} picks)` : '';
+        console.log(`[Highlights] Captain data: ${capData.length} picks, ${[...new Set(capData.map(c=>c.elementId))].length} unique, need ${minPicksNeeded}+`);
 
-        if (capData.length >= 2) {
-          // Best: highest effective captain pts
+        if (capData.length >= minPicksNeeded) {
+          // Best
           capData.sort((a,b) => b.effectivePts - a.effectivePts || b.gwPts - a.gwPts);
           const best = capData[0];
-          items.push({ icon:'👑', label:`Best Captain Pick${picksSuffix}`, val:`${best.effectivePts} pts`, sub:`${best.player} (${best.basePts}×${best.mult}) — ${best.name}`, cls:'s-hi' });
+          items.push({ icon:'👑', label:'Best Captain Pick', val:`${best.effectivePts} pts`, sub:`${best.player} (${best.basePts}×${best.mult}) — ${best.name}`, cls:'s-hi' });
 
-          // Worst: different manager with lowest captain pts
+          // Worst: must be different manager
           capData.sort((a,b) => a.effectivePts - b.effectivePts || a.gwPts - b.gwPts);
           const worst = capData.find(c => c.entryId !== best.entryId);
           if (worst) {
-            items.push({ icon:'💀', label:`Worst Captain Pick${picksSuffix}`, val:`${worst.effectivePts} pts`, sub:`${worst.player} (${worst.basePts}×${worst.mult}) — ${worst.name}`, cls:'s-lo' });
+            items.push({ icon:'💀', label:'Worst Captain Pick', val:`${worst.effectivePts} pts`, sub:`${worst.player} (${worst.basePts}×${worst.mult}) — ${worst.name}`, cls:'s-lo' });
           } else {
-            items.push({ icon:'💀', label:`Worst Captain Pick${picksSuffix}`, val:'–', sub:`Data tidak cukup (semua picks sama)` });
+            items.push({ icon:'💀', label:'Worst Captain Pick', val:'–', sub:'Semua memilih captain yang sama' });
           }
-        } else if (capData.length === 1) {
-          const best = capData[0];
-          items.push({ icon:'👑', label:`Best Captain Pick${picksSuffix}`, val:`${best.effectivePts} pts`, sub:`${best.player} (${best.basePts}×${best.mult}) — ${best.name}`, cls:'s-hi' });
-          items.push({ icon:'💀', label:`Worst Captain Pick${picksSuffix}`, val:'–', sub:`Perlu ≥2 picks (baru ${picksCount})` });
         } else {
-          items.push({ icon:'👑', label:'Best Captain Pick', val:'–', sub:'Belum ada data picks' });
-          items.push({ icon:'💀', label:'Worst Captain Pick', val:'–', sub:'Belum ada data picks' });
+          items.push({ icon:'👑', label:'Best Captain Pick', val:'–', sub:`Picks ${capData.length}/${managers.length} — setup GitHub Actions` });
+          items.push({ icon:'💀', label:'Worst Captain Pick', val:'–', sub:`Picks ${capData.length}/${managers.length} — setup GitHub Actions` });
         }
       } else {
-        items.push({ icon:'👑', label:'Best Captain Pick', val:'–', sub:'Menunggu picks…' });
-        items.push({ icon:'💀', label:'Worst Captain Pick', val:'–', sub:'Menunggu picks…' });
+        items.push({ icon:'👑', label:'Best Captain Pick', val:'–', sub:'Setup GitHub Actions → league-picks.json' });
+        items.push({ icon:'💀', label:'Worst Captain Pick', val:'–', sub:'Setup GitHub Actions → league-picks.json' });
       }
 
       // ── COLUMN 2: Season highlights ──
