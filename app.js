@@ -3520,16 +3520,24 @@ const App = {
       if (Store.subtab['league'] === 'charts') setTimeout(()=>Charts.buildAll(), 200);
     }
 
-    // GitHub fallback for picks (if proxy failed)
-    if (picksOK === 0) {
+    // GitHub fallback for picks (always try — proxy rarely gets enough)
+    if (picksOK < managers.length) {
       const ghPicks = await Fetch.githubJSON('league-picks.json');
       if (ghPicks && typeof ghPicks === 'object') {
+        let added = 0;
         Object.entries(ghPicks).forEach(([eid, p]) => {
-          if (p?.picks) { Store.leaguePicks[eid] = p; picksOK++; }
+          if (p?.picks && !Store.leaguePicks[eid] && !Store.leaguePicks[String(eid)]) {
+            Store.leaguePicks[eid] = p;
+            added++;
+          }
         });
-        if (picksOK > 0) console.log(`[League] GitHub picks fallback: ${picksOK}`);
+        picksOK += added;
+        if (added > 0) console.log(`[League] GitHub picks: +${added} → total ${picksOK}/${managers.length}`);
       }
     }
+
+    // Re-render with picks data
+    if (Nav.current === 'league') Nav.goTab('league');
 
     // ── Phase 2: Transfers + Info (try GitHub first) ──
     const ghTransfers = await Fetch.githubJSON('transfers.json');
