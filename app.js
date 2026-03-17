@@ -2264,21 +2264,38 @@ const Render = {
             entryId: m.entryId,
             name: mgrName(m.entryId),
             player: playerName(cap.element),
+            elementId: cap.element,
             basePts, mult, effectivePts,
             gwPts: gwData.find(d => d.entryId == m.entryId)?.gwPts || 0,
           });
         });
 
+        // Debug
+        const uniqueCaps = [...new Set(capData.map(c => c.elementId))];
+        console.log(`[Highlights] Captain data: ${capData.length} picks, ${uniqueCaps.length} unique captains`);
+        if (capData.length) console.log(`[Highlights] Captain pts range: ${Math.min(...capData.map(c=>c.effectivePts))} — ${Math.max(...capData.map(c=>c.effectivePts))}`);
+
+        const picksCount = Object.keys(Store.leaguePicks).length;
+        const picksSuffix = picksCount < managers.length ? ` (${picksCount}/${managers.length} picks)` : '';
+
         if (capData.length) {
-          // Best: highest effective captain pts. Tiebreak by total GW pts.
+          // Best: highest effective captain pts
           capData.sort((a,b) => b.effectivePts - a.effectivePts || b.gwPts - a.gwPts);
           const best = capData[0];
-          items.push({ icon:'👑', label:'Best Captain Pick', val:`${best.effectivePts} pts`, sub:`${best.player} (${best.basePts}×${best.mult}) — ${best.name}`, cls:'s-hi' });
+          items.push({ icon:'👑', label:`Best Captain Pick${picksSuffix}`, val:`${best.effectivePts} pts`, sub:`${best.player} (${best.basePts}×${best.mult}) — ${best.name}`, cls:'s-hi' });
 
-          // Worst: lowest effective captain pts. Tiebreak by worst GW pts.
+          // Worst: lowest effective captain pts, prefer different captain than best
           capData.sort((a,b) => a.effectivePts - b.effectivePts || a.gwPts - b.gwPts);
-          const worst = capData[0];
-          items.push({ icon:'💀', label:'Worst Captain Pick', val:`${worst.effectivePts} pts`, sub:`${worst.player} (${worst.basePts}×${worst.mult}) — ${worst.name}`, cls:'s-lo' });
+          // Try to find someone with a different captain than best
+          let worst = capData[0];
+          const diffCap = capData.find(c => c.elementId !== best.elementId);
+          if (diffCap && diffCap.effectivePts <= worst.effectivePts) worst = diffCap;
+          // If worst is same as best (everyone picked same captain), still show but note it
+          if (worst.effectivePts === best.effectivePts && worst.elementId === best.elementId) {
+            items.push({ icon:'💀', label:`Worst Captain Pick${picksSuffix}`, val:`${worst.effectivePts} pts`, sub:`Semua (${capData.length}) pilih ${worst.player}`, cls:'' });
+          } else {
+            items.push({ icon:'💀', label:`Worst Captain Pick${picksSuffix}`, val:`${worst.effectivePts} pts`, sub:`${worst.player} (${worst.basePts}×${worst.mult}) — ${worst.name}`, cls:'s-lo' });
+          }
         } else {
           items.push({ icon:'👑', label:'Best Captain Pick', val:'–', sub:'Belum ada data picks' });
           items.push({ icon:'💀', label:'Worst Captain Pick', val:'–', sub:'Belum ada data picks' });
