@@ -2120,14 +2120,129 @@ const Render = {
           <div id="bump-chart-wrap" class="bump-svg-wrap">${hasMatrix?H.loader('Membangun chart…'):H.info('Data ranking per GW belum tersedia. History manajer perlu dimuat terlebih dahulu.')}</div>
         </div>
         <div class="chart-card">
-          <div class="chart-title">📉 Overall Rank Trend</div>
-          <div class="chart-canvas-wrap"><canvas id="chart-ranking"></canvas></div>
+          <div class="chart-title">🏆 Manager Highlights</div>
+          <div id="manager-highlights">${this._managerHighlights()}</div>
         </div>
         <div class="chart-card">
           <div class="chart-title">🏅 Total Points Standings</div>
           <div class="chart-canvas-wrap"><canvas id="chart-standings"></canvas></div>
         </div>
       </div>`;
+  },
+
+  _managerHighlights() {
+    const managers = Store.leagueManagers || [];
+    const hasHist = Object.keys(Store.managerHistory).length > 0;
+    const hasInfos = Object.keys(Store.managerInfos).length > 0;
+    if (!managers.length) return '<div class="dim" style="padding:12px">Menunggu data liga…</div>';
+
+    const gw = Store.currentGW || 0;
+    const items = [];
+
+    // Helper: find manager name
+    const mgrName = (entryId) => {
+      const m = managers.find(x => x.entryId == entryId);
+      return m ? `${m.playerName||'?'} (${m.entryName})` : '?';
+    };
+
+    if (hasHist) {
+      // Collect per-GW data for current GW
+      const gwData = [];
+      managers.forEach(m => {
+        const h = Store.managerHistory[m.entryId] || Store.managerHistory[String(m.entryId)];
+        const events = h?.current || (Array.isArray(h) ? h : []);
+        const thisGW = events.find(e => Number(e.event) === gw);
+        const prevGW = events.find(e => Number(e.event) === gw - 1);
+
+        // Cumulative transfers (excl WC/FH)
+        const chips = h?.chips || [];
+        const chipGWs = new Set(chips.filter(c => {
+          const n = (c.name||'').toLowerCase().replace(/[_ ]/g,'');
+          return n.includes('wildcard') || n.includes('freehit');
+        }).map(c => Number(c.event)));
+        let totalTrans = 0;
+        events.forEach(e => { if (!chipGWs.has(Number(e.event))) totalTrans += Number(e.event_transfers) || 0; });
+
+        gwData.push({
+          entryId: m.entryId, name: mgrName(m.entryId),
+          gwPts: Number(thisGW?.points) || 0,
+          benchPts: Number(thisGW?.points_on_bench) || 0,
+          gwTrans: Number(thisGW?.event_transfers) || 0,
+          gwTransCost: Number(thisGW?.event_transfers_cost) || 0,
+          totalTrans,
+          rank: Number(thisGW?.rank) || 0,
+          overallRank: Number(thisGW?.overall_rank) || 0,
+          prevOverallRank: Number(prevGW?.overall_rank) || 0,
+          value: Number(thisGW?.value) || 0,
+          bank: Number(thisGW?.bank) || 0,
+        });
+      });
+
+      // 1. Manager of the Week
+      const motw = gwData.reduce((a, b) => b.gwPts > a.gwPts ? b : a, gwData[0]);
+      if (motw) items.push({ icon:'🎯', label:'Manager of the Week', val:`${motw.gwPts} pts`, sub:motw.name });
+
+      // 2. Biggest Rise (overall rank improvement)
+      gwData.forEach(d => d._rankDelta = d.prevOverallRank > 0 ? d.prevOverallRank - d.overallRank : 0);
+      const rise = gwData.reduce((a, b) => b._rankDelta > a._rankDelta ? b : a, gwData[0]);
+      if (rise && rise._rankDelta > 0) items.push({ icon:'📈', label:'Biggest Rise', val:`+${rise._rankDelta.toLocaleString()} rank`, sub:rise.name, cls:'s-hi' });
+
+      // 3. Biggest Fall
+      const fall = gwData.reduce((a, b) => b._rankDelta < a._rankDelta ? b : a, gwData[0]);
+      if (fall && fall._rankDelta < 0) items.push({ icon:'📉', label:'Biggest Fall', val:`${fall._rankDelta.toLocaleString()} rank`, sub:fall.name, cls:'s-lo' });
+
+      // 4. Most Points on Bench this Week
+      const benchKing = gwData.reduce((a, b) => b.benchPts > a.benchPts ? b : a, gwData[0]);
+      if (benchKing && benchKing.benchPts > 0) items.push({ icon:'💺', label:'Most Pts on Bench', val:`${benchKing.benchPts} pts`, sub:benchKing.name });
+
+      // 5. Most Transfers this Season (excl chips)
+      const mostTrans = gwData.reduce((a, b) => b.totalTrans > a.totalTrans ? b : a, gwData[0]);
+      if (mostTrans) items.push({ icon:'🔄', label:'Most Transfers (Season)', val:`${mostTrans.totalTrans} transfers`, sub:mostTrans.name });
+
+      // 6. Least Transfers this Season
+      const leastTrans = gwData.reduce((a, b) => b.totalTrans < a.totalTrans ? b : a, gwData[0]);
+      if (leastTrans) items.push({ icon:'😴', label:'Least Transfers (Season)', val:`${leastTrans.totalTrans} transfers`, sub:leastTrans.name });
+
+      // 7. Best Team Value
+      const bestVal = gwData.reduce((a, b) => b.value > a.value ? b : a, gwData[0]);
+      if (bestVal && bestVal.value > 0) items.push({ icon:'💰', label:'Best Team Value', val:`£${(bestVal.value/10).toFixed(1)}`, sub:bestVal.name });
+
+      // 8. Lowest Team Value
+      const lowVal = gwData.filter(d => d.value > 0).reduce((a, b) => b.value < a.value ? b : a, gwData[0]);
+      if (lowVal && lowVal.value > 0) items.push({ icon:'🪙', label:'Lowest Team Value', val:`£${(lowVal.value/10).toFixed(1)}`, sub:lowVal.name });
+
+      // 9. Best Overall Rank
+      const bestRank = gwData.filter(d => d.overallRank > 0).reduce((a, b) => b.overallRank < a.overallRank ? b : a, gwData[0]);
+      if (bestRank && bestRank.overallRank > 0) items.push({ icon:'🌍', label:'Best Overall Rank', val:`#${bestRank.overallRank.toLocaleString()}`, sub:bestRank.name });
+
+      // 10. Biggest Transfer Hit this Week (most transfer cost)
+      const hitMan = gwData.filter(d => d.gwTransCost > 0).reduce((a, b) => (b.gwTransCost > a.gwTransCost ? b : a), {gwTransCost:0});
+      if (hitMan.gwTransCost > 0) items.push({ icon:'💸', label:'Transfer Hit this Week', val:`-${hitMan.gwTransCost} pts`, sub:hitMan.name, cls:'s-lo' });
+
+      // 11. Most Bench Points Season Total
+      const benchSeason = [];
+      gwData.forEach(d => {
+        const h = Store.managerHistory[d.entryId] || Store.managerHistory[String(d.entryId)];
+        const events = h?.current || (Array.isArray(h) ? h : []);
+        const totalBench = events.reduce((s, e) => s + (Number(e.points_on_bench) || 0), 0);
+        benchSeason.push({ ...d, totalBench });
+      });
+      const benchSeasonKing = benchSeason.reduce((a, b) => b.totalBench > a.totalBench ? b : a, benchSeason[0]);
+      if (benchSeasonKing?.totalBench > 0) items.push({ icon:'🛋️', label:'Most Bench Pts (Season)', val:`${benchSeasonKing.totalBench} pts`, sub:benchSeasonKing.name });
+    }
+
+    if (!items.length) return '<div class="dim" style="padding:12px">Menunggu data history dimuat…</div>';
+
+    return `<div class="highlights-list">
+      ${items.map(it => `<div class="hl-item">
+        <div class="hl-icon">${it.icon}</div>
+        <div class="hl-content">
+          <div class="hl-label">${it.label}</div>
+          <div class="hl-val ${it.cls||''}">${it.val}</div>
+          <div class="hl-sub">${it.sub}</div>
+        </div>
+      </div>`).join('')}
+    </div>`;
   },
 
   // ── Transfer & Chips ───────────────────────────────────
@@ -2552,10 +2667,6 @@ const Charts = {
     if (leagueMatrix?.series?.length) {
       this.buildBump(leagueMatrix);
     }
-    const overallMatrix = Store.overallRankMatrix;
-    if (overallMatrix?.series?.length) {
-      this.buildRankingLine(overallMatrix);
-    }
     if (Store.leagueManagers?.length) this.buildStandingsBar(Store.leagueManagers);
   },
 
@@ -2621,39 +2732,6 @@ const Charts = {
           l.style.strokeWidth=l.classList.contains('hl')?'3':'1.5';
         });
       });
-    });
-  },
-
-  buildRankingLine(matrix) {
-    this.destroy('ranking');
-    const canvas=document.getElementById('chart-ranking'); if(!canvas) return;
-    const { gwLabels, series } = matrix;
-    if (!gwLabels?.length) return;
-    const datasets=series.map((s,i)=>({
-      label: s.name,
-      data:  s.ranks,
-      borderColor: s.isMe?'#00e676':MANAGER_COLORS[i%MANAGER_COLORS.length],
-      borderWidth: s.isMe?3:1,
-      pointRadius: s.isMe?3:1,
-      tension: 0.3,
-    }));
-    Store.chartInstances['ranking']=new Chart(canvas,{
-      type:'line', data:{labels:gwLabels.map(g=>`GW${g}`), datasets},
-      options:{
-        responsive:true, maintainAspectRatio:false,
-        plugins:{ legend:{display:false}, tooltip:{mode:'index',intersect:false,
-          callbacks:{label:ctx=>`${ctx.dataset.label}: #${(ctx.raw||0).toLocaleString()}`}
-        }},
-        scales:{
-          x:{grid:{color:'rgba(30,48,72,.5)'},ticks:{color:'#4a6a88',font:{size:10}}},
-          y:{reverse:true, grid:{color:'rgba(30,48,72,.5)'},
-             ticks:{color:'#4a6a88',callback:v=>{
-               if(v>=1e6) return (v/1e6).toFixed(1)+'M';
-               if(v>=1e3) return (v/1e3).toFixed(0)+'K';
-               return '#'+v;
-             }}},
-        },
-      },
     });
   },
 
