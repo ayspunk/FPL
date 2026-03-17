@@ -2108,13 +2108,13 @@ const Render = {
           <div class="chart-title">📈 Ranking per GW — Bump Chart (posisi dalam liga)</div>
           <div id="bump-chart-wrap" class="bump-svg-wrap">${hasMatrix?H.loader('Membangun chart…'):H.info('Data ranking per GW belum tersedia. History manajer perlu dimuat terlebih dahulu.')}</div>
         </div>
-        <div class="chart-card">
-          <div class="chart-title">🏆 Manager Highlights</div>
-          <div id="manager-highlights">${this._managerHighlights()}</div>
+        <div class="chart-card" style="max-height:${Math.max(360, (managers.length||10)*32+40)}px">
+          <div class="chart-title">🏆 Manager Highlights — GW ${gw}</div>
+          <div id="manager-highlights" style="flex:1;overflow-y:auto">${this._managerHighlights()}</div>
         </div>
         <div class="chart-card">
           <div class="chart-title">🏅 Total Points Standings</div>
-          <div class="chart-canvas-wrap" style="min-height:${Math.max(280, (managers.length||10)*32)}px"><canvas id="chart-standings"></canvas></div>
+          <div class="chart-canvas-wrap" style="min-height:${Math.max(280, (managers.length||10)*30)}px"><canvas id="chart-standings"></canvas></div>
         </div>
       </div>`;
   },
@@ -2123,7 +2123,6 @@ const Render = {
     const managers = Store.leagueManagers || [];
     const hasHist = Object.keys(Store.managerHistory).length > 0;
     const hasPicks = Object.keys(Store.leaguePicks).length > 0;
-    const hasTrans = Object.keys(Store.managerTransfers).length > 0;
     if (!managers.length) return '<div class="dim" style="padding:12px">Menunggu data liga…</div>';
 
     const gw = Store.currentGW || 0;
@@ -2210,42 +2209,32 @@ const Render = {
       const benchK = gwData.reduce((a, b) => b.benchPts > a.benchPts ? b : a, gwData[0]);
       items.push({ icon:'💺', label:'Most Pts on Bench', val:`${benchK.benchPts} pts`, sub:benchK.name });
 
-      // 5. Best Transfer this Week
-      if (hasTrans && Object.keys(liveMap).length > 0) {
-        let bestT = { net: -999, name:'', sub:'' };
-        managers.forEach(m => {
-          const trs = Store.managerTransfers[m.entryId] || Store.managerTransfers[String(m.entryId)];
-          if (!Array.isArray(trs)) return;
-          const gwTrs = trs.filter(t => Number(t.event) === gw);
-          gwTrs.forEach(t => {
-            const inPts = liveP(t.element_in);
-            const outPts = liveP(t.element_out);
-            const net = inPts - outPts;
-            if (net > bestT.net) bestT = { net, name: mgrName(m.entryId), sub: `${playerName(t.element_in)} (${inPts}) ↔ ${playerName(t.element_out)} (${outPts})` };
+      // 5. Best GW Score this Season (from history — no extra API needed)
+      {
+        let best = { pts:0, gw:0, name:'' };
+        gwData.forEach(d => {
+          const h = Store.managerHistory[d.entryId] || Store.managerHistory[String(d.entryId)];
+          const events = h?.current || (Array.isArray(h) ? h : []);
+          events.forEach(e => {
+            const pts = Number(e.points) || 0;
+            if (pts > best.pts) best = { pts, gw: Number(e.event), name: d.name };
           });
         });
-        items.push({ icon:'✅', label:'Best Transfer (Week)', val: bestT.net > -999 ? `+${bestT.net} net pts` : '–', sub: bestT.sub || bestT.name, cls: bestT.net > 0 ? 's-hi' : '' });
-      } else {
-        items.push({ icon:'✅', label:'Best Transfer (Week)', val:'–', sub:'Menunggu data…' });
+        items.push({ icon:'🏅', label:'Best GW Score (Season)', val:`${best.pts} pts (GW${best.gw})`, sub:best.name, cls:'s-hi' });
       }
 
-      // 6. Worst Transfer this Week
-      if (hasTrans && Object.keys(liveMap).length > 0) {
-        let worstT = { net: 999, name:'', sub:'' };
-        managers.forEach(m => {
-          const trs = Store.managerTransfers[m.entryId] || Store.managerTransfers[String(m.entryId)];
-          if (!Array.isArray(trs)) return;
-          const gwTrs = trs.filter(t => Number(t.event) === gw);
-          gwTrs.forEach(t => {
-            const inPts = liveP(t.element_in);
-            const outPts = liveP(t.element_out);
-            const net = inPts - outPts;
-            if (net < worstT.net) worstT = { net, name: mgrName(m.entryId), sub: `${playerName(t.element_in)} (${inPts}) ↔ ${playerName(t.element_out)} (${outPts})` };
+      // 6. Worst GW Score this Season
+      {
+        let worst = { pts:999, gw:0, name:'' };
+        gwData.forEach(d => {
+          const h = Store.managerHistory[d.entryId] || Store.managerHistory[String(d.entryId)];
+          const events = h?.current || (Array.isArray(h) ? h : []);
+          events.forEach(e => {
+            const pts = Number(e.points) || 0;
+            if (pts < worst.pts && pts > 0) worst = { pts, gw: Number(e.event), name: d.name };
           });
         });
-        items.push({ icon:'❌', label:'Worst Transfer (Week)', val: worstT.net < 999 ? `${worstT.net} net pts` : '–', sub: worstT.sub || worstT.name, cls: worstT.net < 0 ? 's-lo' : '' });
-      } else {
-        items.push({ icon:'❌', label:'Worst Transfer (Week)', val:'–', sub:'Menunggu data…' });
+        items.push({ icon:'😱', label:'Worst GW Score (Season)', val:`${worst.pts} pts (GW${worst.gw})`, sub:worst.name, cls:'s-lo' });
       }
 
       // 7. Best Captain Pick this Week
@@ -3505,7 +3494,21 @@ const App = {
       if (Store.subtab['league'] === 'charts') setTimeout(()=>Charts.buildAll(), 200);
     }
 
-    // ── Fetch transfers + info in background (lower priority) ──
+    // ── Phase 2: Picks for current GW (for captain highlights) ──
+    console.log(`[League] Fetching picks for GW${gw}…`);
+    const picksTasks = managers.map(m => async () => {
+      try {
+        const p = await Fetch.managerPicks(m.entryId, gw);
+        if (p?.picks) Store.leaguePicks[m.entryId] = p;
+      } catch {}
+    });
+    await Fetch.batch(picksTasks, 2, 500);
+    console.log(`[League] Picks loaded: ${Object.keys(Store.leaguePicks).length}/${managers.length}`);
+
+    // Re-render with picks data (captain highlights now work)
+    if (Nav.current === 'league') Nav.goTab('league');
+
+    // ── Phase 3: Transfers + Info (lowest priority, often rate-limited) ──
     const bgTasks = [
       ...managers.map(m => async () => {
         try { const t = await Fetch.managerTransfers(m.entryId); if (t) Store.managerTransfers[m.entryId] = t; } catch {}
@@ -3517,16 +3520,6 @@ const App = {
     await Fetch.batch(bgTasks, 2, 500);
     Store.transferMatrix = Process.buildTransferMatrix(managers, Store.managerTransfers);
     console.log(`[League] Transfers+Info done. Transfer matrix: ${Store.transferMatrix?.rows?.length||0} GWs`);
-
-    // ── Fetch picks for current GW (for captain analysis) ──
-    const picksTasks = managers.map(m => async () => {
-      try {
-        const p = await Fetch.managerPicks(m.entryId, gw);
-        if (p?.picks) Store.leaguePicks[m.entryId] = p;
-      } catch {}
-    });
-    await Fetch.batch(picksTasks, 2, 500);
-    console.log(`[League] Picks loaded: ${Object.keys(Store.leaguePicks).length}/${managers.length}`);
 
     // Final re-render
     if (Nav.current === 'league') Nav.goTab('league');
