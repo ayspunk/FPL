@@ -2137,11 +2137,10 @@ const Render = {
       return m ? `${m.playerName||'?'} (${m.entryName})` : '?';
     };
     const playerName = (elId) => bs?.elements?.find(e => e.id == elId)?.web_name || '?';
-    const livePoints = (elId) => {
-      if (!live?.elements) return 0;
-      const el = live.elements.find(e => e.id == elId);
-      return el?.stats?.total_points || 0;
-    };
+    // Fast lookup map for live GW points
+    const liveMap = {};
+    if (live?.elements) live.elements.forEach(el => { liveMap[el.id] = el.stats?.total_points || 0; });
+    const liveP = (elId) => liveMap[elId] ?? liveMap[String(elId)] ?? 0;
 
     if (hasHist) {
       const gwData = [];
@@ -2212,15 +2211,15 @@ const Render = {
       items.push({ icon:'💺', label:'Most Pts on Bench', val:`${benchK.benchPts} pts`, sub:benchK.name });
 
       // 5. Best Transfer this Week
-      if (hasTrans && live?.elements) {
+      if (hasTrans && Object.keys(liveMap).length > 0) {
         let bestT = { net: -999, name:'', sub:'' };
         managers.forEach(m => {
           const trs = Store.managerTransfers[m.entryId] || Store.managerTransfers[String(m.entryId)];
           if (!Array.isArray(trs)) return;
           const gwTrs = trs.filter(t => Number(t.event) === gw);
           gwTrs.forEach(t => {
-            const inPts = livePoints(t.element_in);
-            const outPts = livePoints(t.element_out);
+            const inPts = liveP(t.element_in);
+            const outPts = liveP(t.element_out);
             const net = inPts - outPts;
             if (net > bestT.net) bestT = { net, name: mgrName(m.entryId), sub: `${playerName(t.element_in)} (${inPts}) ↔ ${playerName(t.element_out)} (${outPts})` };
           });
@@ -2231,15 +2230,15 @@ const Render = {
       }
 
       // 6. Worst Transfer this Week
-      if (hasTrans && live?.elements) {
+      if (hasTrans && Object.keys(liveMap).length > 0) {
         let worstT = { net: 999, name:'', sub:'' };
         managers.forEach(m => {
           const trs = Store.managerTransfers[m.entryId] || Store.managerTransfers[String(m.entryId)];
           if (!Array.isArray(trs)) return;
           const gwTrs = trs.filter(t => Number(t.event) === gw);
           gwTrs.forEach(t => {
-            const inPts = livePoints(t.element_in);
-            const outPts = livePoints(t.element_out);
+            const inPts = liveP(t.element_in);
+            const outPts = liveP(t.element_out);
             const net = inPts - outPts;
             if (net < worstT.net) worstT = { net, name: mgrName(m.entryId), sub: `${playerName(t.element_in)} (${inPts}) ↔ ${playerName(t.element_out)} (${outPts})` };
           });
@@ -2250,38 +2249,42 @@ const Render = {
       }
 
       // 7. Best Captain Pick this Week
-      if (hasPicks && live?.elements) {
-        let bestCap = { pts: -1, names:[] };
+      // 8. Worst Captain Pick this Week
+      if (hasPicks && Object.keys(liveMap).length > 0) {
+        const capData = [];
         managers.forEach(m => {
           const p = Store.leaguePicks[m.entryId] || Store.leaguePicks[String(m.entryId)];
           if (!p?.picks) return;
           const cap = p.picks.find(pk => pk.is_captain);
           if (!cap) return;
-          const pts = livePoints(cap.element) * (cap.multiplier || 2);
-          if (pts > bestCap.pts) bestCap = { pts, names: [{ mgr: mgrName(m.entryId), player: playerName(cap.element), raw: livePoints(cap.element) }] };
-          else if (pts === bestCap.pts) bestCap.names.push({ mgr: mgrName(m.entryId), player: playerName(cap.element), raw: livePoints(cap.element) });
+          const basePts = liveP(cap.element);
+          const mult = cap.multiplier || 2;
+          const effectivePts = basePts * mult;
+          capData.push({
+            entryId: m.entryId,
+            name: mgrName(m.entryId),
+            player: playerName(cap.element),
+            basePts, mult, effectivePts,
+            gwPts: gwData.find(d => d.entryId == m.entryId)?.gwPts || 0,
+          });
         });
-        const capSub = bestCap.names.map(n => `${n.player} (${n.raw}×) — ${n.mgr}`).join(', ');
-        items.push({ icon:'👑', label:'Best Captain Pick', val: bestCap.pts > 0 ? `${bestCap.pts} pts` : '–', sub: capSub, cls:'s-hi' });
+
+        if (capData.length) {
+          // Best: highest effective captain pts. Tiebreak by total GW pts.
+          capData.sort((a,b) => b.effectivePts - a.effectivePts || b.gwPts - a.gwPts);
+          const best = capData[0];
+          items.push({ icon:'👑', label:'Best Captain Pick', val:`${best.effectivePts} pts`, sub:`${best.player} (${best.basePts}×${best.mult}) — ${best.name}`, cls:'s-hi' });
+
+          // Worst: lowest effective captain pts. Tiebreak by worst GW pts.
+          capData.sort((a,b) => a.effectivePts - b.effectivePts || a.gwPts - b.gwPts);
+          const worst = capData[0];
+          items.push({ icon:'💀', label:'Worst Captain Pick', val:`${worst.effectivePts} pts`, sub:`${worst.player} (${worst.basePts}×${worst.mult}) — ${worst.name}`, cls:'s-lo' });
+        } else {
+          items.push({ icon:'👑', label:'Best Captain Pick', val:'–', sub:'Belum ada data picks' });
+          items.push({ icon:'💀', label:'Worst Captain Pick', val:'–', sub:'Belum ada data picks' });
+        }
       } else {
         items.push({ icon:'👑', label:'Best Captain Pick', val:'–', sub:'Menunggu picks…' });
-      }
-
-      // 8. Worst Captain Pick this Week
-      if (hasPicks && live?.elements) {
-        let worstCap = { pts: 9999, names:[] };
-        managers.forEach(m => {
-          const p = Store.leaguePicks[m.entryId] || Store.leaguePicks[String(m.entryId)];
-          if (!p?.picks) return;
-          const cap = p.picks.find(pk => pk.is_captain);
-          if (!cap) return;
-          const pts = livePoints(cap.element) * (cap.multiplier || 2);
-          if (pts < worstCap.pts) worstCap = { pts, names: [{ mgr: mgrName(m.entryId), player: playerName(cap.element), raw: livePoints(cap.element) }] };
-          else if (pts === worstCap.pts) worstCap.names.push({ mgr: mgrName(m.entryId), player: playerName(cap.element), raw: livePoints(cap.element) });
-        });
-        const capSub = worstCap.names.map(n => `${n.player} (${n.raw}×) — ${n.mgr}`).join(', ');
-        items.push({ icon:'💀', label:'Worst Captain Pick', val: worstCap.pts < 9999 ? `${worstCap.pts} pts` : '–', sub: capSub, cls:'s-lo' });
-      } else {
         items.push({ icon:'💀', label:'Worst Captain Pick', val:'–', sub:'Menunggu picks…' });
       }
 
