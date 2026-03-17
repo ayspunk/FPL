@@ -2182,14 +2182,37 @@ const Render = {
       const motw = gwData.reduce((a, b) => b.gwPts > a.gwPts ? b : a, gwData[0]);
       if (motw) items.push({ icon:'🎯', label:'Manager of the Week', val:`${motw.gwPts} pts`, sub:motw.name });
 
-      // 2. Biggest Rise (overall rank improvement)
-      gwData.forEach(d => d._rankDelta = d.prevOverallRank > 0 ? d.prevOverallRank - d.overallRank : 0);
-      const rise = gwData.reduce((a, b) => b._rankDelta > a._rankDelta ? b : a, gwData[0]);
-      if (rise && rise._rankDelta > 0) items.push({ icon:'📈', label:'Biggest Rise', val:`+${rise._rankDelta.toLocaleString()} rank`, sub:rise.name, cls:'s-hi' });
+      // 2. Biggest Rise (league position improvement this GW)
+      // Compute league position this GW and last GW from cumulative points
+      const cumThis = {}, cumPrev = {};
+      gwData.forEach(d => {
+        const h = Store.managerHistory[d.entryId] || Store.managerHistory[String(d.entryId)];
+        const events = h?.current || (Array.isArray(h) ? h : []);
+        let cumT = 0, cumP = 0;
+        events.forEach(e => {
+          const ev = Number(e.event);
+          if (ev <= gw) cumT += Number(e.points) || 0;
+          if (ev <= gw - 1) cumP += Number(e.points) || 0;
+        });
+        cumThis[d.entryId] = cumT;
+        cumPrev[d.entryId] = cumP;
+      });
+      // Rank by cumulative (higher = better rank)
+      const rankNow = {}, rankPrev = {};
+      gwData.forEach(d => {
+        rankNow[d.entryId] = gwData.filter(x => cumThis[x.entryId] > cumThis[d.entryId]).length + 1;
+        rankPrev[d.entryId] = gwData.filter(x => cumPrev[x.entryId] > cumPrev[d.entryId]).length + 1;
+      });
+      gwData.forEach(d => {
+        d._leagueDelta = rankPrev[d.entryId] - rankNow[d.entryId]; // positive = climbed
+        d._leaguePos = rankNow[d.entryId];
+      });
+      const rise = gwData.reduce((a, b) => b._leagueDelta > a._leagueDelta ? b : a, gwData[0]);
+      if (rise && rise._leagueDelta > 0) items.push({ icon:'📈', label:'Biggest Rise', val:`+${rise._leagueDelta} pos → #${rise._leaguePos}`, sub:rise.name, cls:'s-hi' });
 
       // 3. Biggest Fall
-      const fall = gwData.reduce((a, b) => b._rankDelta < a._rankDelta ? b : a, gwData[0]);
-      if (fall && fall._rankDelta < 0) items.push({ icon:'📉', label:'Biggest Fall', val:`${fall._rankDelta.toLocaleString()} rank`, sub:fall.name, cls:'s-lo' });
+      const fall = gwData.reduce((a, b) => b._leagueDelta < a._leagueDelta ? b : a, gwData[0]);
+      if (fall && fall._leagueDelta < 0) items.push({ icon:'📉', label:'Biggest Fall', val:`${fall._leagueDelta} pos → #${fall._leaguePos}`, sub:fall.name, cls:'s-lo' });
 
       // 4. Most Points on Bench this Week
       const benchKing = gwData.reduce((a, b) => b.benchPts > a.benchPts ? b : a, gwData[0]);
