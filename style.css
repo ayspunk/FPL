@@ -869,7 +869,7 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 }
 .hl-val.s-hi { color: var(--green); }
 .hl-val.s-lo { color: var(--red); }
-.hl-sub { font-size: 13px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
+.hl-sub { font-size: 13px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.6; }
 
 /* Bump chart */
 .bump-svg-wrap {
