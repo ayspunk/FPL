@@ -2109,7 +2109,7 @@ const Render = {
           <div id="bump-chart-wrap" class="bump-svg-wrap">${hasMatrix?H.loader('Membangun chart…'):H.info('Data ranking per GW belum tersedia. History manajer perlu dimuat terlebih dahulu.')}</div>
         </div>
         <div class="chart-card" style="max-height:${Math.max(360, (managers.length||10)*32+40)}px">
-          <div class="chart-title">🏆 Manager Highlights — GW ${gw}</div>
+          <div class="chart-title">🏆 Manager Highlights — GW ${Store.currentGW||'–'}</div>
           <div id="manager-highlights" style="flex:1;overflow-y:auto">${this._managerHighlights()}</div>
         </div>
         <div class="chart-card">
