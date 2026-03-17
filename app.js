@@ -221,7 +221,13 @@ const Fetch = {
         if (r.ok) {
           const text = await r.text();
           try {
-            const data = JSON.parse(text);
+            let data = JSON.parse(text);
+            // Unwrap common proxy wrappers
+            if (data && data.contents && typeof data.contents === 'string') {
+              try { data = JSON.parse(data.contents); } catch {}
+            } else if (data && data.contents && typeof data.contents === 'object') {
+              data = data.contents;
+            }
             this._lastWorkingProxy = method.idx;
             return data;
           } catch {
@@ -635,16 +641,22 @@ const Process = {
     console.log(`[Matrix-League] Entries: ${Object.keys(entryEvents).length}, GWs: ${gwLabels.length}, sample keys: ${Object.keys(entryEvents).slice(0,3)}`);
 
     if (!gwLabels.length) {
-      // Debug: show what we got
+      // Debug: show what we actually received
       const firstKey = Object.keys(histories)[0];
       if (firstKey) {
         const v = histories[firstKey];
         const c = v?.current;
-        console.warn('[Matrix-League] 0 GWs! First entry:', {
-          key: firstKey, type: typeof v, isArr: Array.isArray(v),
-          hasCurrent: !!c, currentIsArr: Array.isArray(c), currentLen: c?.length,
-          sample: c ? JSON.stringify(c[0]).slice(0,120) : (Array.isArray(v) ? JSON.stringify(v[0]).slice(0,120) : 'N/A'),
-        });
+        const actualKeys = v ? Object.keys(v) : [];
+        console.warn('[Matrix-League] 0 GWs! First entry key:', firstKey);
+        console.warn('[Matrix-League] Object keys:', actualKeys);
+        console.warn('[Matrix-League] Object type:', typeof v, 'isArray:', Array.isArray(v));
+        console.warn('[Matrix-League] Raw JSON (first 300):', JSON.stringify(v).slice(0, 300));
+        console.warn('[Matrix-League] .current:', c, '.current type:', typeof c);
+        if (actualKeys.length && !c) {
+          // Try first key as potential data
+          const firstVal = v[actualKeys[0]];
+          console.warn('[Matrix-League] v[firstKey]:', typeof firstVal, Array.isArray(firstVal) ? 'array len=' + firstVal.length : '');
+        }
       }
     }
 
@@ -3115,18 +3127,45 @@ const App = {
     }
 
     // ── Fetch history for ALL managers (priority #1 for charts) ──
-    // Use concurrency=2 + 600ms delay to avoid proxy rate-limiting
-    console.log(`[League] Fetching history for ${managers.length} managers (slow mode)…`);
+    // Clear history cache first (might have stale/bad entries)
+    managers.forEach(m => {
+      Cache.invalidate(CFG.FPL + 'entry/' + m.entryId + '/history/');
+    });
+    console.log(`[League] Fetching history for ${managers.length} managers (slow mode, cache cleared)…`);
     let histOK = 0, histFail = 0;
 
     const histTasks = managers.map((m, mi) => async () => {
       try {
-        const h = await Fetch.managerHistory(m.entryId);
+        let h = await Fetch.fpl('entry/' + m.entryId + '/history/', true); // force fresh
+        
+        // Validate and unwrap history response
         if (h) {
+          // If wrapped in some proxy format, try to find .current
+          if (!h.current && h.contents) h = typeof h.contents === 'string' ? JSON.parse(h.contents) : h.contents;
+          if (!h.current && h.data) h = h.data;
+          if (!h.current && h.body) h = typeof h.body === 'string' ? JSON.parse(h.body) : h.body;
+        }
+
+        if (h && h.current && Array.isArray(h.current) && h.current.length > 0) {
+          // Log first entry to debug
+          if (mi === 0) {
+            console.log('[League] ✓ First history OK:', h.current.length, 'GWs, keys:', Object.keys(h));
+          }
           Store.managerHistory[m.entryId] = h;
           histOK++;
-        } else { histFail++; }
-      } catch { histFail++; }
+        } else {
+          histFail++;
+          if (mi === 0) {
+            console.warn('[League] ✗ First history INVALID:', {
+              truthyH: !!h, type: typeof h,
+              keys: h ? Object.keys(h).slice(0,8) : 'null',
+              raw: JSON.stringify(h).slice(0, 200),
+            });
+          }
+          // Invalidate cache for this bad entry
+          Cache.invalidate(CFG.FPL + 'entry/' + m.entryId + '/history/');
+        }
+      } catch(e) { histFail++; console.warn('[League] hist error:', m.entryId, e.message); }
       // Progress update
       if (Nav.current === 'league') {
         const loaderText = document.querySelector('#hist-loader .loader-text');
