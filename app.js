@@ -82,6 +82,7 @@ const Store = {
   managerInfos:  {},     // {entryId: entry data}        ← entry/{TID}/
   managerHistory:{},     // {entryId: history data}       ← entry/{TID}/history
   managerTransfers:{},   // {entryId: transfers}          ← entry/{TID}/transfers
+  leaguePicks:     {},   // {entryId: picks}              ← entry/{TID}/event/{GW}/picks
   playerFixtures:{},     // {elementId: element-summary}  ← element-summary/{EID}/
   myManagerInfo: null,   // entry/{myTeamId}/
   myPicks:       null,   // entry/{TID}/event/{GW}/picks
@@ -2125,7 +2126,7 @@ const Render = {
         </div>
         <div class="chart-card">
           <div class="chart-title">🏅 Total Points Standings</div>
-          <div class="chart-canvas-wrap"><canvas id="chart-standings"></canvas></div>
+          <div class="chart-canvas-wrap" style="min-height:${Math.max(280, (managers.length||10)*32)}px"><canvas id="chart-standings"></canvas></div>
         </div>
       </div>`;
   },
@@ -2133,130 +2134,214 @@ const Render = {
   _managerHighlights() {
     const managers = Store.leagueManagers || [];
     const hasHist = Object.keys(Store.managerHistory).length > 0;
-    const hasInfos = Object.keys(Store.managerInfos).length > 0;
+    const hasPicks = Object.keys(Store.leaguePicks).length > 0;
+    const hasTrans = Object.keys(Store.managerTransfers).length > 0;
     if (!managers.length) return '<div class="dim" style="padding:12px">Menunggu data liga…</div>';
 
     const gw = Store.currentGW || 0;
+    const bs = Store.bootstrap;
+    const live = Store.liveEvent;
     const items = [];
 
-    // Helper: find manager name
-    const mgrName = (entryId) => {
-      const m = managers.find(x => x.entryId == entryId);
+    // Helpers
+    const mgrName = (eid) => {
+      const m = managers.find(x => x.entryId == eid);
       return m ? `${m.playerName||'?'} (${m.entryName})` : '?';
+    };
+    const playerName = (elId) => bs?.elements?.find(e => e.id == elId)?.web_name || '?';
+    const livePoints = (elId) => {
+      if (!live?.elements) return 0;
+      const el = live.elements.find(e => e.id == elId);
+      return el?.stats?.total_points || 0;
     };
 
     if (hasHist) {
-      // Collect per-GW data for current GW
       const gwData = [];
       managers.forEach(m => {
         const h = Store.managerHistory[m.entryId] || Store.managerHistory[String(m.entryId)];
         const events = h?.current || (Array.isArray(h) ? h : []);
         const thisGW = events.find(e => Number(e.event) === gw);
         const prevGW = events.find(e => Number(e.event) === gw - 1);
-
-        // Cumulative transfers (excl WC/FH)
         const chips = h?.chips || [];
         const chipGWs = new Set(chips.filter(c => {
           const n = (c.name||'').toLowerCase().replace(/[_ ]/g,'');
           return n.includes('wildcard') || n.includes('freehit');
         }).map(c => Number(c.event)));
-        let totalTrans = 0;
-        events.forEach(e => { if (!chipGWs.has(Number(e.event))) totalTrans += Number(e.event_transfers) || 0; });
-
+        let totalTrans = 0, totalHits = 0;
+        events.forEach(e => {
+          if (!chipGWs.has(Number(e.event))) totalTrans += Number(e.event_transfers) || 0;
+          totalHits += Number(e.event_transfers_cost) || 0;
+        });
         gwData.push({
           entryId: m.entryId, name: mgrName(m.entryId),
           gwPts: Number(thisGW?.points) || 0,
           benchPts: Number(thisGW?.points_on_bench) || 0,
           gwTrans: Number(thisGW?.event_transfers) || 0,
           gwTransCost: Number(thisGW?.event_transfers_cost) || 0,
-          totalTrans,
-          rank: Number(thisGW?.rank) || 0,
+          totalTrans, totalHits,
           overallRank: Number(thisGW?.overall_rank) || 0,
-          prevOverallRank: Number(prevGW?.overall_rank) || 0,
           value: Number(thisGW?.value) || 0,
           bank: Number(thisGW?.bank) || 0,
         });
       });
 
-      // 1. Manager of the Week
-      const motw = gwData.reduce((a, b) => b.gwPts > a.gwPts ? b : a, gwData[0]);
-      if (motw) items.push({ icon:'🎯', label:'Manager of the Week', val:`${motw.gwPts} pts`, sub:motw.name });
-
-      // 2. Biggest Rise (league position improvement this GW)
-      // Compute league position this GW and last GW from cumulative points
+      // ── League position delta ──
       const cumThis = {}, cumPrev = {};
       gwData.forEach(d => {
         const h = Store.managerHistory[d.entryId] || Store.managerHistory[String(d.entryId)];
         const events = h?.current || (Array.isArray(h) ? h : []);
-        let cumT = 0, cumP = 0;
+        let cT = 0, cP = 0;
         events.forEach(e => {
-          const ev = Number(e.event);
-          if (ev <= gw) cumT += Number(e.points) || 0;
-          if (ev <= gw - 1) cumP += Number(e.points) || 0;
+          if (Number(e.event) <= gw) cT += Number(e.points) || 0;
+          if (Number(e.event) <= gw - 1) cP += Number(e.points) || 0;
         });
-        cumThis[d.entryId] = cumT;
-        cumPrev[d.entryId] = cumP;
-      });
-      // Rank by cumulative (higher = better rank)
-      const rankNow = {}, rankPrev = {};
-      gwData.forEach(d => {
-        rankNow[d.entryId] = gwData.filter(x => cumThis[x.entryId] > cumThis[d.entryId]).length + 1;
-        rankPrev[d.entryId] = gwData.filter(x => cumPrev[x.entryId] > cumPrev[d.entryId]).length + 1;
+        cumThis[d.entryId] = cT; cumPrev[d.entryId] = cP;
       });
       gwData.forEach(d => {
-        d._leagueDelta = rankPrev[d.entryId] - rankNow[d.entryId]; // positive = climbed
-        d._leaguePos = rankNow[d.entryId];
+        const posNow = gwData.filter(x => cumThis[x.entryId] > cumThis[d.entryId]).length + 1;
+        const posPrev = gwData.filter(x => cumPrev[x.entryId] > cumPrev[d.entryId]).length + 1;
+        d._leagueDelta = posPrev - posNow;
+        d._leaguePos = posNow;
       });
+
+      // ── COLUMN 1: Weekly highlights ──
+      // 1. Manager of the Week
+      const motw = gwData.reduce((a, b) => b.gwPts > a.gwPts ? b : a, gwData[0]);
+      items.push({ icon:'🎯', label:'Manager of the Week', val:`${motw.gwPts} pts`, sub:motw.name });
+
+      // 2. Biggest Rise
       const rise = gwData.reduce((a, b) => b._leagueDelta > a._leagueDelta ? b : a, gwData[0]);
-      if (rise && rise._leagueDelta > 0) items.push({ icon:'📈', label:'Biggest Rise', val:`+${rise._leagueDelta} pos → #${rise._leaguePos}`, sub:rise.name, cls:'s-hi' });
+      if (rise._leagueDelta > 0) items.push({ icon:'📈', label:'Biggest Rise', val:`+${rise._leagueDelta} pos → #${rise._leaguePos}`, sub:rise.name, cls:'s-hi' });
+      else items.push({ icon:'📈', label:'Biggest Rise', val:'– (tidak ada)', sub:'' });
 
       // 3. Biggest Fall
       const fall = gwData.reduce((a, b) => b._leagueDelta < a._leagueDelta ? b : a, gwData[0]);
-      if (fall && fall._leagueDelta < 0) items.push({ icon:'📉', label:'Biggest Fall', val:`${fall._leagueDelta} pos → #${fall._leaguePos}`, sub:fall.name, cls:'s-lo' });
+      if (fall._leagueDelta < 0) items.push({ icon:'📉', label:'Biggest Fall', val:`${fall._leagueDelta} pos → #${fall._leaguePos}`, sub:fall.name, cls:'s-lo' });
+      else items.push({ icon:'📉', label:'Biggest Fall', val:'– (tidak ada)', sub:'' });
 
-      // 4. Most Points on Bench this Week
-      const benchKing = gwData.reduce((a, b) => b.benchPts > a.benchPts ? b : a, gwData[0]);
-      if (benchKing && benchKing.benchPts > 0) items.push({ icon:'💺', label:'Most Pts on Bench', val:`${benchKing.benchPts} pts`, sub:benchKing.name });
+      // 4. Most Pts on Bench
+      const benchK = gwData.reduce((a, b) => b.benchPts > a.benchPts ? b : a, gwData[0]);
+      items.push({ icon:'💺', label:'Most Pts on Bench', val:`${benchK.benchPts} pts`, sub:benchK.name });
 
-      // 5. Most Transfers this Season (excl chips)
+      // 5. Best Transfer this Week
+      if (hasTrans && live?.elements) {
+        let bestT = { net: -999, name:'', sub:'' };
+        managers.forEach(m => {
+          const trs = Store.managerTransfers[m.entryId] || Store.managerTransfers[String(m.entryId)];
+          if (!Array.isArray(trs)) return;
+          const gwTrs = trs.filter(t => Number(t.event) === gw);
+          gwTrs.forEach(t => {
+            const inPts = livePoints(t.element_in);
+            const outPts = livePoints(t.element_out);
+            const net = inPts - outPts;
+            if (net > bestT.net) bestT = { net, name: mgrName(m.entryId), sub: `${playerName(t.element_in)} (${inPts}) ↔ ${playerName(t.element_out)} (${outPts})` };
+          });
+        });
+        items.push({ icon:'✅', label:'Best Transfer (Week)', val: bestT.net > -999 ? `+${bestT.net} net pts` : '–', sub: bestT.sub || bestT.name, cls: bestT.net > 0 ? 's-hi' : '' });
+      } else {
+        items.push({ icon:'✅', label:'Best Transfer (Week)', val:'–', sub:'Menunggu data…' });
+      }
+
+      // 6. Worst Transfer this Week
+      if (hasTrans && live?.elements) {
+        let worstT = { net: 999, name:'', sub:'' };
+        managers.forEach(m => {
+          const trs = Store.managerTransfers[m.entryId] || Store.managerTransfers[String(m.entryId)];
+          if (!Array.isArray(trs)) return;
+          const gwTrs = trs.filter(t => Number(t.event) === gw);
+          gwTrs.forEach(t => {
+            const inPts = livePoints(t.element_in);
+            const outPts = livePoints(t.element_out);
+            const net = inPts - outPts;
+            if (net < worstT.net) worstT = { net, name: mgrName(m.entryId), sub: `${playerName(t.element_in)} (${inPts}) ↔ ${playerName(t.element_out)} (${outPts})` };
+          });
+        });
+        items.push({ icon:'❌', label:'Worst Transfer (Week)', val: worstT.net < 999 ? `${worstT.net} net pts` : '–', sub: worstT.sub || worstT.name, cls: worstT.net < 0 ? 's-lo' : '' });
+      } else {
+        items.push({ icon:'❌', label:'Worst Transfer (Week)', val:'–', sub:'Menunggu data…' });
+      }
+
+      // 7. Best Captain Pick this Week
+      if (hasPicks && live?.elements) {
+        let bestCap = { pts: -1, names:[] };
+        managers.forEach(m => {
+          const p = Store.leaguePicks[m.entryId] || Store.leaguePicks[String(m.entryId)];
+          if (!p?.picks) return;
+          const cap = p.picks.find(pk => pk.is_captain);
+          if (!cap) return;
+          const pts = livePoints(cap.element) * (cap.multiplier || 2);
+          if (pts > bestCap.pts) bestCap = { pts, names: [{ mgr: mgrName(m.entryId), player: playerName(cap.element), raw: livePoints(cap.element) }] };
+          else if (pts === bestCap.pts) bestCap.names.push({ mgr: mgrName(m.entryId), player: playerName(cap.element), raw: livePoints(cap.element) });
+        });
+        const capSub = bestCap.names.map(n => `${n.player} (${n.raw}×) — ${n.mgr}`).join(', ');
+        items.push({ icon:'👑', label:'Best Captain Pick', val: bestCap.pts > 0 ? `${bestCap.pts} pts` : '–', sub: capSub, cls:'s-hi' });
+      } else {
+        items.push({ icon:'👑', label:'Best Captain Pick', val:'–', sub:'Menunggu picks…' });
+      }
+
+      // 8. Worst Captain Pick this Week
+      if (hasPicks && live?.elements) {
+        let worstCap = { pts: 9999, names:[] };
+        managers.forEach(m => {
+          const p = Store.leaguePicks[m.entryId] || Store.leaguePicks[String(m.entryId)];
+          if (!p?.picks) return;
+          const cap = p.picks.find(pk => pk.is_captain);
+          if (!cap) return;
+          const pts = livePoints(cap.element) * (cap.multiplier || 2);
+          if (pts < worstCap.pts) worstCap = { pts, names: [{ mgr: mgrName(m.entryId), player: playerName(cap.element), raw: livePoints(cap.element) }] };
+          else if (pts === worstCap.pts) worstCap.names.push({ mgr: mgrName(m.entryId), player: playerName(cap.element), raw: livePoints(cap.element) });
+        });
+        const capSub = worstCap.names.map(n => `${n.player} (${n.raw}×) — ${n.mgr}`).join(', ');
+        items.push({ icon:'💀', label:'Worst Captain Pick', val: worstCap.pts < 9999 ? `${worstCap.pts} pts` : '–', sub: capSub, cls:'s-lo' });
+      } else {
+        items.push({ icon:'💀', label:'Worst Captain Pick', val:'–', sub:'Menunggu picks…' });
+      }
+
+      // ── COLUMN 2: Season highlights ──
+      // 9. Most Transfers (Season)
       const mostTrans = gwData.reduce((a, b) => b.totalTrans > a.totalTrans ? b : a, gwData[0]);
-      if (mostTrans) items.push({ icon:'🔄', label:'Most Transfers (Season)', val:`${mostTrans.totalTrans} transfers`, sub:mostTrans.name });
+      items.push({ icon:'🔄', label:'Most Transfers (Season)', val:`${mostTrans.totalTrans} transfers`, sub:mostTrans.name });
 
-      // 6. Least Transfers this Season
+      // 10. Least Transfers (Season)
       const leastTrans = gwData.reduce((a, b) => b.totalTrans < a.totalTrans ? b : a, gwData[0]);
-      if (leastTrans) items.push({ icon:'😴', label:'Least Transfers (Season)', val:`${leastTrans.totalTrans} transfers`, sub:leastTrans.name });
+      items.push({ icon:'😴', label:'Least Transfers (Season)', val:`${leastTrans.totalTrans} transfers`, sub:leastTrans.name });
 
-      // 7. Best Team Value
+      // 11. Best Team Value
       const bestVal = gwData.reduce((a, b) => b.value > a.value ? b : a, gwData[0]);
-      if (bestVal && bestVal.value > 0) items.push({ icon:'💰', label:'Best Team Value', val:`£${(bestVal.value/10).toFixed(1)}`, sub:bestVal.name });
+      if (bestVal.value > 0) items.push({ icon:'💰', label:'Best Team Value', val:`£${(bestVal.value/10).toFixed(1)}`, sub:bestVal.name });
 
-      // 8. Lowest Team Value
+      // 12. Lowest Team Value
       const lowVal = gwData.filter(d => d.value > 0).reduce((a, b) => b.value < a.value ? b : a, gwData[0]);
-      if (lowVal && lowVal.value > 0) items.push({ icon:'🪙', label:'Lowest Team Value', val:`£${(lowVal.value/10).toFixed(1)}`, sub:lowVal.name });
+      if (lowVal.value > 0) items.push({ icon:'🪙', label:'Lowest Team Value', val:`£${(lowVal.value/10).toFixed(1)}`, sub:lowVal.name });
 
-      // 9. Best Overall Rank
+      // 13. Best Overall Rank
       const bestRank = gwData.filter(d => d.overallRank > 0).reduce((a, b) => b.overallRank < a.overallRank ? b : a, gwData[0]);
-      if (bestRank && bestRank.overallRank > 0) items.push({ icon:'🌍', label:'Best Overall Rank', val:`#${bestRank.overallRank.toLocaleString()}`, sub:bestRank.name });
+      if (bestRank.overallRank > 0) items.push({ icon:'🌍', label:'Best Overall Rank', val:`#${bestRank.overallRank.toLocaleString()}`, sub:bestRank.name });
 
-      // 10. Biggest Transfer Hit this Week (most transfer cost)
+      // 14. Transfer Hit this Week
       const hitMan = gwData.filter(d => d.gwTransCost > 0).reduce((a, b) => (b.gwTransCost > a.gwTransCost ? b : a), {gwTransCost:0});
-      if (hitMan.gwTransCost > 0) items.push({ icon:'💸', label:'Transfer Hit this Week', val:`-${hitMan.gwTransCost} pts`, sub:hitMan.name, cls:'s-lo' });
+      items.push({ icon:'💸', label:'Transfer Hit (Week)', val: hitMan.gwTransCost > 0 ? `-${hitMan.gwTransCost} pts` : '0 pts', sub: hitMan.name||'Tidak ada hit', cls: hitMan.gwTransCost > 0 ? 's-lo' : '' });
 
-      // 11. Most Bench Points Season Total
-      const benchSeason = [];
-      gwData.forEach(d => {
+      // 15. Most Bench Pts (Season)
+      const benchSeason = gwData.map(d => {
         const h = Store.managerHistory[d.entryId] || Store.managerHistory[String(d.entryId)];
         const events = h?.current || (Array.isArray(h) ? h : []);
-        const totalBench = events.reduce((s, e) => s + (Number(e.points_on_bench) || 0), 0);
-        benchSeason.push({ ...d, totalBench });
+        return { ...d, totalBench: events.reduce((s, e) => s + (Number(e.points_on_bench) || 0), 0) };
       });
-      const benchSeasonKing = benchSeason.reduce((a, b) => b.totalBench > a.totalBench ? b : a, benchSeason[0]);
-      if (benchSeasonKing?.totalBench > 0) items.push({ icon:'🛋️', label:'Most Bench Pts (Season)', val:`${benchSeasonKing.totalBench} pts`, sub:benchSeasonKing.name });
+      const benchSK = benchSeason.reduce((a, b) => b.totalBench > a.totalBench ? b : a, benchSeason[0]);
+      if (benchSK?.totalBench > 0) items.push({ icon:'🛋️', label:'Most Bench Pts (Season)', val:`${benchSK.totalBench} pts`, sub:benchSK.name });
+
+      // 16. Most Total Hits (Season)
+      const mostHits = gwData.reduce((a, b) => b.totalHits > a.totalHits ? b : a, gwData[0]);
+      items.push({ icon:'🩸', label:'Most Hits Taken (Season)', val: mostHits.totalHits > 0 ? `-${mostHits.totalHits} pts` : '0 pts', sub: mostHits.name, cls: mostHits.totalHits > 0 ? 's-lo' : '' });
     }
 
     if (!items.length) return '<div class="dim" style="padding:12px">Menunggu data history dimuat…</div>';
 
-    return `<div class="highlights-list">
+    // Column count: 8 per column
+    const colSize = Math.ceil(items.length / 2);
+
+    return `<div class="highlights-list" style="grid-template-rows:repeat(${colSize},auto)">
       ${items.map(it => `<div class="hl-item">
         <div class="hl-icon">${it.icon}</div>
         <div class="hl-content">
@@ -3121,6 +3206,7 @@ const UI = {
     Store.managerHistory = {};
     Store.managerTransfers = {};
     Store.managerInfos = {};
+    Store.leaguePicks = {};
 
     // Invalidate cache for ALL leagues (standings + manager data)
     CFG.leagues.forEach(l => {
@@ -3438,6 +3524,16 @@ const App = {
     await Fetch.batch(bgTasks, 2, 500);
     Store.transferMatrix = Process.buildTransferMatrix(managers, Store.managerTransfers);
     console.log(`[League] Transfers+Info done. Transfer matrix: ${Store.transferMatrix?.rows?.length||0} GWs`);
+
+    // ── Fetch picks for current GW (for captain analysis) ──
+    const picksTasks = managers.map(m => async () => {
+      try {
+        const p = await Fetch.managerPicks(m.entryId, gw);
+        if (p?.picks) Store.leaguePicks[m.entryId] = p;
+      } catch {}
+    });
+    await Fetch.batch(picksTasks, 2, 500);
+    console.log(`[League] Picks loaded: ${Object.keys(Store.leaguePicks).length}/${managers.length}`);
 
     // Final re-render
     if (Nav.current === 'league') Nav.goTab('league');
