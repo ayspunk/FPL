@@ -2216,9 +2216,10 @@ const Render = {
       if (fall._leagueDelta < 0) items.push({ icon:'📉', label:'Biggest Fall', val:`${fall._leagueDelta} pos → #${fall._leaguePos}`, sub:fall.name, cls:'s-lo' });
       else items.push({ icon:'📉', label:'Biggest Fall', val:'– (tidak ada)', sub:'' });
 
-      // 4. Most Pts on Bench
-      const benchK = gwData.reduce((a, b) => b.benchPts > a.benchPts ? b : a, gwData[0]);
-      items.push({ icon:'💺', label:'Most Pts on Bench', val:`${benchK.benchPts} pts`, sub:benchK.name });
+      // 4. Best Overall Rank
+      const bestRank = gwData.filter(d => d.overallRank > 0).reduce((a, b) => b.overallRank < a.overallRank ? b : a, gwData[0]);
+      if (bestRank.overallRank > 0) items.push({ icon:'🌍', label:'Best Overall Rank', val:`#${bestRank.overallRank.toLocaleString()}`, sub:bestRank.name });
+      else items.push({ icon:'🌍', label:'Best Overall Rank', val:'–', sub:'' });
 
       // 5. Best GW Score this Season (from history — no extra API needed)
       {
@@ -2322,15 +2323,11 @@ const Render = {
       const lowVal = gwData.filter(d => d.value > 0).reduce((a, b) => b.value < a.value ? b : a, gwData[0]);
       if (lowVal.value > 0) items.push({ icon:'🪙', label:'Lowest Team Value', val:`£${(lowVal.value/10).toFixed(1)}`, sub:lowVal.name });
 
-      // 13. Best Overall Rank
-      const bestRank = gwData.filter(d => d.overallRank > 0).reduce((a, b) => b.overallRank < a.overallRank ? b : a, gwData[0]);
-      if (bestRank.overallRank > 0) items.push({ icon:'🌍', label:'Best Overall Rank', val:`#${bestRank.overallRank.toLocaleString()}`, sub:bestRank.name });
+      // 13. Most Pts on Bench
+      const benchK = gwData.reduce((a, b) => b.benchPts > a.benchPts ? b : a, gwData[0]);
+      items.push({ icon:'💺', label:'Most Pts on Bench', val:`${benchK.benchPts} pts`, sub:benchK.name });
 
-      // 14. Transfer Hit this Week
-      const hitMan = gwData.filter(d => d.gwTransCost > 0).reduce((a, b) => (b.gwTransCost > a.gwTransCost ? b : a), {gwTransCost:0});
-      items.push({ icon:'💸', label:'Transfer Hit (Week)', val: hitMan.gwTransCost > 0 ? `-${hitMan.gwTransCost} pts` : '0 pts', sub: hitMan.name||'Tidak ada hit', cls: hitMan.gwTransCost > 0 ? 's-lo' : '' });
-
-      // 15. Most Bench Pts (Season)
+      // 14. Most Bench Pts (Season)
       const benchSeason = gwData.map(d => {
         const h = Store.managerHistory[d.entryId] || Store.managerHistory[String(d.entryId)];
         const events = h?.current || (Array.isArray(h) ? h : []);
@@ -2338,6 +2335,10 @@ const Render = {
       });
       const benchSK = benchSeason.reduce((a, b) => b.totalBench > a.totalBench ? b : a, benchSeason[0]);
       if (benchSK?.totalBench > 0) items.push({ icon:'🛋️', label:'Most Bench Pts (Season)', val:`${benchSK.totalBench} pts`, sub:benchSK.name });
+
+      // 15. Transfer Hit this Week
+      const hitMan = gwData.filter(d => d.gwTransCost > 0).reduce((a, b) => (b.gwTransCost > a.gwTransCost ? b : a), {gwTransCost:0});
+      items.push({ icon:'💸', label:'Transfer Hit (Week)', val: hitMan.gwTransCost > 0 ? `-${hitMan.gwTransCost} pts` : '0 pts', sub: hitMan.name||'Tidak ada hit', cls: hitMan.gwTransCost > 0 ? 's-lo' : '' });
 
       // 16. Most Total Hits (Season)
       const mostHits = gwData.reduce((a, b) => b.totalHits > a.totalHits ? b : a, gwData[0]);
