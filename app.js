@@ -2103,16 +2103,16 @@ const Render = {
       ${statusHtml}
       <div class="section-title">Grafik Liga</div>
       <div class="charts-grid">
-        <div class="chart-card wide">
-          <div class="chart-title">📈 Ranking per GW — Bump Chart (posisi dalam liga)</div>
-          <div id="bump-chart-wrap" class="bump-svg-wrap">${hasMatrix?H.loader('Membangun chart…'):H.info('Data ranking per GW belum tersedia. History manajer perlu dimuat terlebih dahulu.')}</div>
+        <div class="chart-card wide" id="card-bumpchart">
+          <div class="chart-header"><div class="chart-title">📈 Ranking per GW — Bump Chart</div>${UI.shareBar('card-bumpchart','Bump_Chart')}</div>
+          <div id="bump-chart-wrap" class="bump-svg-wrap">${hasMatrix?H.loader('Membangun chart…'):H.info('Data ranking per GW belum tersedia.')}</div>
         </div>
-        <div class="chart-card" style="max-height:${Math.max(360, (managers.length||10)*32+40)}px">
-          <div class="chart-title">🏆 Manager Highlights — GW ${Store.currentGW||'–'}</div>
+        <div class="chart-card" id="card-highlights" style="max-height:${Math.max(440, (managers.length||10)*36+40)}px">
+          <div class="chart-header"><div class="chart-title">🏆 Manager Highlights — GW ${Store.currentGW||'–'}</div>${UI.shareBar('card-highlights','Manager_Highlights')}</div>
           <div id="manager-highlights" style="flex:1;overflow-y:auto">${this._managerHighlights()}</div>
         </div>
-        <div class="chart-card">
-          <div class="chart-title">🏅 Total Points Standings</div>
+        <div class="chart-card" id="card-standings">
+          <div class="chart-header"><div class="chart-title">🏅 Total Points Standings</div>${UI.shareBar('card-standings','Standings')}</div>
           <div class="chart-canvas-wrap" style="min-height:${Math.max(280, (managers.length||10)*30)}px"><canvas id="chart-standings"></canvas></div>
         </div>
       </div>`;
@@ -2216,7 +2216,19 @@ const Render = {
       if (bestRank.overallRank > 0) items.push({ icon:'🌍', label:'Best Overall Rank', val:`#${bestRank.overallRank.toLocaleString()}`, sub:bestRank.name });
       else items.push({ icon:'🌍', label:'Best Overall Rank', val:'–', sub:'' });
 
-      // 5. Best GW Score this Season (from history — no extra API needed)
+      // 5. Best GW Score (Week)
+      {
+        const bestWeek = [...gwData].sort((a,b) => b.gwPts - a.gwPts)[0];
+        items.push({ icon:'⭐', label:'Best GW Score (Week)', val:`${bestWeek.gwPts} pts`, sub:bestWeek.name, cls:'s-hi' });
+      }
+
+      // 6. Worst GW Score (Week)
+      {
+        const worstWeek = [...gwData].sort((a,b) => a.gwPts - b.gwPts)[0];
+        items.push({ icon:'💔', label:'Worst GW Score (Week)', val:`${worstWeek.gwPts} pts`, sub:worstWeek.name, cls:'s-lo' });
+      }
+
+      // 7. Best GW Score (Season)
       {
         let best = { pts:0, gw:0, name:'' };
         gwData.forEach(d => {
@@ -2230,7 +2242,7 @@ const Render = {
         items.push({ icon:'🏅', label:'Best GW Score (Season)', val:`${best.pts} pts (GW${best.gw})`, sub:best.name, cls:'s-hi' });
       }
 
-      // 6. Worst GW Score this Season
+      // 8. Worst GW Score (Season)
       {
         let worst = { pts:999, gw:0, name:'' };
         gwData.forEach(d => {
@@ -2244,8 +2256,7 @@ const Render = {
         items.push({ icon:'😱', label:'Worst GW Score (Season)', val:`${worst.pts} pts (GW${worst.gw})`, sub:worst.name, cls:'s-lo' });
       }
 
-      // 7. Best Captain Pick this Week
-      // 8. Worst Captain Pick this Week
+      // 9. Best Captain Pick / 10. Worst Captain Pick
       const minPicksNeeded = Math.max(2, Math.ceil(managers.length * 0.5));
       if (hasPicks && Object.keys(liveMap).length > 0) {
         const capData = [];
@@ -2930,6 +2941,53 @@ const UI = {
     if (btn) btn.textContent = this.THEME_ICONS[saved] || '🌙';
   },
 
+  // ── Save / Share card as image ──
+  shareBar(cardId, title='') {
+    return `<div class="share-bar">
+      <button class="btn-share" onclick="UI.saveCard('${cardId}','${title}')" title="Save as PNG">📥 Save</button>
+      <button class="btn-share" onclick="UI.shareCard('${cardId}','${title}')" title="Share to WhatsApp">💬 Share</button>
+    </div>`;
+  },
+
+  async saveCard(cardId, title='FPL Dashboard') {
+    const el = document.getElementById(cardId);
+    if (!el) return;
+    try {
+      const canvas = await html2canvas(el, { backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#080d14', scale: 2 });
+      const link = document.createElement('a');
+      link.download = `${title.replace(/[^a-zA-Z0-9]/g,'_')}_GW${Store.currentGW||''}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    } catch(e) { console.error('Save failed:', e); }
+  },
+
+  async shareCard(cardId, title='FPL Dashboard') {
+    const el = document.getElementById(cardId);
+    if (!el) return;
+    try {
+      const canvas = await html2canvas(el, { backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#080d14', scale: 2 });
+      const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+      const file = new File([blob], `${title}_GW${Store.currentGW||''}.png`, { type:'image/png' });
+
+      // Try native share first (mobile)
+      if (navigator.share && navigator.canShare?.({files:[file]})) {
+        await navigator.share({ title, files:[file] });
+      } else {
+        // Fallback: open WhatsApp with image URL (desktop)
+        // Save to temp and open WhatsApp Web
+        const url = canvas.toDataURL('image/png');
+        const link = document.createElement('a');
+        link.download = file.name;
+        link.href = url;
+        link.click();
+        // Open WhatsApp with text
+        setTimeout(() => {
+          window.open(`https://wa.me/?text=${encodeURIComponent(`${title} — GW${Store.currentGW||''}\n${window.location.href}`)}`, '_blank');
+        }, 500);
+      }
+    } catch(e) { console.error('Share failed:', e); }
+  },
+
   cycleTheme() {
     const current = document.documentElement.getAttribute('data-theme') || 'dark';
     const idx = this.THEMES.indexOf(current);
@@ -3421,88 +3479,84 @@ const App = {
       }
     }
 
-    // ── Fetch history + picks INTERLEAVED (maximize data from limited proxy) ──
-    managers.forEach(m => {
-      Cache.invalidate(CFG.FPL + 'entry/' + m.entryId + '/history/');
-    });
-    console.log(`[League] Fetching history+picks for ${managers.length} managers (interleaved)…`);
-    let histOK = 0, histFail = 0, picksOK = 0;
-
-    // Build interleaved tasks: [hist1, picks1, hist2, picks2, ...]
-    const interleavedTasks = [];
-    managers.forEach((m, mi) => {
-      // History task
-      interleavedTasks.push(async () => {
-      try {
-        let h = await Fetch.fpl('entry/' + m.entryId + '/history/', true); // force fresh
-        
-        // Validate and unwrap history response
-        if (h) {
-          // If wrapped in some proxy format, try to find .current
-          if (!h.current && h.contents) h = typeof h.contents === 'string' ? JSON.parse(h.contents) : h.contents;
-          if (!h.current && h.data) h = h.data;
-          if (!h.current && h.body) h = typeof h.body === 'string' ? JSON.parse(h.body) : h.body;
-        }
-
-        if (h && h.current && Array.isArray(h.current) && h.current.length > 0) {
-          // Log first entry to debug
-          if (mi === 0) {
-            console.log('[League] ✓ First history OK:', h.current.length, 'GWs, keys:', Object.keys(h));
-          }
-          Store.managerHistory[m.entryId] = h;
-          histOK++;
-        } else {
-          histFail++;
-          if (mi === 0) {
-            console.warn('[League] ✗ First history INVALID:', {
-              truthyH: !!h, type: typeof h,
-              keys: h ? Object.keys(h).slice(0,8) : 'null',
-              raw: JSON.stringify(h).slice(0, 200),
-            });
-          }
-          // Invalidate cache for this bad entry
-          Cache.invalidate(CFG.FPL + 'entry/' + m.entryId + '/history/');
-        }
-      } catch(e) { histFail++; console.warn('[League] hist error:', m.entryId, e.message); }
-      // Progress update
-      if (Nav.current === 'league') {
-        const loaderText = document.querySelector('#hist-loader .loader-text');
-        if (loaderText) {
-          const pct = Math.round((histOK+histFail)/managers.length*100);
-          loaderText.textContent = `History: ${histOK+histFail}/${managers.length} (${histOK}✓ ${histFail}✗) ${pct}%`;
-        }
-      }
+    // ── Load GitHub data FIRST (instant, no proxy needed) ──
+    // Picks
+    console.log('[League] Loading GitHub JSON data…');
+    const ghPicks = await Fetch.githubJSON('league-picks.json');
+    if (ghPicks && typeof ghPicks === 'object' && !Array.isArray(ghPicks)) {
+      let cnt = 0;
+      Object.entries(ghPicks).forEach(([eid, p]) => {
+        if (p?.picks) { Store.leaguePicks[eid] = p; cnt++; }
       });
-      // Picks task for same manager
-      interleavedTasks.push(async () => {
+      console.log(`[League] GitHub picks: ${cnt} managers loaded`);
+    } else {
+      console.log(`[League] GitHub picks: not available (${ghPicks ? typeof ghPicks : 'null'})`);
+    }
+
+    // History
+    const ghHist = await Fetch.githubJSON('history.json');
+    if (ghHist && Array.isArray(ghHist) && ghHist.length > 0) {
+      const entryIds = new Set(managers.map(m => m.entryId));
+      ghHist.forEach(row => {
+        const eid = row.entry_id;
+        if (!entryIds.has(eid) && !entryIds.has(Number(eid))) return;
+        const key = entryIds.has(eid) ? eid : Number(eid);
+        if (!Store.managerHistory[key]) Store.managerHistory[key] = { current: [], chips: [] };
+        Store.managerHistory[key].current.push(row);
+      });
+      console.log(`[League] GitHub history: ${Object.keys(Store.managerHistory).length} managers`);
+    }
+
+    // If GitHub had enough history, skip slow proxy fetch
+    const ghHistCount = Object.keys(Store.managerHistory).length;
+    const needProxyHistory = ghHistCount < managers.length;
+
+    // ── Proxy fetch: only what GitHub doesn't have ──
+    if (needProxyHistory) {
+      managers.forEach(m => { Cache.invalidate(CFG.FPL + 'entry/' + m.entryId + '/history/'); });
+      console.log(`[League] Fetching history for ${managers.length - ghHistCount} missing managers via proxy…`);
+      let histOK = ghHistCount, histFail = 0;
+
+      const histTasks = managers
+        .filter(m => !Store.managerHistory[m.entryId] && !Store.managerHistory[String(m.entryId)])
+        .map((m, mi) => async () => {
+          try {
+            let h = await Fetch.fpl('entry/' + m.entryId + '/history/', true);
+            if (h) {
+              if (!h.current && h.contents) h = typeof h.contents === 'string' ? JSON.parse(h.contents) : h.contents;
+              if (!h.current && h.data) h = h.data;
+            }
+            if (h?.current && Array.isArray(h.current) && h.current.length > 0) {
+              Store.managerHistory[m.entryId] = h;
+              histOK++;
+            } else { histFail++; }
+          } catch { histFail++; }
+          const loaderText = document.querySelector('#hist-loader .loader-text');
+          if (loaderText) loaderText.textContent = `History: ${histOK}/${managers.length}`;
+        });
+
+      // Also fetch missing picks via proxy
+      const picksToFetch = managers.filter(m =>
+        !Store.leaguePicks[m.entryId] && !Store.leaguePicks[String(m.entryId)]
+      );
+      const picksTasks = picksToFetch.map(m => async () => {
         try {
           const p = await Fetch.managerPicks(m.entryId, gw);
-          if (p?.picks) { Store.leaguePicks[m.entryId] = p; picksOK++; }
+          if (p?.picks) Store.leaguePicks[m.entryId] = p;
         } catch {}
       });
-    });
 
-    await Fetch.batch(interleavedTasks, 2, 250);
-    console.log(`[League] Interleaved: History ${histOK}/${managers.length}, Picks ${picksOK}/${managers.length}`);
-
-    // GitHub fallback: if proxy failed, try loading history.json
-    if (histOK === 0 && managers.length > 0) {
-      console.log('[League] Trying GitHub history.json fallback…');
-      const ghHist = await Fetch.githubJSON('history.json');
-      if (ghHist && Array.isArray(ghHist) && ghHist.length > 0) {
-        // Group by entry_id
-        const entryIds = new Set(managers.map(m => m.entryId));
-        const grouped = {};
-        ghHist.forEach(row => {
-          const eid = row.entry_id;
-          if (!entryIds.has(eid)) return;
-          if (!grouped[eid]) grouped[eid] = { current: [] };
-          grouped[eid].current.push(row);
-        });
-        Object.assign(Store.managerHistory, grouped);
-        histOK = Object.keys(grouped).length;
-        console.log(`[League] GitHub fallback: ${histOK} managers loaded from history.json`);
+      // Interleave remaining history + picks
+      const allTasks = [];
+      const maxLen = Math.max(histTasks.length, picksTasks.length);
+      for (let i = 0; i < maxLen; i++) {
+        if (i < histTasks.length) allTasks.push(histTasks[i]);
+        if (i < picksTasks.length) allTasks.push(picksTasks[i]);
       }
+      if (allTasks.length) await Fetch.batch(allTasks, 2, 250);
+      console.log(`[League] Proxy done: History ${histOK}/${managers.length}, Picks ${Object.keys(Store.leaguePicks).length}/${managers.length}`);
+    } else {
+      console.log(`[League] GitHub had all history — skipping proxy`);
     }
 
     // Build matrices immediately after history (don't wait for transfers)
@@ -3514,30 +3568,11 @@ const App = {
       console.warn(`[League] ⚠ No history data — charts will not render. Proxy may be rate-limiting.`);
     }
 
-    // Re-render with chart data available
+    // Re-render with chart + picks data
     if (Nav.current === 'league') {
       Nav.goTab('league');
       if (Store.subtab['league'] === 'charts') setTimeout(()=>Charts.buildAll(), 200);
     }
-
-    // GitHub fallback for picks (always try — proxy rarely gets enough)
-    if (picksOK < managers.length) {
-      const ghPicks = await Fetch.githubJSON('league-picks.json');
-      if (ghPicks && typeof ghPicks === 'object') {
-        let added = 0;
-        Object.entries(ghPicks).forEach(([eid, p]) => {
-          if (p?.picks && !Store.leaguePicks[eid] && !Store.leaguePicks[String(eid)]) {
-            Store.leaguePicks[eid] = p;
-            added++;
-          }
-        });
-        picksOK += added;
-        if (added > 0) console.log(`[League] GitHub picks: +${added} → total ${picksOK}/${managers.length}`);
-      }
-    }
-
-    // Re-render with picks data
-    if (Nav.current === 'league') Nav.goTab('league');
 
     // ── Phase 2: Transfers + Info (try GitHub first) ──
     const ghTransfers = await Fetch.githubJSON('transfers.json');
