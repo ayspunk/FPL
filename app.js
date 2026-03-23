@@ -93,6 +93,7 @@ const Store = {
 
   // State
   currentGW:     null,
+  targetGW:      0,     // 0 = auto (next GW), otherwise user-selected GW
   dataSource:    null,   // 'fpl' | 'sheets' | null
   gwWeights:     JSON.parse(JSON.stringify(CFG.GW_WEIGHTS)),
   scoutWeights:  null,   // initialized in UI.loadSettings
@@ -426,21 +427,28 @@ const Process = {
 
     // Build next fixture map per team (detect DGW, normal, blank)
     const teamFix = {};
-    const allFix  = (fixtures||[]).filter(f=>!f.finished && !f.finished_provisional).sort((a,b)=>a.event-b.event);
+    // For past GWs: include all fixtures. For future: only unfinished.
+    const allFixRaw = (fixtures||[]).sort((a,b)=>a.event-b.event);
 
-    // Determine the NEXT GW from bootstrap events (reliable, not from fixture data)
-    const nextEvt = bs.events.find(e => e.is_next) || bs.events.find(e => e.is_current);
-    const nextGW  = nextEvt ? nextEvt.id : gw + 1;
-    // For recommendations: if current GW deadline has passed, look at next
-    const recoGW = nextEvt?.is_next ? nextEvt.id : gw + 1;
-    // Use whichever has fixtures
-    const gwFixtures = allFix.filter(f => f.event === recoGW);
-    const targetGW = gwFixtures.length > 0 ? recoGW : nextGW;
-    console.log(`[FPL] Fixture target: GW${targetGW} (current=${gw}, recoGW=${recoGW}, fixtures in target=${allFix.filter(f=>f.event===targetGW).length})`);
+    // Determine target GW
+    let targetGW;
+    if (Store.targetGW > 0) {
+      // User-selected GW
+      targetGW = Store.targetGW;
+    } else {
+      // Auto: next GW from bootstrap
+      const nextEvt = bs.events.find(e => e.is_next) || bs.events.find(e => e.is_current);
+      const recoGW = nextEvt?.is_next ? nextEvt.id : gw + 1;
+      const gwFixtures = allFixRaw.filter(f => f.event === recoGW);
+      targetGW = gwFixtures.length > 0 ? recoGW : (nextEvt ? nextEvt.id : gw + 1);
+    }
+
+    const gwAllFix = allFixRaw.filter(f => f.event === targetGW);
+    const isPastGW = targetGW <= gw;
+    console.log(`[FPL] Fixture target: GW${targetGW} (current=${gw}, manual=${Store.targetGW>0}, past=${isPastGW}, fixtures=${gwAllFix.length})`);
 
     bs.teams.forEach(t => {
-      // Find this team's fixtures in the target GW
-      const gwFixes = allFix.filter(f => f.event === targetGW && (f.team_h === t.id || f.team_a === t.id));
+      const gwFixes = gwAllFix.filter(f => f.team_h === t.id || f.team_a === t.id);
       const fixtureCount = gwFixes.length;
 
       if (fixtureCount === 0) {
@@ -500,7 +508,7 @@ const Process = {
 
     const norm = (v, mx) => Math.min(10, +((v/mx)*10).toFixed(2));
 
-    return { gw, players: avail.map(p => {
+    return { gw, targetGW, players: avail.map(p => {
       const pos   = posMap[p.element_type] || 'FWD';
       const team  = teamMap[p.team];
       const fix   = teamFix[p.team] || { opp:'?', isHome:false, fdrAtk:3, fdrDef:3, isDGW:false, isBlank:false, fixtureCount:1 };
@@ -939,6 +947,20 @@ const H = {
 
   scoreClass: s => +s>=6?'s-hi':+s>=4?'s-mid':+s>=1?'s-lo':'s-null',
   scoreColor: s => +s>=6?'var(--green)':+s>=4?'var(--gold)':'var(--orange)',
+
+  gwTargetBanner() {
+    if (!Store.targetGW || Store.targetGW <= 0) return '';
+    const gw = Store.targetGW;
+    const cur = Store.currentGW || 0;
+    if (gw <= cur) {
+      return `<div class="info-box" style="background:rgba(255,145,0,.08);border-color:rgba(255,145,0,.3);color:var(--orange);margin-bottom:14px">
+        🔍 <b>Backtest Mode — GW${gw}</b> · Melihat data fixture GW${gw} (sudah berlalu). Skor berdasarkan jadwal GW tersebut.
+      </div>`;
+    }
+    return `<div class="info-box" style="background:rgba(206,147,216,.08);border-color:rgba(206,147,216,.3);color:var(--purple);margin-bottom:14px">
+      🔮 <b>Preview Mode — GW${gw}</b> · Melihat fixture GW${gw} (belum dimainkan). Gunakan untuk perencanaan transfer jangka menengah.
+    </div>`;
+  },
   ptsClass:   p => p==null?'dim':+p>=8?'pts-great':+p>=5?'pts-good':+p>=2?'pts-ok':'pts-bad',
 
   fdrClass(v) {
@@ -1074,6 +1096,7 @@ const Render = {
     }).join('');
 
     return `
+      ${H.gwTargetBanner()}
       <div class="filters">
         ${filterBtns}
         <input class="search-input" type="text" placeholder="Cari pemain…"
@@ -3271,6 +3294,58 @@ const UI = {
     // No-op: league selector is now inline in League tab renderers
   },
 
+  buildGWSelect() {
+    const sel = document.getElementById('gw-select');
+    if (!sel || !Store.bootstrap) return;
+    const events = Store.bootstrap.events || [];
+    const currentGW = Store.currentGW || 1;
+    const totalGW = events.length;
+    const target = Store.targetGW || 0;
+
+    let html = `<option value="0" ${target===0?'selected':''}>▶ GW${currentGW + 1} (Auto)</option>`;
+    html += '<optgroup label="── GW Lalu ──">';
+    for (let g = currentGW; g >= 1; g--) {
+      const ev = events.find(e => e.id === g);
+      const label = g === currentGW ? `GW${g} (Aktif)` : `GW${g}`;
+      html += `<option value="${g}" ${target===g?'selected':''}>${label}</option>`;
+    }
+    html += '</optgroup>';
+    html += '<optgroup label="── GW Depan ──">';
+    for (let g = currentGW + 1; g <= totalGW; g++) {
+      html += `<option value="${g}" ${target===g?'selected':''}>GW${g}</option>`;
+    }
+    html += '</optgroup>';
+    sel.innerHTML = html;
+  },
+
+  changeTargetGW(gw) {
+    Store.targetGW = gw; // 0 = auto
+    const label = gw === 0 ? 'Auto' : `GW${gw}`;
+    console.log(`[UI] Target GW changed → ${label}`);
+
+    // Re-process players with new fixture target
+    if (Store.bootstrap && Store.fixtures) {
+      const { players, targetGW } = Process.fromBootstrap(Store.bootstrap, Store.fixtures, Store.liveEvent);
+      Store.players = players;
+      Process.applyScores(players);
+      // Update GW badge to show target
+      const badge = document.getElementById('gw-badge');
+      if (badge) {
+        if (gw === 0) {
+          badge.textContent = `GW ${Store.currentGW}`;
+          badge.style.color = '';
+        } else if (gw <= Store.currentGW) {
+          badge.textContent = `GW ${Store.currentGW} → 🔍${gw}`;
+          badge.style.color = 'var(--orange)';
+        } else {
+          badge.textContent = `GW ${Store.currentGW} → 🔮${gw}`;
+          badge.style.color = 'var(--purple)';
+        }
+      }
+      Nav.goTab(Nav.current);
+    }
+  },
+
   leagueSelectHTML() {
     const leagues = CFG.leagues.map((l,i)=>
       `<option value="${i}" ${i===CFG.selectedLeagueIdx?'selected':''}>${l.name} (ID: ${l.id})</option>`
@@ -3458,6 +3533,7 @@ const App = {
 
     // Render immediately
     Nav.goTab(Nav.current);
+    UI.buildGWSelect();
 
     // ── Step 4: League data (background, concurrency=5) ──
     this.loadLeagueData(gw);
