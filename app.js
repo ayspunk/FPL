@@ -1090,7 +1090,7 @@ const Process = {
 // ═══════════════════════════════════════════════════════
 const SUBTABS = {
   lineup:  [{k:'gwrec',    l:'GW Recommendation'},{k:'gweval',l:'Evaluasi Poin'},{k:'gwscoring',l:'GW Scoring'},{k:'wlineup',l:'WLineUp'},{k:'optimize',l:'⚡ Optimize'}],
-  scout:   [{k:'sscoring', l:'Scout Scoring'},    {k:'srec',     l:'Scout Recommendation'},{k:'swt',l:'Scout Weights'}],
+  scout:   [{k:'sscoring', l:'Scout Scoring'},    {k:'srec',     l:'Scout Recommendation'},{k:'swt',l:'Scout Weights'},{k:'soptimize',l:'⚡ Optimize'}],
   fdr:     [{k:'fdr-def',  l:'DEF Matrix'},       {k:'fdr-atk',  l:'ATK Matrix'},{k:'fdr-ovr',l:'OVR Matrix'},{k:'fdrinfo',l:'Team Strength'}],
   epl:     [],
   league:  [{k:'rekap',    l:'Rekap'},             {k:'charts',   l:'Grafik'},   {k:'transfer',l:'Transfer & Chips'}],
@@ -1205,7 +1205,7 @@ const Render = {
     if (!el) return;
     const map = {
       lineup:  { gwrec:this.lineupRec, gweval:this.lineupEval, gwscoring:this.lineupScoring, wlineup:this.lineupWLineup, optimize:this.lineupOptimize },
-      scout:   { sscoring:this.scoutScoring, srec:this.scoutRec, swt:this.scoutWeight },
+      scout:   { sscoring:this.scoutScoring, srec:this.scoutRec, swt:this.scoutWeight, soptimize:this.scoutOptimize },
       fdr:     { 'fdr-def':()=>this.fdrMatrix('def'), 'fdr-atk':()=>this.fdrMatrix('atk'),
                  'fdr-ovr':()=>this.fdrMatrix('ovr'), fdrinfo:this.fdrInfo },
       epl:     { null:this.epl },
@@ -1233,74 +1233,59 @@ const Render = {
 
   // ── Backtest Weight Optimizer ──────────────────────────
   lineupOptimize() {
+    return this._optimizePanel('gw');
+  },
+
+  // ── Shared Optimize Panel (GW + Scout) ──
+  _optimizePanel(mode) {
     if (!Store.bootstrap || !Store.players.length) return H.info('Data belum dimuat.');
+    const weights = mode === 'gw' ? Store.gwWeights : Store.scoutWeights;
+    const backTab = mode === 'gw' ? 'wlineup' : 'swt';
+    const parentTab = mode === 'gw' ? 'lineup' : 'scout';
+    const applyFn = mode === 'gw' ? 'applySuggestedWeights' : 'applySuggestedScoutWeights';
 
     const gw = Store.currentGW || 1;
     const lookback = Store.optimizeLookback || 1;
-    const liveData = Store.liveEvent;
     const allKeys = CRITERIA.map(c => c.key);
+    const posArr = ['GK','DEF','MID','FWD'];
 
     // Get actual GW points from live data
     const liveMap = {};
-    if (liveData?.elements) {
-      liveData.elements.forEach(e => { liveMap[e.id] = e.stats?.total_points ?? null; });
-    }
+    if (Store.liveEvent?.elements) Store.liveEvent.elements.forEach(e => { liveMap[e.id] = e.stats?.total_points ?? null; });
 
-    // Also get historical GW points from manager history for lookback > 1
-    // For lookback, we use bootstrap event history if available
-    const gwPointsMap = {}; // {playerId: [pts_gw_n, pts_gw_n-1, ...]}
-    if (lookback > 1) {
-      // Use history from all GWs to build per-player points
-      const events = Store.bootstrap?.events || [];
-      const pastGWs = events.filter(e => e.id >= gw - lookback + 1 && e.id <= gw && e.finished).map(e => e.id);
-      // We only have current GW live data reliably; note limitation
-    }
-
-    // Players with scores AND actual points
     const eligible = Store.players.filter(p => p.scores && liveMap[p.id] != null && p.minutes >= 90);
-    const posArr = ['GK','DEF','MID','FWD'];
 
     if (eligible.length < 10) {
       return `
-        <div class="section-title">⚡ Weight Optimizer — Backtest</div>
-        ${H.info(`Memerlukan data live GW aktif. Saat ini ${eligible.length} pemain eligible (perlu ≥10 dengan ≥90 menit dan poin aktual).`)}
-        <div class="btn-row">
-          <button class="btn btn-secondary" onclick="Nav.goSubtab('lineup','wlineup')">← Kembali ke WLineUp</button>
-        </div>`;
+        <div class="section-title">⚡ ${mode==='gw'?'GW':'Scout'} Weight Optimizer</div>
+        ${H.info(`Memerlukan data live GW aktif. Saat ini ${eligible.length} pemain eligible (perlu ≥10).`)}
+        <div class="btn-row"><button class="btn btn-secondary" onclick="Nav.goSubtab('${parentTab}','${backTab}')">← Kembali</button></div>`;
     }
 
-    // Lookback selector
     const lookbackOpts = [1,3,5].map(n =>
-      `<button class="filter-btn ${lookback===n?'active':''}" onclick="Store.optimizeLookback=${n};Nav.goSubtab('lineup','optimize')">${n} GW</button>`
+      `<button class="filter-btn ${lookback===n?'active':''}" onclick="Store.optimizeLookback=${n};Nav.goSubtab('${parentTab}','${mode==='gw'?'optimize':'soptimize'}')">${n} GW</button>`
     ).join('');
 
-    // Compute correlation for ALL criteria per position
+    // Overall correlation
     const actualPts = eligible.map(p => liveMap[p.id]);
     const meanPts = actualPts.reduce((s,v)=>s+v,0)/actualPts.length;
-
-    // Overall correlation
     const overallCorr = {};
     allKeys.forEach(key => {
       const scores = eligible.map(p => p.scores[key] || 0);
       const meanS = scores.reduce((s,v)=>s+v,0)/scores.length;
       let num=0, denA=0, denB=0;
-      for (let i=0;i<eligible.length;i++) {
-        const dS=scores[i]-meanS, dP=actualPts[i]-meanPts;
-        num+=dS*dP; denA+=dS*dS; denB+=dP*dP;
-      }
+      for (let i=0;i<eligible.length;i++) { const dS=scores[i]-meanS, dP=actualPts[i]-meanPts; num+=dS*dP; denA+=dS*dS; denB+=dP*dP; }
       overallCorr[key] = (denA>0&&denB>0) ? +(num/Math.sqrt(denA*denB)).toFixed(4) : 0;
     });
 
-    // Per-position correlation + suggested weights
+    // Per-position suggested weights
     const suggested = {};
     allKeys.forEach(key => { suggested[key] = {GK:0,DEF:0,MID:0,FWD:0}; });
-
     posArr.forEach(position => {
       const pp = eligible.filter(p => p.Position === position);
       if (pp.length < 3) return;
       const posActual = pp.map(p => liveMap[p.id]);
       const posMean = posActual.reduce((s,v)=>s+v,0)/posActual.length;
-
       const corrs = {};
       allKeys.forEach(key => {
         const sc = pp.map(p => p.scores[key] || 0);
@@ -1310,88 +1295,59 @@ const Render = {
         corrs[key] = (dA>0&&dB>0) ? Math.max(0, n/Math.sqrt(dA*dB)) : 0;
       });
       const total = Object.values(corrs).reduce((s,v)=>s+v,0);
-      if (total > 0) {
-        allKeys.forEach(key => { suggested[key][position] = +(corrs[key] / total).toFixed(4); });
-      }
+      if (total > 0) allKeys.forEach(key => { suggested[key][position] = +(corrs[key] / total).toFixed(4); });
     });
 
-    // Sort by overall correlation descending
     const sortedKeys = [...allKeys].sort((a,b) => Math.abs(overallCorr[b]) - Math.abs(overallCorr[a]));
-
-    // Group order for visual
-    const groupOrder = ['Fixture','Performance','Attacking','Defending','ICT','Discipline','Value','Transfers','Other'];
-
-    // Check which are currently active
-    const currentActive = new Set(Object.keys(Store.gwWeights));
+    const currentActive = new Set(Object.keys(weights));
 
     const rows = sortedKeys.map(key => {
-      const cr = CRITERIA_MAP[key];
-      if (!cr) return '';
-      const label = cr.label;
-      const grp = cr.group;
+      const cr = CRITERIA_MAP[key]; if (!cr) return '';
       const tip = cr.tip ? ` title="${cr.tip}"` : '';
       const corr = overallCorr[key] || 0;
       const corrBar = `<div class="corr-bar"><div class="corr-fill ${corr>=0?'corr-pos':'corr-neg'}" style="width:${Math.min(100,Math.abs(corr)*100)}%"></div></div>`;
       const corrColor = corr > 0.15 ? 'var(--green)' : corr > 0 ? 'var(--text2)' : corr > -0.05 ? 'var(--text3)' : 'var(--red)';
       const isActive = currentActive.has(key);
       const hasSuggest = posArr.some(p => (suggested[key]?.[p]||0) > 0.01);
-
-      const currentW = posArr.map(p => {
-        const v = ((Store.gwWeights[key]?.[p]||0)*100).toFixed(0);
-        return `<td class="mono c dim">${isActive?v+'%':'–'}</td>`;
-      }).join('');
+      const currentW = posArr.map(p => `<td class="mono c dim">${isActive?((weights[key]?.[p]||0)*100).toFixed(0)+'%':'–'}</td>`).join('');
       const suggestW = posArr.map(p => {
         const sw = ((suggested[key]?.[p]||0)*100).toFixed(0);
-        const cls = +sw > 5 ? 's-hi' : +sw > 0 ? '' : 'dim';
-        return `<td class="mono c ${cls}">${sw}%</td>`;
+        return `<td class="mono c ${+sw>5?'s-hi':+sw>0?'':'dim'}">${sw}%</td>`;
       }).join('');
-
       return `<tr class="${hasSuggest?'':'opt-dim'}">
-        <td${tip}><span class="crit-label">${label}</span> <span class="crit-group">${grp}</span></td>
+        <td${tip}><span class="crit-label">${cr.label}</span> <span class="crit-group">${cr.group}</span></td>
         <td class="mono c" style="color:${corrColor}">${corr.toFixed(3)}</td>
         <td>${corrBar}</td>
-        ${currentW}
-        ${suggestW}
+        ${currentW}${suggestW}
       </tr>`;
     }).join('');
 
     return `
-      <div class="section-title">⚡ Weight Optimizer — Backtest GW${gw}</div>
-      ${H.info(`Korelasi Pearson <b>semua ${allKeys.length} kriteria</b> vs poin aktual. <b>${eligible.length}</b> pemain eligible. Apply akan otomatis menambahkan kriteria yang relevan.`)}
-
+      <div class="section-title">⚡ ${mode==='gw'?'GW':'Scout'} Weight Optimizer — Backtest GW${gw}</div>
+      ${H.info(`Korelasi Pearson <b>semua ${allKeys.length} kriteria</b> vs poin aktual. <b>${eligible.length}</b> pemain eligible. Apply otomatis menambahkan kriteria relevan.`)}
       <div class="filters" style="margin-bottom:14px">
-        <span class="dim" style="font-size:12px;margin-right:8px">Lookback:</span>
-        ${lookbackOpts}
+        <span class="dim" style="font-size:12px;margin-right:8px">Lookback:</span>${lookbackOpts}
         <span class="dim" style="font-size:11px;margin-left:auto">Sorted by |correlation|</span>
       </div>
-
       <div class="table-wrap" style="max-width:960px">
         <table class="weight-table opt-table">
-          <thead>
-            <tr>
-              <th rowspan="2">Kriteria</th>
-              <th rowspan="2" class="c">r</th>
-              <th rowspan="2">Korelasi</th>
-              <th colspan="4" class="c" style="border-bottom:1px solid var(--border2)">Current (%)</th>
-              <th colspan="4" class="c" style="border-bottom:1px solid var(--border2);color:var(--green)">Suggested (%)</th>
-            </tr>
-            <tr>
-              ${posArr.map(p=>`<th class="c" style="font-size:9px">${p}</th>`).join('')}
-              ${posArr.map(p=>`<th class="c" style="font-size:9px;color:var(--green)">${p}</th>`).join('')}
-            </tr>
-          </thead>
+          <thead><tr>
+            <th rowspan="2">Kriteria</th><th rowspan="2" class="c">r</th><th rowspan="2">Korelasi</th>
+            <th colspan="4" class="c" style="border-bottom:1px solid var(--border2)">Current</th>
+            <th colspan="4" class="c" style="border-bottom:1px solid var(--border2);color:var(--green)">Suggested</th>
+          </tr><tr>
+            ${posArr.map(p=>`<th class="c" style="font-size:9px">${p}</th>`).join('')}
+            ${posArr.map(p=>`<th class="c" style="font-size:9px;color:var(--green)">${p}</th>`).join('')}
+          </tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
-
       <div class="btn-row" style="margin-top:14px">
-        <button class="btn btn-primary" onclick="UI.applySuggestedWeights()">✓ Apply Suggested (semua kriteria relevan)</button>
-        <button class="btn btn-secondary" onclick="Nav.goSubtab('lineup','wlineup')">← Kembali ke WLineUp</button>
+        <button class="btn btn-primary" onclick="UI.${applyFn}()">✓ Apply Suggested</button>
+        <button class="btn btn-secondary" onclick="Nav.goSubtab('${parentTab}','${backTab}')">← Kembali</button>
       </div>
-
       <div class="info-box" style="margin-top:16px">
-        <b>Cara baca:</b> <code>r</code> = korelasi Pearson. Baris transparan = korelasi rendah / tidak relevan.
-        Klik <b>Apply</b> = semua kriteria dengan bobot > 0 akan otomatis aktif di WLineUp.
+        <b>Cara baca:</b> <code>r</code> = korelasi Pearson. Baris transparan = tidak relevan. Apply → semua kriteria berbobot > 0 otomatis aktif.
       </div>`;
   },
 
@@ -1614,7 +1570,9 @@ const Render = {
       const ptsHtml = hasLive && p.livePoints!=null
         ? `<div class="p-chip-pts ${H.ptsClass(p.livePoints)}">${isCap ? p.livePoints*2 : p.livePoints}</div>`
         : '';
-      return `<div class="player-chip">
+      // Tooltip with lineup table info
+      const tip = `${p.Player} (${p.Team})&#10;${p.Position} · £${p.Price.toFixed(1)}&#10;GWScore: ${p.GWScore.toFixed(2)}&#10;FDR: ${H.numFmt(p.FDR_next,1)} · ${p.isHome?'Home':'Away'} vs ${p.opponent||'?'}&#10;PPG: ${H.numFmt(p.PPG,1)} · xGI: ${H.numFmt(p.xGI,2)}${p.isBlank?' · ⛔ BLANK':''}${p.isDGW?' · 2️⃣ DGW':''}`;
+      return `<div class="player-chip" title="${tip}">
         <div class="p-shirt sh-${p.Team||'default'}${capCls} ${ex}">${p.Team||'?'}</div>
         <div class="p-chip-name">${p.Player.split(' ').slice(-1)[0]}${isCap?' ★':isVC?' ☆':''}</div>
         <div class="p-chip-score${d}">${p.GWScore.toFixed(1)}</div>
@@ -1793,6 +1751,10 @@ const Render = {
     if (!Store.scoutWeights) Store.scoutWeights = JSON.parse(JSON.stringify(CFG.SCOUT_WEIGHTS));
     return this._criteriaWeightPanel('scout', Store.scoutWeights, 'Scout Scoring Weights',
       'Edit bobot lalu klik <b>Apply</b>. Total tiap posisi harus = 100%.');
+  },
+
+  scoutOptimize() {
+    return this._optimizePanel('scout');
   },
 
   // ── Shared criteria weight panel (used by WLineUp & Scout Weights) ──
@@ -2449,8 +2411,10 @@ const Render = {
     const hasInfos  = Object.keys(Store.managerInfos).length > 0;
     const hasHist   = Object.keys(Store.managerHistory).length > 0;
 
-    // Calculate total transfers per manager (excluding chip GWs: WC, FH)
+    // Calculate total transfers + extract overall rank and team value from history
     const totalTransfers = {};
+    const overallRanks = {};
+    const teamValues = {};
     if (hasHist) {
       entries.forEach(e => {
         const h = Store.managerHistory[e.entryId] || Store.managerHistory[String(e.entryId)];
@@ -2469,9 +2433,13 @@ const Render = {
         });
         totalTransfers[e.entryId] = trans;
 
-        // Use total_points from history (same source as bump chart)
+        // Extract overall rank and team value from last GW in history
         const lastGW = events.reduce((a, b) => Number(b.event) > Number(a.event) ? b : a, events[0]);
         if (lastGW?.total_points) e.total = Number(lastGW.total_points);
+        if (lastGW?.overall_rank) overallRanks[e.entryId] = Number(lastGW.overall_rank);
+        if (lastGW?.value) teamValues[e.entryId] = Number(lastGW.value);
+        // Also try bank
+        if (lastGW?.bank != null && !teamValues[e.entryId]) teamValues[e.entryId] = Number(lastGW.value) || 0;
       });
 
       // Re-sort: higher total pts first, then fewer transfers
@@ -2494,10 +2462,9 @@ const Render = {
       const delta  = (e.lastRank || e._prevRank || rnk) - rnk;
       const dCls  = delta>0?'trend-up':delta<0?'trend-down':'trend-same';
       const dStr  = delta>0?`⬆ +${delta}`:delta<0?`⬇ ${delta}`:'➡ =';
-      const info  = Store.managerInfos[e.entryId];
-      const ovrRank = info?.summary_overall_rank;
-      const tv    = info?.last_deadline_total_value;
       const trans = totalTransfers[e.entryId];
+      const ovrRank = overallRanks[e.entryId];
+      const tv = teamValues[e.entryId];
       return `<tr class="${isMe?'highlight-row':''}">
         <td class="rekap-rank ${rCls}">${rnk}</td>
         <td class="${dCls}" style="font-size:14px">${dStr}</td>
@@ -2506,8 +2473,8 @@ const Render = {
         <td class="rekap-ep">${e.eventTotal??'–'}</td>
         <td class="rekap-tp">${e.total||0}</td>
         ${hasHist?`<td class="mono dim r" style="font-size:12px" title="Transfer tanpa chip WC/FH">${trans!=null?trans:'–'}</td>`:''}
-        ${hasInfos?`<td class="mono dim r" style="font-size:12px" title="Overall Rank">${ovrRank?ovrRank.toLocaleString():'–'}</td>`:''}
-        ${hasInfos?`<td class="mono dim r" style="font-size:12px" title="Team Value">£${tv?(tv/10).toFixed(1):'–'}</td>`:''}
+        ${hasHist?`<td class="mono dim r" style="font-size:12px" title="Overall Rank">${ovrRank?'#'+ovrRank.toLocaleString():'–'}</td>`:''}
+        ${hasHist?`<td class="mono dim r" style="font-size:12px" title="Team Value (termasuk bank)">£${tv?(tv/10).toFixed(1):'–'}</td>`:''}
       </tr>`;
     }).join('');
 
@@ -2527,7 +2494,7 @@ const Render = {
             <th class="c">#</th><th>Trend</th><th>Tim</th><th>Manajer</th>
             <th class="r">GW Pts</th><th class="r">Total Pts</th>
             ${hasHist?'<th class="r">Transfers</th>':''}
-            ${hasInfos?'<th class="r">Overall Rank</th><th class="r">Team Value</th>':''}
+            ${hasHist?'<th class="r">Overall Rank</th><th class="r">Team Value</th>':''}
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -3837,21 +3804,37 @@ const UI = {
   },
 
   applySuggestedWeights() {
+    const finalWeights = UI._computeOptimalWeights();
+    if (!finalWeights) return;
+    console.log(`[Optimize] GW applied: ${Object.keys(finalWeights).length} criteria`);
+    Store.gwWeights = finalWeights;
+    try { localStorage.setItem('fplDashGWWeights', JSON.stringify(finalWeights)); } catch {}
+    Process.applyScores(Store.players);
+    Nav.goSubtab('lineup','wlineup');
+  },
+
+  applySuggestedScoutWeights() {
+    const finalWeights = UI._computeOptimalWeights();
+    if (!finalWeights) return;
+    console.log(`[Optimize] Scout applied: ${Object.keys(finalWeights).length} criteria`);
+    Store.scoutWeights = finalWeights;
+    try { localStorage.setItem('fplDashScoutWeights', JSON.stringify(finalWeights)); } catch {}
+    Nav.goSubtab('scout','swt');
+  },
+
+  _computeOptimalWeights() {
     const liveMap = {};
     if (Store.liveEvent?.elements) Store.liveEvent.elements.forEach(e => { liveMap[e.id] = e.stats?.total_points ?? null; });
-
     const eligible = Store.players.filter(p => p.scores && liveMap[p.id] != null && p.minutes >= 90);
+    if (eligible.length < 5) return null;
     const allKeys = CRITERIA.map(c => c.key);
     const pos = ['GK','DEF','MID','FWD'];
-
     const newWeights = {};
-
     pos.forEach(position => {
       const pp = eligible.filter(p => p.Position === position);
       if (pp.length < 3) return;
       const actual = pp.map(p => liveMap[p.id]);
       const mean = actual.reduce((s,v)=>s+v,0)/actual.length;
-
       const corrs = {};
       allKeys.forEach(key => {
         const sc = pp.map(p => p.scores[key] || 0);
@@ -3861,29 +3844,16 @@ const UI = {
         corrs[key] = (dA>0&&dB>0) ? Math.max(0, n/Math.sqrt(dA*dB)) : 0;
       });
       const total = Object.values(corrs).reduce((s,v)=>s+v,0);
-      if (total > 0) {
-        allKeys.forEach(key => {
-          if (!newWeights[key]) newWeights[key] = {GK:0,DEF:0,MID:0,FWD:0};
-          newWeights[key][position] = +(corrs[key] / total).toFixed(4);
-        });
-      }
+      if (total > 0) allKeys.forEach(key => {
+        if (!newWeights[key]) newWeights[key] = {GK:0,DEF:0,MID:0,FWD:0};
+        newWeights[key][position] = +(corrs[key] / total).toFixed(4);
+      });
     });
-
-    // Remove criteria with zero weight across all positions
     const finalWeights = {};
     Object.entries(newWeights).forEach(([key, w]) => {
       if (pos.some(p => w[p] > 0.005)) finalWeights[key] = w;
     });
-
-    console.log(`[Optimize] Applied: ${Object.keys(finalWeights).length} criteria (from ${allKeys.length} total)`);
-    Store.gwWeights = finalWeights;
-    try { localStorage.setItem('fplDashGWWeights', JSON.stringify(finalWeights)); } catch {}
-    Process.applyScores(Store.players);
-    Nav.goSubtab('lineup','wlineup');
-  },
-
-  buildLeagueSelect() {
-    // No-op: league selector is now inline in League tab renderers
+    return finalWeights;
   },
 
   buildGWSelect() {
