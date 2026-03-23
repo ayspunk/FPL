@@ -721,6 +721,18 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 .wt-ok   { color: var(--green); }
 .wt-warn { color: var(--red); }
 .wt-trow td { border-top: 1px solid var(--border2); font-weight: 700; }
+.wt-group-sep td { border: none; padding: 0; }
+.wt-group-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--text3);
+  padding: 8px 10px 3px !important;
+  background: var(--bg2) !important;
+}
+.opt-table .crit-group { margin-left: 6px; }
+.opt-dim { opacity: .35; }
 
 /* ── Criteria Weight Panel ── */
 .crit-cell { display: flex; flex-direction: column; gap: 1px; }
