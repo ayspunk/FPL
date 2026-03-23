@@ -13,6 +13,8 @@
 <header id="app-header">
   <div class="logo">⚽ <span class="logo-fpl">FPL</span><span class="logo-dash">Dashboard</span></div>
   <div class="header-right">
+    <div class="deadline-wrap" id="deadline-wrap" title="Countdown ke deadline GW berikutnya"></div>
+    <span id="deadline-timer"></span>
     <div class="badge badge-gw" id="gw-badge" title="GW aktif">GW –</div>
     <select class="gw-select" id="gw-select" onchange="UI.changeTargetGW(+this.value)" title="Pilih GW untuk analisis">
       <option value="0">Auto</option>
