@@ -13,8 +13,8 @@ const CFG = {
     { name: 'P2B Super League',         id: 24873   },
     { name: 'Tugas Belajar PLN League', id: 2150310 },
   ],
-  myTeamId:     null,         // FPL entry/team ID user (isi di Settings)
-  myTeamName:   'r00kie',     // nama tim untuk highlight
+  myTeamId:     2414649,      // FPL entry/team ID user
+  myTeamName:   'r00kie',     // nama tim untuk highlight (auto-detected from API)
   minMinutes:   450,
   maxPerTeam:   3,
   sheetsUrl:    '',
@@ -677,6 +677,24 @@ const Process = {
     return result;
   },
 
+  // ── Largest Remainder Method: ensure integer %s sum to exactly 100 ──
+  _roundWeightsTo100(rawWeights) {
+    // rawWeights = {key: decimalValue} where sum ≈ 1.0
+    const keys = Object.keys(rawWeights);
+    const pcts = keys.map(k => rawWeights[k] * 100);
+    const floors = pcts.map(v => Math.floor(v));
+    const remainders = pcts.map((v,i) => ({ i, r: v - floors[i] }));
+    let deficit = 100 - floors.reduce((s,v) => s+v, 0);
+    // Sort by largest remainder, distribute +1 to each
+    remainders.sort((a,b) => b.r - a.r);
+    for (let j = 0; j < deficit && j < remainders.length; j++) {
+      floors[remainders[j].i]++;
+    }
+    const result = {};
+    keys.forEach((k,i) => { result[k] = floors[i] / 100; });
+    return result;
+  },
+
   // ── Bulk score computation for all criteria ──
   _computeAllScores(players) {
     if (!players.length) return;
@@ -1222,7 +1240,11 @@ const Render = {
     // Post-render hooks
     if (tab==='lineup'&&subtab==='wlineup') setTimeout(()=>UI.updateWeightTotals('gwt'),10);
     if (tab==='scout'&&subtab==='swt') setTimeout(()=>UI.updateWeightTotals('scwt'),10);
-    if (tab==='settings') setTimeout(()=>{UI.updateCacheStats();UI.renderCacheEndpointList();},10);
+    if (tab==='settings') setTimeout(()=>{
+      UI.updateCacheStats();UI.renderCacheEndpointList();
+      // Auto-lookup team name if ID is set but name not yet detected
+      if (CFG.myTeamId && !Store.myManagerInfo?.name) UI.lookupTeamId(CFG.myTeamId);
+    },10);
   },
 
   // ── WLineUp ────────────────────────────────────────────
@@ -1295,7 +1317,12 @@ const Render = {
         corrs[key] = (dA>0&&dB>0) ? Math.max(0, n/Math.sqrt(dA*dB)) : 0;
       });
       const total = Object.values(corrs).reduce((s,v)=>s+v,0);
-      if (total > 0) allKeys.forEach(key => { suggested[key][position] = +(corrs[key] / total).toFixed(4); });
+      if (total > 0) {
+        const raw = {};
+        allKeys.forEach(key => { raw[key] = corrs[key] / total; });
+        const adjusted = Process._roundWeightsTo100(raw);
+        allKeys.forEach(key => { suggested[key][position] = adjusted[key]; });
+      }
     });
 
     const sortedKeys = [...allKeys].sort((a,b) => Math.abs(overallCorr[b]) - Math.abs(overallCorr[a]));
@@ -1763,12 +1790,25 @@ const Render = {
     const pos = ['GK','DEF','MID','FWD'];
     const activeKeys = Object.keys(weights);
 
-    // Sort active keys by group order (Fixture → Performance → ... → Other)
+    // Sort active keys by group order
     const groupOrder = ['Fixture','Performance','Attacking','Defending','ICT','Discipline','Value','Transfers','Other'];
     const sortedKeys = [...activeKeys].sort((a,b) => {
       const ga = CRITERIA_MAP[a]?.group || 'Other', gb = CRITERIA_MAP[b]?.group || 'Other';
       const ia = groupOrder.indexOf(ga), ib = groupOrder.indexOf(gb);
       return (ia===-1?99:ia) - (ib===-1?99:ib);
+    });
+
+    // Pre-compute display values using largest-remainder per position (ensures sum = 100%)
+    const displayVals = {};
+    sortedKeys.forEach(key => { displayVals[key] = {}; });
+    pos.forEach(p => {
+      const rawPcts = sortedKeys.map(key => ((weights[key]?.[p]||0)*100));
+      const floors = rawPcts.map(v => Math.floor(v));
+      const rems = rawPcts.map((v,i) => ({i, r: v - floors[i]}));
+      let deficit = 100 - floors.reduce((s,v)=>s+v,0);
+      rems.sort((a,b)=>b.r-a.r);
+      for (let j=0; j<deficit && j<rems.length; j++) floors[rems[j].i]++;
+      sortedKeys.forEach((key,i) => { displayVals[key][p] = floors[i]; });
     });
 
     // Weight table rows with group separators and tooltips
@@ -1792,8 +1832,8 @@ const Render = {
         ${pos.map(p => `<td>
           <input class="weight-input" type="number"
             data-factor="${key}" data-pos="${p}" data-mode="${mode}"
-            value="${((vals[p]||0)*100).toFixed(0)}"
-            min="0" max="100" step="5"
+            value="${displayVals[key]?.[p] ?? 0}"
+            min="0" max="100" step="1"
             oninput="UI.updateWeightTotals('${prefix}')">
         </td>`).join('')}
         <td class="crit-action">
@@ -3188,23 +3228,32 @@ const Render = {
 
   // ── Settings ───────────────────────────────────────────
   settings() {
+    // Auto-detect team name from manager info
+    const mi = Store.myManagerInfo;
+    const detectedName = mi?.name || '';
+    const detectedPlayer = mi ? `${mi.player_first_name||''} ${mi.player_last_name||''}`.trim() : '';
+
     return `
       <div class="settings-grid">
         <div class="settings-card">
           <h3>Identitas</h3>
           <div class="field-group">
-            <label>FPL Team ID Saya <span style="color:var(--text3)">(untuk My Squad, Transfer)</span></label>
-            <input type="number" id="my-team-id" value="${CFG.myTeamId||''}" placeholder="contoh: 1234567">
-            <div class="hint">Temukan di URL profil FPL Anda: fantasy.premierleague.com/entry/<b>ID</b>/…</div>
+            <label>FPL Team ID Saya</label>
+            <input type="number" id="my-team-id" value="${CFG.myTeamId||''}" placeholder="contoh: 2414649"
+              oninput="UI.lookupTeamId(this.value)">
+            <div class="hint">Temukan di URL profil FPL: fantasy.premierleague.com/entry/<b>ID</b>/event/…</div>
+            <div id="team-lookup-result" class="team-lookup-box">
+              ${detectedName ? `<div class="lookup-ok">✓ Tim: <b>${detectedName}</b> — Manajer: ${detectedPlayer}</div>` : CFG.myTeamId ? '<div class="lookup-pending">Mendeteksi nama tim…</div>' : ''}
+            </div>
           </div>
           <div class="field-group">
-            <label>Nama Tim Saya <span style="color:var(--text3)">(untuk highlight di tabel)</span></label>
-            <input type="text" id="my-team-name" value="${CFG.myTeamName}" placeholder="r00kie">
-          </div>
-          <div class="field-group">
-            <label>Min Menit Dimainkan</label>
-            <input type="number" id="min-minutes" value="${CFG.minMinutes}" min="0" max="3000">
-            <div class="hint">Default 450 = 5 GW × 90 menit</div>
+            <label>Filter Minimum Menit <span style="color:var(--text3)">(untuk GW Scoring & Rekomendasi)</span></label>
+            <input type="number" id="min-minutes" value="${CFG.minMinutes}" min="0" max="3000" step="90">
+            <div class="hint">
+              Pemain dengan total menit bermain di bawah nilai ini <b>tidak masuk</b> dalam GW Scoring dan Formasi Rekomendasi,
+              karena data statistik per-90-menit mereka belum reliable.<br>
+              <b>450</b> = ≈5 match penuh &nbsp;|&nbsp; <b>270</b> = ≈3 match &nbsp;|&nbsp; <b>0</b> = tampilkan semua (termasuk pemain baru).
+            </div>
           </div>
           <div class="field-group">
             <label>Max Pemain per Tim (FPL rule: 3)</label>
@@ -3725,14 +3774,12 @@ const UI = {
   },
 
   updateWeightTotals(prefix='gwt') {
-    // Scope to the nearest table to avoid cross-tab contamination
-    const container = document.getElementById(`${prefix}-GK`)?.closest('table') 
-                   || document;
+    const container = document.getElementById(`${prefix}-GK`)?.closest('table') || document;
     ['GK','DEF','MID','FWD'].forEach(pos=>{
       const inputs=container.querySelectorAll(`.weight-input[data-pos="${pos}"]`);
-      const tot=Array.from(inputs).reduce((s,el)=>s+(parseFloat(el.value)||0),0);
+      const tot=Array.from(inputs).reduce((s,el)=>s+(parseInt(el.value)||0),0);
       const el=document.getElementById(`${prefix}-${pos}`);
-      if(el){el.textContent=`${tot}%`;el.className=`wt-total ${Math.abs(tot-100)<1?'wt-ok':'wt-warn'}`;}
+      if(el){el.textContent=`${tot}%`;el.className=`wt-total ${tot>=99&&tot<=101?'wt-ok':'wt-warn'}`;}
     });
   },
 
@@ -3741,7 +3788,7 @@ const UI = {
     document.querySelectorAll('.weight-input[data-mode="gw"]').forEach(el => {
       const f = el.dataset.factor, p = el.dataset.pos;
       if (!newWeights[f]) newWeights[f] = {GK:0,DEF:0,MID:0,FWD:0};
-      newWeights[f][p] = (parseFloat(el.value)||0) / 100;
+      newWeights[f][p] = Math.round(parseFloat(el.value)||0) / 100;
     });
     Store.gwWeights = newWeights;
     Object.assign(CFG.GW_WEIGHTS, newWeights);
@@ -3755,7 +3802,7 @@ const UI = {
     document.querySelectorAll('.weight-input[data-mode="scout"]').forEach(el => {
       const f = el.dataset.factor, p = el.dataset.pos;
       if (!newWeights[f]) newWeights[f] = {GK:0,DEF:0,MID:0,FWD:0};
-      newWeights[f][p] = (parseFloat(el.value)||0) / 100;
+      newWeights[f][p] = Math.round(parseFloat(el.value)||0) / 100;
     });
     Store.scoutWeights = newWeights;
     try { localStorage.setItem('fplDashScoutWeights', JSON.stringify(newWeights)); } catch {}
@@ -3844,10 +3891,16 @@ const UI = {
         corrs[key] = (dA>0&&dB>0) ? Math.max(0, n/Math.sqrt(dA*dB)) : 0;
       });
       const total = Object.values(corrs).reduce((s,v)=>s+v,0);
-      if (total > 0) allKeys.forEach(key => {
-        if (!newWeights[key]) newWeights[key] = {GK:0,DEF:0,MID:0,FWD:0};
-        newWeights[key][position] = +(corrs[key] / total).toFixed(4);
-      });
+      if (total > 0) {
+        // Normalize and apply largest-remainder to ensure integer % sums to 100
+        const raw = {};
+        allKeys.forEach(key => { raw[key] = corrs[key] / total; });
+        const adjusted = Process._roundWeightsTo100(raw);
+        allKeys.forEach(key => {
+          if (!newWeights[key]) newWeights[key] = {GK:0,DEF:0,MID:0,FWD:0};
+          newWeights[key][position] = adjusted[key];
+        });
+      }
     });
     const finalWeights = {};
     Object.entries(newWeights).forEach(([key, w]) => {
@@ -3954,9 +4007,37 @@ const UI = {
     App.loadLeagueData(Store.currentGW);
   },
 
+  // ── Team ID auto-lookup ──
+  _lookupTimer: null,
+  lookupTeamId(val) {
+    clearTimeout(this._lookupTimer);
+    const el = document.getElementById('team-lookup-result');
+    const id = +val;
+    if (!id || id < 1) { if (el) el.innerHTML = ''; return; }
+    if (el) el.innerHTML = '<div class="lookup-pending">Mencari…</div>';
+    this._lookupTimer = setTimeout(async () => {
+      try {
+        const info = await Fetch.managerInfo(id);
+        if (info?.name) {
+          Store.myManagerInfo = info;
+          const name = info.name;
+          const player = `${info.player_first_name||''} ${info.player_last_name||''}`.trim();
+          if (el) el.innerHTML = `<div class="lookup-ok">✓ Tim: <b>${name}</b> — Manajer: ${player}</div>`;
+          // Auto-set team name in config
+          CFG.myTeamName = name;
+        } else {
+          if (el) el.innerHTML = '<div class="lookup-err">✗ Team ID tidak ditemukan</div>';
+        }
+      } catch {
+        if (el) el.innerHTML = '<div class="lookup-err">✗ Gagal menghubungi FPL API</div>';
+      }
+    }, 800);
+  },
+
   saveSettings() {
     CFG.myTeamId   = +document.getElementById('my-team-id')?.value   || null;
-    CFG.myTeamName = document.getElementById('my-team-name')?.value  || CFG.myTeamName;
+    // Auto-set team name from manager info lookup
+    if (Store.myManagerInfo?.name) CFG.myTeamName = Store.myManagerInfo.name;
     CFG.sheetsUrl  = document.getElementById('sheets-url')?.value    || '';
     CFG.minMinutes = +document.getElementById('min-minutes')?.value  || 450;
     CFG.maxPerTeam = +document.getElementById('max-per-team')?.value || 3;
