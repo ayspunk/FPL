@@ -1108,7 +1108,7 @@ const Process = {
 // ═══════════════════════════════════════════════════════
 const SUBTABS = {
   lineup:  [{k:'gwrec',    l:'GW Recommendation'},{k:'gweval',l:'Evaluasi Poin'},{k:'gwscoring',l:'GW Scoring'},{k:'wlineup',l:'WLineUp'},{k:'optimize',l:'⚡ Optimize'}],
-  scout:   [{k:'sscoring', l:'Scout Scoring'},    {k:'srec',     l:'Scout Recommendation'},{k:'swt',l:'Scout Weights'},{k:'soptimize',l:'⚡ Optimize'}],
+  scout:   [{k:'sscoring', l:'Scout Scoring'},{k:'srec',l:'Scout Recommendation'},{k:'swt',l:'Scout Weights'},{k:'soptimize',l:'⚡ Optimize'},{k:'price',l:'💰 Price Change'},{k:'diff',l:'🔮 Differentials'},{k:'captain',l:'👑 Captain Sim'}],
   fdr:     [{k:'fdr-def',  l:'DEF Matrix'},       {k:'fdr-atk',  l:'ATK Matrix'},{k:'fdr-ovr',l:'OVR Matrix'},{k:'fdrinfo',l:'Team Strength'}],
   epl:     [],
   league:  [{k:'rekap',    l:'Rekap'},             {k:'charts',   l:'Grafik'},   {k:'transfer',l:'Transfer & Chips'}],
@@ -1223,7 +1223,7 @@ const Render = {
     if (!el) return;
     const map = {
       lineup:  { gwrec:this.lineupRec, gweval:this.lineupEval, gwscoring:this.lineupScoring, wlineup:this.lineupWLineup, optimize:this.lineupOptimize },
-      scout:   { sscoring:this.scoutScoring, srec:this.scoutRec, swt:this.scoutWeight, soptimize:this.scoutOptimize },
+      scout:   { sscoring:this.scoutScoring, srec:this.scoutRec, swt:this.scoutWeight, soptimize:this.scoutOptimize, price:this.pricePredictor, diff:this.differentialFinder, captain:this.captainSimulator },
       fdr:     { 'fdr-def':()=>this.fdrMatrix('def'), 'fdr-atk':()=>this.fdrMatrix('atk'),
                  'fdr-ovr':()=>this.fdrMatrix('ovr'), fdrinfo:this.fdrInfo },
       epl:     { null:this.epl },
@@ -1782,6 +1782,287 @@ const Render = {
 
   scoutOptimize() {
     return this._optimizePanel('scout');
+  },
+
+  // ══════════════════════════════════════════════════════
+  // PRICE CHANGE PREDICTOR
+  // ══════════════════════════════════════════════════════
+  pricePredictor() {
+    if (!Store.bootstrap) return H.info('Data belum dimuat.');
+    const bs = Store.bootstrap;
+    const teamMap = {};
+    bs.teams.forEach(t => { teamMap[t.id] = t; });
+
+    // FPL price change threshold: ~100K net transfers for £0.1 change
+    // We estimate probability based on net transfer ratio
+    const players = bs.elements.filter(p => p.status !== 'u').map(p => {
+      const netIn  = (+p.transfers_in_event || 0);
+      const netOut = (+p.transfers_out_event || 0);
+      const net    = netIn - netOut;
+      const tsb    = +p.selected_by_percent || 0;
+      // Total FPL managers ~11M, but active ~4M
+      const activeMgrs = 4000000;
+      const owned = Math.round(tsb / 100 * activeMgrs);
+      // Threshold: need ~ownership/10 net transfers for price change
+      const threshold = Math.max(owned * 0.04, 50000);
+      const riseProb  = net > 0 ? Math.min(99, Math.round(net / threshold * 100)) : 0;
+      const fallProb  = net < 0 ? Math.min(99, Math.round(Math.abs(net) / threshold * 100)) : 0;
+      const direction = riseProb > 50 ? 'rise' : fallProb > 50 ? 'fall' : 'stable';
+      const costChange = (+p.cost_change_event || 0) / 10;
+      const costStart  = (+p.cost_change_start || 0) / 10;
+
+      return {
+        id: p.id,
+        Player: p.web_name,
+        Team: teamMap[p.team]?.short_name || '?',
+        Position: ['','GK','DEF','MID','FWD'][p.element_type] || '?',
+        Price: p.now_cost / 10,
+        TSB: tsb,
+        TIn: netIn,
+        TOut: netOut,
+        Net: net,
+        riseProb, fallProb, direction,
+        costChange, costStart,
+        status: p.status,
+      };
+    });
+
+    // Sort by probability (highest first)
+    const risers = [...players].filter(p => p.riseProb > 20).sort((a,b) => b.riseProb - a.riseProb).slice(0, 20);
+    const fallers = [...players].filter(p => p.fallProb > 20).sort((a,b) => b.fallProb - a.fallProb).slice(0, 20);
+
+    const makeRow = (p, type) => {
+      const prob = type === 'rise' ? p.riseProb : p.fallProb;
+      const probColor = prob >= 80 ? 'var(--green)' : prob >= 50 ? 'var(--gold)' : 'var(--text2)';
+      const probBar = `<div class="corr-bar" style="width:60px"><div class="corr-fill ${type==='rise'?'corr-pos':'corr-neg'}" style="width:${prob}%"></div></div>`;
+      const arrow = type === 'rise' ? '📈' : '📉';
+      return `<tr>
+        <td>${H.posPill(p.Position)}</td>
+        <td style="font-weight:600">${p.Player}</td>
+        <td>${H.teamTag(p.Team)}</td>
+        <td class="mono r">£${p.Price.toFixed(1)}</td>
+        <td class="mono r" style="color:${type==='rise'?'var(--green)':'var(--red)'}">${p.costChange>=0?'+':''}${p.costChange.toFixed(1)}</td>
+        <td class="mono r s-hi">${p.TIn.toLocaleString()}</td>
+        <td class="mono r s-lo">${p.TOut.toLocaleString()}</td>
+        <td class="mono r" style="color:${p.Net>0?'var(--green)':'var(--red)'}${p.Net===0?';color:var(--text3)':''}">${p.Net>0?'+':''}${p.Net.toLocaleString()}</td>
+        <td class="mono c" style="color:${probColor};font-weight:700">${arrow} ${prob}%</td>
+        <td>${probBar}</td>
+      </tr>`;
+    };
+
+    const riseRows = risers.map(p => makeRow(p, 'rise')).join('');
+    const fallRows = fallers.map(p => makeRow(p, 'fall')).join('');
+
+    const tableHead = `<thead><tr>
+      <th>Pos</th><th>Pemain</th><th>Tim</th><th class="r">Harga</th><th class="r">Δ GW</th>
+      <th class="r">In</th><th class="r">Out</th><th class="r">Net</th><th class="c">Prob</th><th></th>
+    </tr></thead>`;
+
+    return `
+      <div class="section-title">💰 Price Change Predictor — GW${Store.currentGW||'–'}</div>
+      ${H.info('Prediksi kenaikan/penurunan harga berdasarkan net transfer relatif terhadap ownership. Threshold bervariasi per pemain.')}
+
+      <div class="two-col">
+        <div>
+          <div class="section-title" style="color:var(--green)">📈 Likely to Rise (${risers.length})</div>
+          <div class="table-wrap" style="max-height:500px;overflow-y:auto">
+            <table>${tableHead}<tbody>${riseRows||'<tr><td colspan="10" class="dim c">Tidak ada kandidat naik harga</td></tr>'}</tbody></table>
+          </div>
+        </div>
+        <div>
+          <div class="section-title" style="color:var(--red)">📉 Likely to Fall (${fallers.length})</div>
+          <div class="table-wrap" style="max-height:500px;overflow-y:auto">
+            <table>${tableHead}<tbody>${fallRows||'<tr><td colspan="10" class="dim c">Tidak ada kandidat turun harga</td></tr>'}</tbody></table>
+          </div>
+        </div>
+      </div>`;
+  },
+
+  // ══════════════════════════════════════════════════════
+  // DIFFERENTIAL FINDER
+  // ══════════════════════════════════════════════════════
+  differentialFinder() {
+    if (!Store.scoredPlayers.length) return H.info('Data belum dimuat.');
+
+    const maxTSB = +(Store._diffMaxTSB || 10);
+    const posFilter = Store._diffPos || 'ALL';
+
+    const fBtns = ['ALL','GK','DEF','MID','FWD'].map(p =>
+      `<button class="filter-btn ${posFilter===p?'active':''}"
+        onclick="Store._diffPos='${p}';Nav.goSubtab('scout','diff')">${p}</button>`
+    ).join('');
+
+    const tsbSlider = `
+      <div style="display:flex;align-items:center;gap:10px;margin-left:auto">
+        <span class="dim" style="font-size:11px">Max TSB:</span>
+        <input type="range" min="1" max="30" step="1" value="${maxTSB}" class="fdr-slider"
+          oninput="Store._diffMaxTSB=+this.value;document.getElementById('diff-tsb-val').textContent=this.value+'%';Nav.goSubtab('scout','diff')">
+        <span id="diff-tsb-val" class="mono" style="font-size:12px;color:var(--gold);min-width:30px">${maxTSB}%</span>
+      </div>`;
+
+    const diffs = Store.scoredPlayers
+      .filter(p => p.TSB <= maxTSB && p.TSB > 0)
+      .filter(p => posFilter === 'ALL' || p.Position === posFilter)
+      .filter(p => !p.isBlank)
+      .sort((a,b) => b.GWScore - a.GWScore)
+      .slice(0, 30);
+
+    const rows = diffs.map((p,i) => {
+      const sc = p.GWScore;
+      const diffScore = +(sc * (1 + (10 - p.TSB) / 10)).toFixed(2); // Bonus for low ownership
+      return `<tr>
+        <td class="dim">${i+1}</td>
+        <td>${H.posPill(p.Position)}</td>
+        <td style="font-weight:600">${p.Player}${p.doubt?'<span class="doubt-tag">⚠</span>':''}</td>
+        <td>${H.teamTag(p.Team)}</td>
+        <td class="mono r ${H.scoreClass(sc)}">${sc.toFixed(2)}</td>
+        <td class="mono r" style="color:var(--gold);font-weight:700">${diffScore.toFixed(2)}</td>
+        <td class="mono r dim">${H.pct(p.TSB)}</td>
+        <td class="c">${p.isHome?'🏠':'✈'} <span class="dim" style="font-size:11px">${p.opponent}</span></td>
+        <td class="mono r">${H.numFmt(p.FDR_next,1)}</td>
+        <td class="mono r">${H.numFmt(p.Form,1)}</td>
+        <td class="mono r">${H.numFmt(p.PPG,1)}</td>
+        <td class="mono r">${H.numFmt(p.xGI,2)}</td>
+        <td class="mono dim r">£${p.Price.toFixed(1)}</td>
+      </tr>`;
+    }).join('');
+
+    return `
+      <div class="section-title">🔮 Differential Finder — TSB ≤ ${maxTSB}%</div>
+      ${H.info('Pemain dengan ownership rendah tapi skor tinggi. <b>Diff Score</b> = GWScore × bonus low-ownership. Ideal untuk mengejar rank.')}
+      <div class="filters">
+        ${fBtns}
+        ${tsbSlider}
+      </div>
+      <div class="table-wrap max-h">
+        <table>
+          <thead><tr>
+            <th>#</th><th>Pos</th><th>Pemain</th><th>Tim</th>
+            <th class="r" title="GW Score standar">Score</th>
+            <th class="r" title="Score × bonus ownership rendah" style="color:var(--gold)">Diff Score</th>
+            <th class="r">TSB%</th><th>Lawan</th><th class="r">FDR</th>
+            <th class="r">Form</th><th class="r">PPG</th><th class="r">xGI</th><th class="r">£</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  },
+
+  // ══════════════════════════════════════════════════════
+  // CAPTAIN SIMULATOR
+  // ══════════════════════════════════════════════════════
+  captainSimulator() {
+    if (!Store.scoredPlayers.length) return H.info('Data belum dimuat.');
+
+    const bs = Store.bootstrap;
+    const liveMap = {};
+    if (Store.liveEvent?.elements) Store.liveEvent.elements.forEach(e => { liveMap[e.id] = e.stats; });
+
+    // Top captain candidates: sort by weighted captain score
+    const candidates = Store.scoredPlayers
+      .filter(p => !p.isBlank && p.Position !== 'GK')
+      .map(p => {
+        const live = liveMap[p.id];
+        const livePts = live?.total_points ?? null;
+        // Captain score: heavily weight form, xGI, PPG, and FDR
+        const capScore = +(
+          (p.scores?.form || 0) * 0.25 +
+          (p.scores?.xgi || 0) * 0.25 +
+          (p.scores?.ppg || 0) * 0.20 +
+          (p.scores?.fdr_short || 0) * 0.15 +
+          (p.scores?.home || 0) * 0.05 +
+          (p.scores?.ep_next || 0) * 0.10
+        ).toFixed(2);
+        const ep = +(bs?.elements?.find(e => e.id === p.id)?.ep_next || 0);
+        return { ...p, capScore: +capScore, ep, livePts };
+      })
+      .sort((a,b) => b.capScore - a.capScore)
+      .slice(0, 10);
+
+    const hasLive = candidates.some(c => c.livePts != null);
+
+    const rows = candidates.map((p,i) => {
+      const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
+      const liveCol = hasLive
+        ? `<td class="mono r ${H.ptsClass(p.livePts)}" style="font-weight:700">${p.livePts!=null?`${p.livePts} → <b style="color:var(--gold)">${p.livePts*2}</b>`:''}</td>`
+        : '';
+      return `<tr class="${i===0?'highlight-row':''}">
+        <td style="font-size:16px;text-align:center">${medal||i+1}</td>
+        <td>${H.posPill(p.Position)}</td>
+        <td style="font-weight:${i<3?700:400}">${p.Player}${p.doubt?'<span class="doubt-tag">⚠</span>':''}${p.isDGW?'<span style="color:var(--blue);font-size:10px"> 2GW</span>':''}</td>
+        <td>${H.teamTag(p.Team)}</td>
+        <td class="c">${p.isHome?'🏠':'✈'} <span class="dim" style="font-size:11px">${p.opponent}</span></td>
+        <td class="mono r ${H.fdrClass(p.FDR_next)}" style="font-weight:700">${H.numFmt(p.FDR_next,1)}</td>
+        <td class="mono r ${H.scoreClass(p.capScore)}" style="font-size:15px;font-weight:700">${p.capScore}</td>
+        <td class="mono r">${H.numFmt(p.ep,1)}</td>
+        <td class="mono r">${H.numFmt(p.Form,1)}</td>
+        <td class="mono r">${H.numFmt(p.PPG,1)}</td>
+        <td class="mono r">${H.numFmt(p.xGI,2)}</td>
+        <td class="mono dim r">${H.pct(p.TSB)}</td>
+        ${liveCol}
+      </tr>`;
+    }).join('');
+
+    // Breakdown chart for top 3
+    const top3 = candidates.slice(0,3);
+    const factors = [
+      {key:'form', label:'Form', w:25},
+      {key:'xgi', label:'xGI', w:25},
+      {key:'ppg', label:'PPG', w:20},
+      {key:'fdr_short', label:'FDR', w:15},
+      {key:'ep_next', label:'EP', w:10},
+      {key:'home', label:'H/A', w:5},
+    ];
+    const breakdownRows = factors.map(f => {
+      const cells = top3.map(p => {
+        const v = p.scores?.[f.key] || 0;
+        return `<td class="mono c ${H.scoreClass(v)}">${v.toFixed(1)}</td>`;
+      }).join('');
+      return `<tr><td>${f.label} <span class="dim">(${f.w}%)</span></td>${cells}</tr>`;
+    }).join('');
+    const totalCells = top3.map(p => `<td class="mono c" style="font-weight:700;color:var(--green);font-size:15px">${p.capScore}</td>`).join('');
+    const breakdownHead = top3.map(p => `<th class="c" style="min-width:80px">${p.Player.split(' ').slice(-1)[0]}</th>`).join('');
+
+    return `
+      <div class="section-title">👑 Captain Simulator — GW${Store.currentGW||'–'}</div>
+      ${H.info('Captain Score = Form(25%) + xGI(25%) + PPG(20%) + FDR(15%) + EP(10%) + Home(5%). Pemain terbaik untuk captain minggu ini.')}
+
+      <div class="two-col">
+        <div>
+          <div class="section-title">Top 10 Kandidat Captain</div>
+          <div class="table-wrap" style="max-height:500px;overflow-y:auto">
+            <table>
+              <thead><tr>
+                <th class="c">#</th><th>Pos</th><th>Pemain</th><th>Tim</th><th>Lawan</th>
+                <th class="r">FDR</th><th class="r" style="color:var(--gold)">Cap Score</th>
+                <th class="r">EP</th><th class="r">Form</th><th class="r">PPG</th><th class="r">xGI</th>
+                <th class="r">TSB%</th>${hasLive?'<th class="r">Live (×2)</th>':''}
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <div class="section-title">Perbandingan Top 3</div>
+          <div class="table-wrap">
+            <table class="weight-table">
+              <thead><tr><th>Faktor</th>${breakdownHead}</tr></thead>
+              <tbody>${breakdownRows}</tbody>
+              <tfoot><tr class="wt-trow"><td>Total</td>${totalCells}</tr></tfoot>
+            </table>
+          </div>
+          <div class="info-box" style="margin-top:14px">
+            <b>Rekomendasi Captain:</b><br>
+            🥇 <b style="color:var(--green)">${top3[0]?.Player||'–'}</b> (${top3[0]?.Team||''}) — Score ${top3[0]?.capScore||0}
+            ${top3[0]?.isHome?', bermain di kandang':''}
+            ${top3[0]?.isDGW?' 🔥 Double GW!':''}
+            <br>
+            🥈 Alternatif: <b>${top3[1]?.Player||'–'}</b> (${top3[1]?.capScore||0})
+            &nbsp;|&nbsp;
+            🥉 <b>${top3[2]?.Player||'–'}</b> (${top3[2]?.capScore||0})
+          </div>
+        </div>
+      </div>`;
   },
 
   // ── Shared criteria weight panel (used by WLineUp & Scout Weights) ──
