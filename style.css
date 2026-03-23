@@ -722,6 +722,75 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 .wt-warn { color: var(--red); }
 .wt-trow td { border-top: 1px solid var(--border2); font-weight: 700; }
 
+/* ── Criteria Weight Panel ── */
+.crit-cell { display: flex; flex-direction: column; gap: 1px; }
+.crit-label { font-size: 13px; font-weight: 600; color: var(--text); }
+.crit-group { font-size: 9px; font-weight: 600; letter-spacing: .8px; text-transform: uppercase; color: var(--text3); }
+.crit-action { text-align: center; width: 36px; padding: 4px !important; }
+.btn-crit-remove {
+  width: 22px; height: 22px;
+  border: 1px solid var(--border2);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--red);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .15s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.btn-crit-remove:hover { background: rgba(255,82,82,.15); border-color: var(--red); }
+
+/* Criteria Selector */
+.crit-selector {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.crit-group-row { display: flex; gap: 8px; align-items: flex-start; }
+.crit-group-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text3);
+  min-width: 80px;
+  padding-top: 6px;
+  flex-shrink: 0;
+}
+.crit-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.crit-chip {
+  padding: 4px 10px;
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  background: var(--bg3);
+  color: var(--text2);
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .12s;
+  white-space: nowrap;
+}
+.crit-chip:hover:not(.active):not(:disabled) { border-color: var(--green2); color: var(--text); }
+.crit-chip.active {
+  border-color: var(--green3);
+  background: rgba(0,230,118,.08);
+  color: var(--green);
+  cursor: default;
+  opacity: .7;
+}
+@media (max-width: 600px) {
+  .crit-group-row { flex-direction: column; gap: 4px; }
+  .crit-group-label { min-width: unset; }
+}
+
 /* ══════════════════════════════════════════
    FDR SECTION
    ══════════════════════════════════════════ */
