@@ -426,22 +426,30 @@ const Process = {
 
     // Build next fixture map per team (detect DGW, normal, blank)
     const teamFix = {};
-    const allFix  = (fixtures||[]).filter(f=>!f.finished_provisional).sort((a,b)=>a.event-b.event);
-    // The next GW is the earliest upcoming event
-    const nextGW = allFix[0]?.event || gw;
+    const allFix  = (fixtures||[]).filter(f=>!f.finished && !f.finished_provisional).sort((a,b)=>a.event-b.event);
+
+    // Determine the NEXT GW from bootstrap events (reliable, not from fixture data)
+    const nextEvt = bs.events.find(e => e.is_next) || bs.events.find(e => e.is_current);
+    const nextGW  = nextEvt ? nextEvt.id : gw + 1;
+    // For recommendations: if current GW deadline has passed, look at next
+    const recoGW = nextEvt?.is_next ? nextEvt.id : gw + 1;
+    // Use whichever has fixtures
+    const gwFixtures = allFix.filter(f => f.event === recoGW);
+    const targetGW = gwFixtures.length > 0 ? recoGW : nextGW;
+    console.log(`[FPL] Fixture target: GW${targetGW} (current=${gw}, recoGW=${recoGW}, fixtures in target=${allFix.filter(f=>f.event===targetGW).length})`);
 
     bs.teams.forEach(t => {
-      // Count fixtures for this team in the NEXT specific GW
-      const gwFixes = allFix.filter(f => f.event === nextGW && (f.team_h === t.id || f.team_a === t.id));
+      // Find this team's fixtures in the target GW
+      const gwFixes = allFix.filter(f => f.event === targetGW && (f.team_h === t.id || f.team_a === t.id));
       const fixtureCount = gwFixes.length;
 
       if (fixtureCount === 0) {
-        // Blank GW — no fixture
+        // Blank GW — no fixture for this team
         teamFix[t.id] = {
           opp: 'BLANK', oppFull: 'No fixture',
           isHome: false, fdrAtk: 3, fdrDef: 3,
           isDGW: false, isBlank: true, fixtureCount: 0,
-          event: nextGW,
+          event: targetGW,
         };
         return;
       }
@@ -461,9 +469,10 @@ const Process = {
         isDGW: fixtureCount > 1,
         isBlank: false,
         fixtureCount,
-        event: nextGW,
+        event: targetGW,
       };
     });
+    console.log(`[FPL] Team fixtures: ${Object.values(teamFix).filter(f=>f.isBlank).length} blank, ${Object.values(teamFix).filter(f=>f.isDGW).length} DGW, ${Object.values(teamFix).filter(f=>!f.isBlank&&!f.isDGW).length} normal`);
 
     // Live stats map (if available)
     const liveMap = {};
