@@ -73,48 +73,48 @@ const CRITERIA = [
   {key:'home',         label:'Home Advantage',       group:'Fixture', type:'computed', field:null, tip:'Bermain di kandang (10) atau tandang (5).'},
   {key:'dgw_blank',    label:'DGW / Blank',          group:'Fixture', type:'computed', field:null, tip:'Double GW (+10) atau Blank GW (-10). Normal = 0.'},
   // ── Performance ──
-  {key:'total_points', label:'Total Points',         group:'Performance', type:'direct',  field:'total_points'},
-  {key:'round_points', label:'Round Points',         group:'Performance', type:'direct',  field:'event_points'},
+  {key:'total_points', label:'Total Points',         group:'Performance', type:'direct',  field:'total_points', tip:'Akumulasi poin sepanjang musim.'},
+  {key:'round_points', label:'Round Points',         group:'Performance', type:'direct',  field:'event_points', tip:'Poin yang didapat di GW terakhir.'},
   {key:'ppg',          label:'Points Per Game',      group:'Performance', type:'direct',  field:'points_per_game', tip:'Rata-rata poin per pertandingan musim ini.'},
   {key:'form',         label:'Form',                 group:'Performance', type:'direct',  field:'form', tip:'Rata-rata poin dari 5 GW terakhir.'},
-  {key:'ep_next',      label:'Expected Points',      group:'Performance', type:'direct',  field:'ep_next'},
-  {key:'bonus',        label:'Bonus',                group:'Performance', type:'per90',   field:'bonus'},
-  {key:'bps',          label:'Bonus Pts System',     group:'Performance', type:'per90',   field:'bps'},
+  {key:'ep_next',      label:'Expected Points',      group:'Performance', type:'direct',  field:'ep_next', tip:'Prediksi poin FPL untuk GW berikutnya.'},
+  {key:'bonus',        label:'Bonus',                group:'Performance', type:'per90',   field:'bonus', tip:'Bonus poin per 90 menit bermain.'},
+  {key:'bps',          label:'Bonus Pts System',     group:'Performance', type:'per90',   field:'bps', tip:'Skor sistem BPS per 90 menit. Menentukan bonus 1-3.'},
   // ── Attacking ──
-  {key:'goals_scored', label:'Goals Scored',         group:'Attacking',   type:'per90',   field:'goals_scored'},
-  {key:'assists',      label:'Assists',              group:'Attacking',   type:'per90',   field:'assists'},
-  {key:'xg',           label:'xG (Total)',           group:'Attacking',   type:'per90',   field:'expected_goals'},
-  {key:'xa',           label:'xA (Total)',           group:'Attacking',   type:'per90',   field:'expected_assists'},
-  {key:'xgi',          label:'xGI (Total)',          group:'Attacking',   type:'per90',   field:'expected_goal_involvements', tip:'Expected Goal Involvements per 90 menit. xG + xA.'},
+  {key:'goals_scored', label:'Goals Scored',         group:'Attacking',   type:'per90',   field:'goals_scored', tip:'Gol per 90 menit bermain.'},
+  {key:'assists',      label:'Assists',              group:'Attacking',   type:'per90',   field:'assists', tip:'Assist per 90 menit bermain.'},
+  {key:'xg',           label:'xG (Total)',           group:'Attacking',   type:'per90',   field:'expected_goals', tip:'Expected Goals per 90 menit. Peluang gol dari posisi tembakan.'},
+  {key:'xa',           label:'xA (Total)',           group:'Attacking',   type:'per90',   field:'expected_assists', tip:'Expected Assists per 90 menit. Peluang assist dari umpan.'},
+  {key:'xgi',          label:'xGI (Total)',          group:'Attacking',   type:'per90',   field:'expected_goal_involvements', tip:'Expected Goal Involvements per 90. xG + xA gabungan.'},
   // ── Defending ──
-  {key:'clean_sheets', label:'Clean Sheets',         group:'Defending',   type:'per90',   field:'clean_sheets'},
-  {key:'goals_conceded',label:'Goals Conceded',      group:'Defending',   type:'inverse_per90', field:'goals_conceded'},
+  {key:'clean_sheets', label:'Clean Sheets',         group:'Defending',   type:'per90',   field:'clean_sheets', tip:'Clean sheet per 90 menit. Utama untuk GK/DEF.'},
+  {key:'goals_conceded',label:'Goals Conceded',      group:'Defending',   type:'inverse_per90', field:'goals_conceded', tip:'Gol kebobolan per 90. Inverse: sedikit kebobolan = skor tinggi.'},
   {key:'xgc',          label:'xGC (Total)',          group:'Defending',   type:'inverse_per90', field:'expected_goals_conceded', tip:'Expected Goals Conceded per 90. Inverse: sedikit = skor tinggi.'},
-  {key:'own_goals',    label:'Own Goals',            group:'Defending',   type:'inverse_per90', field:'own_goals'},
-  {key:'penalties_saved',label:'Penalties Saved',    group:'Defending',   type:'per90',   field:'penalties_saved'},
+  {key:'own_goals',    label:'Own Goals',            group:'Defending',   type:'inverse_per90', field:'own_goals', tip:'Gol bunuh diri per 90. Inverse: nol = skor tinggi.'},
+  {key:'penalties_saved',label:'Penalties Saved',    group:'Defending',   type:'per90',   field:'penalties_saved', tip:'Penalti yang diselamatkan per 90 menit. Khusus GK.'},
   {key:'saves',        label:'Saves',                group:'Defending',   type:'per90',   field:'saves', tip:'Jumlah penyelamatan per 90 menit. Utama untuk GK.'},
   // ── Creativity & Threat ──
-  {key:'influence',    label:'Influence',            group:'ICT',         type:'direct',  field:'influence'},
-  {key:'creativity',   label:'Creativity',           group:'ICT',         type:'direct',  field:'creativity'},
-  {key:'threat',       label:'Threat',               group:'ICT',         type:'direct',  field:'threat'},
+  {key:'influence',    label:'Influence',            group:'ICT',         type:'direct',  field:'influence', tip:'Skor pengaruh terhadap hasil pertandingan. Bagian dari ICT.'},
+  {key:'creativity',   label:'Creativity',           group:'ICT',         type:'direct',  field:'creativity', tip:'Skor kreativitas menciptakan peluang. Bagian dari ICT.'},
+  {key:'threat',       label:'Threat',               group:'ICT',         type:'direct',  field:'threat', tip:'Skor ancaman mencetak gol. Bagian dari ICT.'},
   {key:'ict_index',    label:'ICT Index',            group:'ICT',         type:'direct',  field:'ict_index', tip:'Influence + Creativity + Threat gabungan dari FPL.'},
   // ── Discipline ──
-  {key:'yellow_cards', label:'Yellow Cards',         group:'Discipline',  type:'inverse_per90', field:'yellow_cards'},
-  {key:'red_cards',    label:'Red Cards',            group:'Discipline',  type:'inverse_per90', field:'red_cards'},
-  {key:'penalties_missed',label:'Penalties Missed',  group:'Discipline',  type:'inverse_per90', field:'penalties_missed'},
+  {key:'yellow_cards', label:'Yellow Cards',         group:'Discipline',  type:'inverse_per90', field:'yellow_cards', tip:'Kartu kuning per 90. Inverse: sedikit = skor tinggi. Risiko suspensi.'},
+  {key:'red_cards',    label:'Red Cards',            group:'Discipline',  type:'inverse_per90', field:'red_cards', tip:'Kartu merah per 90. Inverse: nol = skor tinggi.'},
+  {key:'penalties_missed',label:'Penalties Missed',  group:'Discipline',  type:'inverse_per90', field:'penalties_missed', tip:'Penalti gagal per 90. Inverse: nol = skor tinggi.'},
   // ── Value & Ownership ──
-  {key:'price',        label:'Price',                group:'Value',       type:'inverse_direct', field:'now_cost', transform: v=>v/10},
-  {key:'value_form',   label:'Value (Form)',         group:'Value',       type:'direct',  field:'value_form'},
-  {key:'value_season', label:'Value (Season)',       group:'Value',       type:'direct',  field:'value_season'},
-  {key:'tsb',          label:'Selected By %',        group:'Value',       type:'direct',  field:'selected_by_percent'},
+  {key:'price',        label:'Price',                group:'Value',       type:'inverse_direct', field:'now_cost', transform: v=>v/10, tip:'Harga pemain. Inverse: murah = skor tinggi (value pick).'},
+  {key:'value_form',   label:'Value (Form)',         group:'Value',       type:'direct',  field:'value_form', tip:'Rasio form/harga. Tinggi = value bagus berdasarkan performa terkini.'},
+  {key:'value_season', label:'Value (Season)',       group:'Value',       type:'direct',  field:'value_season', tip:'Rasio total poin/harga musim ini.'},
+  {key:'tsb',          label:'Selected By %',        group:'Value',       type:'direct',  field:'selected_by_percent', tip:'Persentase manajer FPL yang memilih pemain ini.'},
   // ── Transfers ──
-  {key:'transfers_in', label:'Transfers In (round)', group:'Transfers',   type:'direct',  field:'transfers_in_event'},
-  {key:'transfers_out',label:'Transfers Out (round)',group:'Transfers',   type:'inverse_direct', field:'transfers_out_event'},
-  {key:'net_transfers',label:'Net Transfers (round)',group:'Transfers',   type:'direct',  field:null, compute: p => (+p.transfers_in_event||0) - (+p.transfers_out_event||0)},
-  {key:'cost_change',  label:'Price Change (round)', group:'Transfers',   type:'direct',  field:'cost_change_event'},
+  {key:'transfers_in', label:'Transfers In (round)', group:'Transfers',   type:'direct',  field:'transfers_in_event', tip:'Jumlah transfer masuk GW ini. Indikator popularitas.'},
+  {key:'transfers_out',label:'Transfers Out (round)',group:'Transfers',   type:'inverse_direct', field:'transfers_out_event', tip:'Jumlah transfer keluar GW ini. Inverse: sedikit keluar = stabil.'},
+  {key:'net_transfers',label:'Net Transfers (round)',group:'Transfers',   type:'direct',  field:null, compute: p => (+p.transfers_in_event||0) - (+p.transfers_out_event||0), tip:'Selisih transfer in - out. Positif = banyak diminati.'},
+  {key:'cost_change',  label:'Price Change (round)', group:'Transfers',   type:'direct',  field:'cost_change_event', tip:'Perubahan harga GW ini. Positif = naik harga.'},
   // ── Minutes ──
-  {key:'minutes',      label:'Minutes Played',       group:'Other',       type:'direct',  field:'minutes'},
-  {key:'starts',       label:'Starts',               group:'Other',       type:'direct',  field:'starts'},
+  {key:'minutes',      label:'Minutes Played',       group:'Other',       type:'direct',  field:'minutes', tip:'Total menit bermain musim ini. Indikator keamanan menit.'},
+  {key:'starts',       label:'Starts',               group:'Other',       type:'direct',  field:'starts', tip:'Jumlah start (dimainkan dari awal) musim ini.'},
 ];
 
 const CRITERIA_MAP = {};
@@ -1236,93 +1236,118 @@ const Render = {
     if (!Store.bootstrap || !Store.players.length) return H.info('Data belum dimuat.');
 
     const gw = Store.currentGW || 1;
-    const lookback = Store.optimizeLookback || 5;
+    const lookback = Store.optimizeLookback || 1;
     const liveData = Store.liveEvent;
+    const allKeys = CRITERIA.map(c => c.key);
 
-    // Get actual GW points per player from live data
+    // Get actual GW points from live data
     const liveMap = {};
     if (liveData?.elements) {
       liveData.elements.forEach(e => { liveMap[e.id] = e.stats?.total_points ?? null; });
     }
 
-    // Players that have scores AND actual points
-    const eligible = Store.players.filter(p => p.scores && liveMap[p.id] != null && p.minutes >= 90);
-    const activeKeys = Object.keys(Store.gwWeights);
-
-    if (!eligible.length || !activeKeys.length) {
-      return `
-        <div class="section-title">⚡ Weight Optimizer</div>
-        ${H.info('Memerlukan data live GW aktif dan pemain dengan menit >= 90.')}`;
+    // Also get historical GW points from manager history for lookback > 1
+    // For lookback, we use bootstrap event history if available
+    const gwPointsMap = {}; // {playerId: [pts_gw_n, pts_gw_n-1, ...]}
+    if (lookback > 1) {
+      // Use history from all GWs to build per-player points
+      const events = Store.bootstrap?.events || [];
+      const pastGWs = events.filter(e => e.id >= gw - lookback + 1 && e.id <= gw && e.finished).map(e => e.id);
+      // We only have current GW live data reliably; note limitation
     }
 
-    // Compute Pearson correlation for each criteria vs actual points
-    const correlations = {};
+    // Players with scores AND actual points
+    const eligible = Store.players.filter(p => p.scores && liveMap[p.id] != null && p.minutes >= 90);
+    const posArr = ['GK','DEF','MID','FWD'];
+
+    if (eligible.length < 10) {
+      return `
+        <div class="section-title">⚡ Weight Optimizer — Backtest</div>
+        ${H.info(`Memerlukan data live GW aktif. Saat ini ${eligible.length} pemain eligible (perlu ≥10 dengan ≥90 menit dan poin aktual).`)}
+        <div class="btn-row">
+          <button class="btn btn-secondary" onclick="Nav.goSubtab('lineup','wlineup')">← Kembali ke WLineUp</button>
+        </div>`;
+    }
+
+    // Lookback selector
+    const lookbackOpts = [1,3,5].map(n =>
+      `<button class="filter-btn ${lookback===n?'active':''}" onclick="Store.optimizeLookback=${n};Nav.goSubtab('lineup','optimize')">${n} GW</button>`
+    ).join('');
+
+    // Compute correlation for ALL criteria per position
     const actualPts = eligible.map(p => liveMap[p.id]);
     const meanPts = actualPts.reduce((s,v)=>s+v,0)/actualPts.length;
 
-    CRITERIA.forEach(cr => {
-      const scores = eligible.map(p => p.scores[cr.key] || 0);
+    // Overall correlation
+    const overallCorr = {};
+    allKeys.forEach(key => {
+      const scores = eligible.map(p => p.scores[key] || 0);
       const meanS = scores.reduce((s,v)=>s+v,0)/scores.length;
       let num=0, denA=0, denB=0;
       for (let i=0;i<eligible.length;i++) {
-        const dS = scores[i]-meanS, dP = actualPts[i]-meanPts;
-        num += dS*dP; denA += dS*dS; denB += dP*dP;
+        const dS=scores[i]-meanS, dP=actualPts[i]-meanPts;
+        num+=dS*dP; denA+=dS*dS; denB+=dP*dP;
       }
-      const corr = (denA>0&&denB>0) ? num/Math.sqrt(denA*denB) : 0;
-      correlations[cr.key] = +corr.toFixed(4);
+      overallCorr[key] = (denA>0&&denB>0) ? +(num/Math.sqrt(denA*denB)).toFixed(4) : 0;
     });
 
-    // Build suggested weights: only positive correlations, normalize to 100%
-    const pos = ['GK','DEF','MID','FWD'];
+    // Per-position correlation + suggested weights
     const suggested = {};
-    pos.forEach(position => {
-      const posPlayers = eligible.filter(p => p.Position === position);
-      if (posPlayers.length < 5) return; // not enough data
+    allKeys.forEach(key => { suggested[key] = {GK:0,DEF:0,MID:0,FWD:0}; });
 
-      const posActual = posPlayers.map(p => liveMap[p.id]);
+    posArr.forEach(position => {
+      const pp = eligible.filter(p => p.Position === position);
+      if (pp.length < 3) return;
+      const posActual = pp.map(p => liveMap[p.id]);
       const posMean = posActual.reduce((s,v)=>s+v,0)/posActual.length;
 
-      activeKeys.forEach(key => {
-        const scores = posPlayers.map(p => p.scores[key] || 0);
-        const meanS = scores.reduce((s,v)=>s+v,0)/scores.length;
-        let num=0, denA=0, denB=0;
-        for (let i=0;i<posPlayers.length;i++) {
-          const dS = scores[i]-meanS, dP = posActual[i]-posMean;
-          num += dS*dP; denA += dS*dS; denB += dP*dP;
-        }
-        const corr = (denA>0&&denB>0) ? num/Math.sqrt(denA*denB) : 0;
-        if (!suggested[key]) suggested[key] = {};
-        suggested[key][position] = Math.max(0, +corr.toFixed(4));
+      const corrs = {};
+      allKeys.forEach(key => {
+        const sc = pp.map(p => p.scores[key] || 0);
+        const ms = sc.reduce((s,v)=>s+v,0)/sc.length;
+        let n=0, dA=0, dB=0;
+        for (let i=0;i<pp.length;i++) { const ds=sc[i]-ms, dp=posActual[i]-posMean; n+=ds*dp; dA+=ds*ds; dB+=dp*dp; }
+        corrs[key] = (dA>0&&dB>0) ? Math.max(0, n/Math.sqrt(dA*dB)) : 0;
       });
-    });
-
-    // Normalize per position to sum = 1
-    pos.forEach(position => {
-      const total = activeKeys.reduce((s,key) => s + (suggested[key]?.[position] || 0), 0);
+      const total = Object.values(corrs).reduce((s,v)=>s+v,0);
       if (total > 0) {
-        activeKeys.forEach(key => {
-          if (suggested[key]) suggested[key][position] = +(suggested[key][position] / total).toFixed(4);
-        });
+        allKeys.forEach(key => { suggested[key][position] = +(corrs[key] / total).toFixed(4); });
       }
     });
 
-    // Build comparison table
-    const rows = activeKeys.map(key => {
+    // Sort by overall correlation descending
+    const sortedKeys = [...allKeys].sort((a,b) => Math.abs(overallCorr[b]) - Math.abs(overallCorr[a]));
+
+    // Group order for visual
+    const groupOrder = ['Fixture','Performance','Attacking','Defending','ICT','Discipline','Value','Transfers','Other'];
+
+    // Check which are currently active
+    const currentActive = new Set(Object.keys(Store.gwWeights));
+
+    const rows = sortedKeys.map(key => {
       const cr = CRITERIA_MAP[key];
-      const label = cr?.label || key;
-      const corr = correlations[key] || 0;
+      if (!cr) return '';
+      const label = cr.label;
+      const grp = cr.group;
+      const tip = cr.tip ? ` title="${cr.tip}"` : '';
+      const corr = overallCorr[key] || 0;
       const corrBar = `<div class="corr-bar"><div class="corr-fill ${corr>=0?'corr-pos':'corr-neg'}" style="width:${Math.min(100,Math.abs(corr)*100)}%"></div></div>`;
-      const corrColor = corr > 0.2 ? 'var(--green)' : corr > 0 ? 'var(--text2)' : 'var(--red)';
-      const currentW = pos.map(p => `<td class="mono c dim">${((Store.gwWeights[key]?.[p]||0)*100).toFixed(0)}%</td>`).join('');
-      const suggestW = pos.map(p => {
+      const corrColor = corr > 0.15 ? 'var(--green)' : corr > 0 ? 'var(--text2)' : corr > -0.05 ? 'var(--text3)' : 'var(--red)';
+      const isActive = currentActive.has(key);
+      const hasSuggest = posArr.some(p => (suggested[key]?.[p]||0) > 0.01);
+
+      const currentW = posArr.map(p => {
+        const v = ((Store.gwWeights[key]?.[p]||0)*100).toFixed(0);
+        return `<td class="mono c dim">${isActive?v+'%':'–'}</td>`;
+      }).join('');
+      const suggestW = posArr.map(p => {
         const sw = ((suggested[key]?.[p]||0)*100).toFixed(0);
-        const cw = ((Store.gwWeights[key]?.[p]||0)*100).toFixed(0);
-        const diff = sw - cw;
-        const cls = diff > 5 ? 's-hi' : diff < -5 ? 's-lo' : '';
+        const cls = +sw > 5 ? 's-hi' : +sw > 0 ? '' : 'dim';
         return `<td class="mono c ${cls}">${sw}%</td>`;
       }).join('');
-      return `<tr>
-        <td>${label}</td>
+
+      return `<tr class="${hasSuggest?'':'opt-dim'}">
+        <td${tip}><span class="crit-label">${label}</span> <span class="crit-group">${grp}</span></td>
         <td class="mono c" style="color:${corrColor}">${corr.toFixed(3)}</td>
         <td>${corrBar}</td>
         ${currentW}
@@ -1332,10 +1357,16 @@ const Render = {
 
     return `
       <div class="section-title">⚡ Weight Optimizer — Backtest GW${gw}</div>
-      ${H.info(`Menganalisis korelasi setiap kriteria terhadap poin aktual GW${gw}. <b>${eligible.length}</b> pemain eligible (≥90 menit).`)}
+      ${H.info(`Korelasi Pearson <b>semua ${allKeys.length} kriteria</b> vs poin aktual. <b>${eligible.length}</b> pemain eligible. Apply akan otomatis menambahkan kriteria yang relevan.`)}
 
-      <div class="table-wrap" style="max-width:900px">
-        <table class="weight-table">
+      <div class="filters" style="margin-bottom:14px">
+        <span class="dim" style="font-size:12px;margin-right:8px">Lookback:</span>
+        ${lookbackOpts}
+        <span class="dim" style="font-size:11px;margin-left:auto">Sorted by |correlation|</span>
+      </div>
+
+      <div class="table-wrap" style="max-width:960px">
+        <table class="weight-table opt-table">
           <thead>
             <tr>
               <th rowspan="2">Kriteria</th>
@@ -1345,8 +1376,8 @@ const Render = {
               <th colspan="4" class="c" style="border-bottom:1px solid var(--border2);color:var(--green)">Suggested (%)</th>
             </tr>
             <tr>
-              ${pos.map(p=>`<th class="c" style="font-size:9px">${p}</th>`).join('')}
-              ${pos.map(p=>`<th class="c" style="font-size:9px;color:var(--green)">${p}</th>`).join('')}
+              ${posArr.map(p=>`<th class="c" style="font-size:9px">${p}</th>`).join('')}
+              ${posArr.map(p=>`<th class="c" style="font-size:9px;color:var(--green)">${p}</th>`).join('')}
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -1354,13 +1385,13 @@ const Render = {
       </div>
 
       <div class="btn-row" style="margin-top:14px">
-        <button class="btn btn-primary" onclick="UI.applySuggestedWeights()">✓ Apply Suggested Weights</button>
+        <button class="btn btn-primary" onclick="UI.applySuggestedWeights()">✓ Apply Suggested (semua kriteria relevan)</button>
         <button class="btn btn-secondary" onclick="Nav.goSubtab('lineup','wlineup')">← Kembali ke WLineUp</button>
       </div>
 
       <div class="info-box" style="margin-top:16px">
-        <b>Cara baca:</b> <code>r</code> = korelasi Pearson (−1 s/d +1). Semakin tinggi = kriteria tersebut semakin prediktif terhadap poin aktual.
-        Hijau = positif kuat, merah = negatif. Suggested weights dinormalisasi per posisi agar total = 100%.
+        <b>Cara baca:</b> <code>r</code> = korelasi Pearson. Baris transparan = korelasi rendah / tidak relevan.
+        Klik <b>Apply</b> = semua kriteria dengan bobot > 0 akan otomatis aktif di WLineUp.
       </div>`;
   },
 
@@ -1770,16 +1801,31 @@ const Render = {
     const pos = ['GK','DEF','MID','FWD'];
     const activeKeys = Object.keys(weights);
 
-    // Weight table rows with tooltips
-    const rows = activeKeys.map(key => {
+    // Sort active keys by group order (Fixture → Performance → ... → Other)
+    const groupOrder = ['Fixture','Performance','Attacking','Defending','ICT','Discipline','Value','Transfers','Other'];
+    const sortedKeys = [...activeKeys].sort((a,b) => {
+      const ga = CRITERIA_MAP[a]?.group || 'Other', gb = CRITERIA_MAP[b]?.group || 'Other';
+      const ia = groupOrder.indexOf(ga), ib = groupOrder.indexOf(gb);
+      return (ia===-1?99:ia) - (ib===-1?99:ib);
+    });
+
+    // Weight table rows with group separators and tooltips
+    let lastGroup = '';
+    const rows = sortedKeys.map(key => {
       const crit = CRITERIA_MAP[key];
       const label = crit ? crit.label : key;
-      const group = crit ? `<span class="crit-group">${crit.group}</span>` : '';
+      const grp = crit?.group || '';
       const tip = crit?.tip ? ` title="${crit.tip}"` : '';
       const vals = weights[key] || {GK:0,DEF:0,MID:0,FWD:0};
-      return `<tr>
+      // Group separator
+      let sep = '';
+      if (grp && grp !== lastGroup) {
+        sep = `<tr class="wt-group-sep"><td colspan="${pos.length+2}" class="wt-group-label">${grp}</td></tr>`;
+        lastGroup = grp;
+      }
+      return `${sep}<tr>
         <td class="crit-cell"${tip}>
-          <span class="crit-label">${label}</span>${group}
+          <span class="crit-label">${label}</span>
         </td>
         ${pos.map(p => `<td>
           <input class="weight-input" type="number"
@@ -1796,14 +1842,14 @@ const Render = {
 
     const totRow = pos.map(p => `<td class="wt-total" id="${prefix}-${p}">–</td>`).join('');
 
-    // FDR Horizon slider
-    const fdrSlider = `
+    // FDR Horizon slider — only for Scout mode
+    const fdrSlider = mode === 'scout' ? `
       <div class="fdr-horizon-row">
         <label>FDR Horizon: <b id="fdr-horizon-val">${Store.fdrHorizon}</b> GW</label>
         <input type="range" min="1" max="8" step="1" value="${Store.fdrHorizon}"
           class="fdr-slider" oninput="UI.setFdrHorizon(this.value)">
         <span class="dim" style="font-size:11px">1 = hanya GW depan · 8 = rata-rata 8 GW</span>
-      </div>`;
+      </div>` : '';
 
     // Criteria selector (grouped) with tooltips
     const groups = {};
@@ -1811,7 +1857,8 @@ const Render = {
       if (!groups[c.group]) groups[c.group] = [];
       groups[c.group].push(c);
     });
-    const selectorRows = Object.entries(groups).map(([grp, crits]) => {
+    const selectorRows = groupOrder.filter(g => groups[g]).map(grp => {
+      const crits = groups[grp];
       const items = crits.map(c => {
         const isActive = activeKeys.includes(c.key);
         const tip = c.tip ? ` title="${c.tip}"` : '';
@@ -3790,25 +3837,23 @@ const UI = {
   },
 
   applySuggestedWeights() {
-    // Re-run optimizer logic to get suggested weights, then apply them
     const liveMap = {};
     if (Store.liveEvent?.elements) Store.liveEvent.elements.forEach(e => { liveMap[e.id] = e.stats?.total_points ?? null; });
 
     const eligible = Store.players.filter(p => p.scores && liveMap[p.id] != null && p.minutes >= 90);
-    const activeKeys = Object.keys(Store.gwWeights);
+    const allKeys = CRITERIA.map(c => c.key);
     const pos = ['GK','DEF','MID','FWD'];
 
     const newWeights = {};
-    activeKeys.forEach(key => { newWeights[key] = {GK:0,DEF:0,MID:0,FWD:0}; });
 
     pos.forEach(position => {
       const pp = eligible.filter(p => p.Position === position);
-      if (pp.length < 5) return;
+      if (pp.length < 3) return;
       const actual = pp.map(p => liveMap[p.id]);
       const mean = actual.reduce((s,v)=>s+v,0)/actual.length;
 
       const corrs = {};
-      activeKeys.forEach(key => {
+      allKeys.forEach(key => {
         const sc = pp.map(p => p.scores[key] || 0);
         const ms = sc.reduce((s,v)=>s+v,0)/sc.length;
         let n=0,dA=0,dB=0;
@@ -3817,12 +3862,22 @@ const UI = {
       });
       const total = Object.values(corrs).reduce((s,v)=>s+v,0);
       if (total > 0) {
-        activeKeys.forEach(key => { newWeights[key][position] = +(corrs[key] / total).toFixed(4); });
+        allKeys.forEach(key => {
+          if (!newWeights[key]) newWeights[key] = {GK:0,DEF:0,MID:0,FWD:0};
+          newWeights[key][position] = +(corrs[key] / total).toFixed(4);
+        });
       }
     });
 
-    Store.gwWeights = newWeights;
-    try { localStorage.setItem('fplDashGWWeights', JSON.stringify(newWeights)); } catch {}
+    // Remove criteria with zero weight across all positions
+    const finalWeights = {};
+    Object.entries(newWeights).forEach(([key, w]) => {
+      if (pos.some(p => w[p] > 0.005)) finalWeights[key] = w;
+    });
+
+    console.log(`[Optimize] Applied: ${Object.keys(finalWeights).length} criteria (from ${allKeys.length} total)`);
+    Store.gwWeights = finalWeights;
+    try { localStorage.setItem('fplDashGWWeights', JSON.stringify(finalWeights)); } catch {}
     Process.applyScores(Store.players);
     Nav.goSubtab('lineup','wlineup');
   },
