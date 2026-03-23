@@ -623,6 +623,7 @@ const Process = {
         Team:     team?.short_name || '?',
         TeamFull: team?.name || '?',
         TeamKey:  team?.short_name || String(p.team),
+        TeamCode: team?.code || 0,
         Position: pos,
         Price:    price,
         status:   p.status,
@@ -1588,19 +1589,27 @@ const Render = {
 
   _pitch(f) {
     const hasLive = f.hasLive;
+    const shirtUrl = (p) => {
+      if (!p?.TeamCode) return '';
+      const isGK = p.Position === 'GK';
+      return `https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_${p.TeamCode}${isGK?'_1':''}-110.webp`;
+    };
     const chip=(p,ex='')=>{
-      if(!p) return `<div class="player-chip empty"><div class="p-shirt sh-default"></div></div>`;
+      if(!p) return `<div class="player-chip empty"><div class="p-shirt-img-wrap"><div class="p-shirt sh-default"></div></div></div>`;
       const d=p.doubt?' doubt':'';
       const isCap = f.cap && p.id===f.cap.id;
       const isVC  = f.vc && p.id===f.vc.id;
-      const capCls = isCap ? ' cap-s' : isVC ? ' vc-s' : '';
+      const capBadge = isCap ? '<div class="p-cap-badge cap-badge">C</div>' : isVC ? '<div class="p-cap-badge vc-badge">V</div>' : '';
       const ptsHtml = hasLive && p.livePoints!=null
         ? `<div class="p-chip-pts ${H.ptsClass(p.livePoints)}">${isCap ? p.livePoints*2 : p.livePoints}</div>`
         : '';
-      // Tooltip with lineup table info
-      const tip = `${p.Player} (${p.Team})&#10;${p.Position} · £${p.Price.toFixed(1)}&#10;GWScore: ${p.GWScore.toFixed(2)}&#10;FDR: ${H.numFmt(p.FDR_next,1)} · ${p.isHome?'Home':'Away'} vs ${p.opponent||'?'}&#10;PPG: ${H.numFmt(p.PPG,1)} · xGI: ${H.numFmt(p.xGI,2)}${p.isBlank?' · ⛔ BLANK':''}${p.isDGW?' · 2️⃣ DGW':''}`;
+      const tip = `${p.Player} (${p.Team})\n${p.Position} · £${p.Price.toFixed(1)}\nGWScore: ${p.GWScore.toFixed(2)}\nFDR: ${H.numFmt(p.FDR_next,1)} · ${p.isHome?'Home':'Away'} vs ${p.opponent||'?'}\nPPG: ${H.numFmt(p.PPG,1)} · xGI: ${H.numFmt(p.xGI,2)}${p.isBlank?' · ⛔ BLANK':''}${p.isDGW?' · 2️⃣ DGW':''}`;
       return `<div class="player-chip" title="${tip}">
-        <div class="p-shirt sh-${p.Team||'default'}${capCls} ${ex}">${p.Team||'?'}</div>
+        <div class="p-shirt-img-wrap">
+          <img class="p-shirt-img" src="${shirtUrl(p)}" alt="${p.Team}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+          <div class="p-shirt sh-${p.Team||'default'}" style="display:none">${p.Team||'?'}</div>
+          ${capBadge}
+        </div>
         <div class="p-chip-name">${p.Player.split(' ').slice(-1)[0]}${isCap?' ★':isVC?' ☆':''}</div>
         <div class="p-chip-score${d}">${p.GWScore.toFixed(1)}</div>
         ${ptsHtml}
@@ -2677,7 +2686,7 @@ const Render = {
         <div class="table-wrap max-h"><table>
           <thead><tr><th class="c">#</th><th>Klub</th>
             <th class="c">P</th><th class="c">W</th><th class="c">D</th><th class="c">L</th>
-            <th class="c">GF</th><th class="c">GA</th><th class="c">GD</th><th class="c">Pts</th><th>Form</th><th class="c">Strength</th>
+            <th class="c">GF</th><th class="c">GA</th><th class="c">GD</th><th class="c">Pts</th><th title="5 pertandingan terakhir: 🟩 Win · 🟨 Draw · 🟥 Loss">Form</th><th class="c">Strength</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table></div>`;
@@ -2692,7 +2701,7 @@ const Render = {
       <div class="table-wrap max-h"><table>
         <thead><tr><th class="c">#</th><th>Klub</th>
           <th class="c">P</th><th class="c">W</th><th class="c">D</th><th class="c">L</th>
-          <th class="c">GF</th><th class="c">GA</th><th class="c">GD</th><th class="c">Pts</th><th>Form</th><th class="c">Strength</th>
+          <th class="c">GF</th><th class="c">GA</th><th class="c">GD</th><th class="c">Pts</th><th title="5 pertandingan terakhir: 🟩 Win · 🟨 Draw · 🟥 Loss">Form</th><th class="c">Strength</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table></div>`;
@@ -2701,8 +2710,8 @@ const Render = {
   _eplRow(t,pos) {
     const zcls=pos<=4?'zone-cl':pos<=6?'zone-el':pos>=18?'zone-rel':'';
     const dots=String(t.form||'').split('').map(c=>
-      c==='W'?'<div class="form-w"></div>':c==='D'?'<div class="form-d"></div>':
-      c==='L'?'<div class="form-l"></div>':'').join('');
+      c==='W'?'<div class="form-w" title="Win"></div>':c==='D'?'<div class="form-d" title="Draw"></div>':
+      c==='L'?'<div class="form-l" title="Loss"></div>':'').join('');
     return `<tr class="${zcls}">
       <td class="epl-pos ${pos===1?'s-hi':pos<=4?'s-mid':''}">${pos}</td>
       <td class="epl-team">${t.club||t.name||'?'} <span class="epl-short">${t.short||t.short_name||''}</span></td>
@@ -2712,7 +2721,7 @@ const Render = {
       <td class="c mono" style="color:var(--red)">${t.ga||0}</td>
       <td class="c mono ${(t.gd||0)>0?'s-hi':(t.gd||0)<0?'s-lo':''}">${(t.gd||0)>0?'+':''}${t.gd||0}</td>
       <td class="epl-pts">${t.pts||0}</td>
-      <td><div class="epl-form">${dots}</div></td>
+      <td><div class="epl-form" title="5 pertandingan terakhir (kanan = terbaru)">${dots}</div></td>
       <td class="epl-str c">${t.strength||t.Strength||'–'}</td>
     </tr>`;
   },
