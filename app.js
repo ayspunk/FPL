@@ -895,7 +895,7 @@ const SUBTABS = {
   fdr:     [{k:'fdr-def',  l:'DEF Matrix'},       {k:'fdr-atk',  l:'ATK Matrix'},{k:'fdr-ovr',l:'OVR Matrix'},{k:'fdrinfo',l:'Team Strength'}],
   epl:     [],
   league:  [{k:'rekap',    l:'Rekap'},             {k:'charts',   l:'Grafik'},   {k:'transfer',l:'Transfer & Chips'}],
-  other:   [{k:'mysquad',  l:'My Squad'},          {k:'chiprec',  l:'Chip Recommendation'},{k:'scouts',l:'Scout Recommendation'}],
+  other:   [{k:'mysquad',  l:'My Squad'},          {k:'chiprec',  l:'Chip Recommendation'}],
   settings:[],
 };
 
@@ -1011,7 +1011,7 @@ const Render = {
                  'fdr-ovr':()=>this.fdrMatrix('ovr'), fdrinfo:this.fdrInfo },
       epl:     { null:this.epl },
       league:  { rekap:this.leagueRekap, charts:this.leagueCharts, transfer:this.leagueTransfer },
-      other:   { mysquad:this.otherSquad, chiprec:this.otherChip, scouts:this.scoutRec },
+      other:   { mysquad:this.otherSquad, chiprec:this.otherChip },
       settings:{ null:this.settings },
     };
     if (!Store.players.length && tab!=='settings') {
@@ -1020,6 +1020,10 @@ const Render = {
     const fn = map[tab]?.[subtab||'null'];
     el.innerHTML = fn ? fn.call(this) : H.info('Pilih sub-tab');
     if (tab==='league'&&subtab==='charts') setTimeout(()=>Charts.buildAll(),50);
+    // Post-render hooks (scripts in innerHTML don't execute)
+    if (tab==='lineup'&&subtab==='wlineup') setTimeout(()=>UI.updateWeightTotals('gwt'),10);
+    if (tab==='scout'&&subtab==='swt') setTimeout(()=>UI.updateWeightTotals('scwt'),10);
+    if (tab==='settings') setTimeout(()=>{UI.updateCacheStats();UI.renderCacheEndpointList();},10);
   },
 
   // ── WLineUp ────────────────────────────────────────────
@@ -3721,28 +3725,30 @@ const App = {
 
   async loadMySquad(gw) {
     const tid = CFG.myTeamId;
-    // Fetch picks + manager info (try CORS proxy first, then GitHub fallback)
-    let [picks, info] = await Promise.all([
-      Fetch.managerPicks(tid, gw),
-      Fetch.managerInfo(tid),
-    ]);
+    if (!tid) return;
 
-    // GitHub fallback if CORS proxy failed
+    // Try GitHub first (instant, no proxy needed)
+    let picks = await Fetch.githubJSON('picks.json');
+    if (picks) console.log('[App] ✓ My picks from GitHub');
+
+    let info = await Fetch.githubJSON('manager.json');
+    if (info) console.log('[App] ✓ My manager info from GitHub');
+
+    // Proxy fallback only if GitHub didn't have it
     if (!picks) {
-      const ghPicks = await Fetch.githubJSON('picks.json');
-      if (ghPicks) { picks = ghPicks; console.log('[App] ✓ picks from GitHub fallback'); }
+      try { picks = await Fetch.managerPicks(tid, gw); } catch {}
     }
     if (!info) {
-      const ghInfo = await Fetch.githubJSON('manager.json');
-      if (ghInfo) { info = ghInfo; console.log('[App] ✓ manager info from GitHub fallback'); }
+      try { info = await Fetch.managerInfo(tid); } catch {}
     }
 
     if (info) Store.myManagerInfo = info;
-    if (!picks) return;
+    if (!picks) { console.warn('[App] My picks: not available'); return; }
     Store.myPicks    = picks;
     Store.mySquadData= Process.buildMySquad(picks, Store.bootstrap);
+    console.log(`[App] My squad built: ${Store.mySquadData?.length||0} players`);
 
-    // Load element-summary for squad players (background, top 15)
+    // Load element-summary for squad players (background)
     this.loadPlayerFixtures((Store.mySquadData||[]).map(p=>p.id).slice(0,15));
 
     // Re-render if on other tab / mysquad
