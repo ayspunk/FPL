@@ -35,7 +35,7 @@ const CFG = {
     'xGI':               { GK:.00, DEF:.10, MID:.20, FWD:.25 },
     'xGC (Defensive)':   { GK:.00, DEF:.20, MID:.10, FWD:.00 },
     'Saves (GK)':        { GK:.20, DEF:.00, MID:.00, FWD:.00 },
-    'Double GW':         { GK:.00, DEF:.00, MID:.00, FWD:.00 },
+    'DGW / Blank':       { GK:.00, DEF:.00, MID:.00, FWD:.00 },
   },
   SCOUT_WEIGHTS: {
     'FDR Jangka Pendek':  {GK:.15,DEF:.15,MID:.15,FWD:.15},
@@ -50,7 +50,7 @@ const CFG = {
     'Value (pts/£)':      {GK:.02,DEF:.02,MID:.02,FWD:.02},
     'Transfer Momentum':  {GK:.08,DEF:.08,MID:.08,FWD:.08},
     'Suspension Risk':    {GK:.05,DEF:.05,MID:.05,FWD:.05},
-    'Double GW':          {GK:.00,DEF:.00,MID:.00,FWD:.00},
+    'DGW / Blank':          {GK:.00,DEF:.00,MID:.00,FWD:.00},
   },
 };
 
@@ -424,17 +424,29 @@ const Process = {
     const [mnA,mxA] = [Math.min(...strAtk), Math.max(...strAtk)];
     const nFDR = (v,mn,mx) => mn===mx ? 3 : +(1+(v-mn)/(mx-mn)*4).toFixed(2);
 
-    // Build next fixture map per team
+    // Build next fixture map per team (detect DGW, normal, blank)
     const teamFix = {};
     const allFix  = (fixtures||[]).filter(f=>!f.finished_provisional).sort((a,b)=>a.event-b.event);
-    bs.teams.forEach(t => {
-      // Find all upcoming fixtures for this team (for DGW detection)
-      const teamFixes = allFix.filter(f => f.team_h===t.id || f.team_a===t.id);
-      const nextEvent = teamFixes[0]?.event;
-      const nextFixes = teamFixes.filter(f => f.event===nextEvent);
-      const fix = nextFixes[0];
-      if (!fix) return;
+    // The next GW is the earliest upcoming event
+    const nextGW = allFix[0]?.event || gw;
 
+    bs.teams.forEach(t => {
+      // Count fixtures for this team in the NEXT specific GW
+      const gwFixes = allFix.filter(f => f.event === nextGW && (f.team_h === t.id || f.team_a === t.id));
+      const fixtureCount = gwFixes.length;
+
+      if (fixtureCount === 0) {
+        // Blank GW — no fixture
+        teamFix[t.id] = {
+          opp: 'BLANK', oppFull: 'No fixture',
+          isHome: false, fdrAtk: 3, fdrDef: 3,
+          isDGW: false, isBlank: true, fixtureCount: 0,
+          event: nextGW,
+        };
+        return;
+      }
+
+      const fix = gwFixes[0];
       const isHome = fix.team_h === t.id;
       const oppId  = isHome ? fix.team_a : fix.team_h;
       const opp    = teamMap[oppId];
@@ -446,8 +458,10 @@ const Process = {
       teamFix[t.id] = {
         opp: opp.short_name, oppFull: opp.name,
         isHome, fdrAtk, fdrDef,
-        isDGW: nextFixes.length > 1,
-        event: nextEvent,
+        isDGW: fixtureCount > 1,
+        isBlank: false,
+        fixtureCount,
+        event: nextGW,
       };
     });
 
@@ -478,7 +492,7 @@ const Process = {
     return { gw, players: avail.map(p => {
       const pos   = posMap[p.element_type] || 'FWD';
       const team  = teamMap[p.team];
-      const fix   = teamFix[p.team] || { opp:'?', isHome:false, fdrAtk:3, fdrDef:3, isDGW:false };
+      const fix   = teamFix[p.team] || { opp:'?', isHome:false, fdrAtk:3, fdrDef:3, isDGW:false, isBlank:false, fixtureCount:1 };
       const price = p.now_cost / 10;
 
       const fdrR   = (pos==='GK'||pos==='DEF') ? fix.fdrDef : fix.fdrAtk;
@@ -486,7 +500,8 @@ const Process = {
       const sHome  = fix.isHome ? 10 : 5;
       const sPPG   = norm(+p.points_per_game||0, maxPPG);
       const sXGI   = norm(+p.expected_goal_involvements||0, maxXGI);
-      const sDGW   = fix.isDGW ? 10 : 0;
+      // DGW/Blank score: +10 for DGW, 0 for normal, -10 for blank
+      const sDGW   = fix.isBlank ? -10 : (fix.isDGW ? 10 : 0);
       const xgcPM  = p.minutes >= 90
                      ? +(+p.expected_goals_conceded/(p.minutes/90)).toFixed(3)
                      : null;
@@ -528,6 +543,8 @@ const Process = {
         opponent: fix.opp,
         oppFull:  fix.oppFull || '?',
         isDGW:    fix.isDGW,
+        isBlank:  fix.isBlank || false,
+        fixtureCount: fix.fixtureCount ?? 1,
         // Scores
         score_fdr_short: sFDR,
         score_home:      sHome,
@@ -787,7 +804,7 @@ const Process = {
       p.score_xgi       * w('xGI')               +
       p.score_xgc       * w('xGC (Defensive)')   +
       p.score_saves     * w('Saves (GK)')        +
-      p.score_dgw       * w('Double GW')
+      p.score_dgw       * w('DGW / Blank')
     ).toFixed(2);
   },
 
@@ -814,8 +831,10 @@ const Process = {
   },
 
   buildLineup(pl, nD, nM, nF) {
-    const GK  = this.sortPos(pl,'GK'),  DEF = this.sortPos(pl,'DEF'),
-          MID = this.sortPos(pl,'MID'), FWD = this.sortPos(pl,'FWD');
+    // Exclude blank GW players from lineup (mandatory — they can't score)
+    const eligible = pl.filter(p => !p.isBlank);
+    const GK  = this.sortPos(eligible,'GK'),  DEF = this.sortPos(eligible,'DEF'),
+          MID = this.sortPos(eligible,'MID'), FWD = this.sortPos(eligible,'FWD');
     const gkP  = this.pickN(GK,  1, []);
     const defP = this.pickN(DEF, nD, gkP);
     const midP = this.pickN(MID, nM, [...gkP,...defP]);
@@ -1033,7 +1052,7 @@ const Render = {
         </td>
         <td class="mono dim r">${H.numFmt(p.FDR_next,1)}</td>
         <td class="c">${p.isHome?'🏠':'✈'} <span class="dim" style="font-size:11px">${p.opponent}</span></td>
-        <td class="c">${p.isDGW?'<span style="color:var(--blue);font-weight:700">2️⃣</span>':'–'}</td>
+        <td class="c">${p.isBlank?'<span style="color:var(--red);font-weight:700">⛔</span>':p.isDGW?'<span style="color:var(--blue);font-weight:700">2️⃣</span>':'–'}</td>
         <td class="mono r">${H.numFmt(p.PPG,1)}</td>
         <td class="mono r">${H.numFmt(p.xGI,2)}</td>
         <td class="mono r">${p.xGCpm!=null?H.numFmt(p.xGCpm,2):'–'}</td>
@@ -1054,7 +1073,7 @@ const Render = {
         <table>
           <thead><tr>
             <th>#</th><th>Pos</th><th>Pemain</th><th>Tim</th>
-            <th>GWScore</th><th class="r">FDR</th><th>Lawan</th><th class="c">DGW</th>
+            <th>GWScore</th><th class="r">FDR</th><th>Lawan</th><th class="c">GW</th>
             <th class="r">PPG</th><th class="r">xGI</th><th class="r">xGC/90</th>
             <th class="r">Saves</th><th class="r">TSB%</th><th class="r">£</th>
           </tr></thead>
@@ -1151,7 +1170,8 @@ const Render = {
     const R = (slot,p,cls='')=>{
       if(!p) return `<tr class="${cls}"><td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text3);width:70px">${slot}</td><td class="dim">–</td><td></td><td></td><td></td>${emptyPts}<td></td><td></td><td></td></tr>`;
       const sc=p.GWScore, d=p.doubt?'<span class="doubt-tag">⚠</span>':'';
-      const dgw=p.isDGW?'<span style="color:var(--blue);font-size:10px"> 2GW</span>':'';
+      const dgw=p.isBlank?'<span style="color:var(--red);font-size:10px"> ⛔BGW</span>'
+                :p.isDGW?'<span style="color:var(--blue);font-size:10px"> 2GW</span>':'';
       const isCap = f.cap && p.id===f.cap.id;
       const isVC  = f.vc && p.id===f.vc.id;
       const badge = isCap?'<span class="cap-tag">★ C</span>':isVC?'<span class="vc-tag">☆ V</span>':'';
@@ -3228,7 +3248,7 @@ const UI = {
       'xGI':              {GK:.00,DEF:.10,MID:.20,FWD:.25},
       'xGC (Defensive)':  {GK:.00,DEF:.20,MID:.10,FWD:.00},
       'Saves (GK)':       {GK:.20,DEF:.00,MID:.00,FWD:.00},
-      'Double GW':        {GK:.00,DEF:.00,MID:.00,FWD:.00},
+      'DGW / Blank':        {GK:.00,DEF:.00,MID:.00,FWD:.00},
     };
     Store.gwWeights=JSON.parse(JSON.stringify(def));
     Object.assign(CFG.GW_WEIGHTS,def);
