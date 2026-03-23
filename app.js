@@ -1110,10 +1110,10 @@ const Process = {
 const SUBTABS = {
   lineup:  [{k:'gwrec',    l:'GW Recommendation'},{k:'gweval',l:'Evaluasi Poin'},{k:'gwscoring',l:'GW Scoring'},{k:'wlineup',l:'WLineUp'},{k:'optimize',l:'⚡ Optimize'}],
   scout:   [{k:'sscoring', l:'Scout Scoring'},{k:'srec',l:'Scout Recommendation'},{k:'swt',l:'Scout Weights'},{k:'soptimize',l:'⚡ Optimize'},{k:'price',l:'💰 Price Change'},{k:'diff',l:'🔮 Differentials'},{k:'captain',l:'👑 Captain Sim'}],
-  fdr:     [{k:'fdr-def',  l:'DEF Matrix'},       {k:'fdr-atk',  l:'ATK Matrix'},{k:'fdr-ovr',l:'OVR Matrix'},{k:'fdrinfo',l:'Team Strength'}],
+  fdr:     [{k:'fdr-def',  l:'DEF Matrix'},       {k:'fdr-atk',  l:'ATK Matrix'},{k:'fdr-ovr',l:'OVR Matrix'},{k:'fdrinfo',l:'Team Strength'},{k:'season',l:'📅 Season Planner'}],
   epl:     [],
-  league:  [{k:'rekap',    l:'Rekap'},             {k:'charts',   l:'Grafik'},   {k:'transfer',l:'Transfer & Chips'}],
-  other:   [{k:'mysquad',  l:'My Squad'},          {k:'chiprec',  l:'Chip Recommendation'}],
+  league:  [{k:'rekap',    l:'Rekap'},             {k:'charts',   l:'Grafik'},   {k:'transfer',l:'Transfer & Chips'},{k:'h2h',l:'⚔ Head-to-Head'}],
+  other:   [{k:'mysquad',  l:'My Squad'},          {k:'chiprec',  l:'Chip Recommendation'},{k:'setforget',l:'📊 Set & Forget'}],
   settings:[],
 };
 
@@ -1226,10 +1226,10 @@ const Render = {
       lineup:  { gwrec:this.lineupRec, gweval:this.lineupEval, gwscoring:this.lineupScoring, wlineup:this.lineupWLineup, optimize:this.lineupOptimize },
       scout:   { sscoring:this.scoutScoring, srec:this.scoutRec, swt:this.scoutWeight, soptimize:this.scoutOptimize, price:this.pricePredictor, diff:this.differentialFinder, captain:this.captainSimulator },
       fdr:     { 'fdr-def':()=>this.fdrMatrix('def'), 'fdr-atk':()=>this.fdrMatrix('atk'),
-                 'fdr-ovr':()=>this.fdrMatrix('ovr'), fdrinfo:this.fdrInfo },
+                 'fdr-ovr':()=>this.fdrMatrix('ovr'), fdrinfo:this.fdrInfo, season:this.seasonPlanner },
       epl:     { null:this.epl },
-      league:  { rekap:this.leagueRekap, charts:this.leagueCharts, transfer:this.leagueTransfer },
-      other:   { mysquad:this.otherSquad, chiprec:this.otherChip },
+      league:  { rekap:this.leagueRekap, charts:this.leagueCharts, transfer:this.leagueTransfer, h2h:this.headToHead },
+      other:   { mysquad:this.otherSquad, chiprec:this.otherChip, setforget:this.setAndForget },
       settings:{ null:this.settings },
     };
     if (!Store.players.length && tab!=='settings') {
@@ -1427,6 +1427,7 @@ const Render = {
         <input class="search-input" type="text" placeholder="Cari pemain…"
                value="${Store.searchQuery}" oninput="UI.setSearch(this.value)">
         <span class="dim" style="font-size:12px;margin-left:auto">${filtered.length} pemain</span>
+        <button class="btn btn-sm btn-secondary" onclick="UI.exportGWScoring()" title="Export CSV">📥 CSV</button>
       </div>
       <div class="table-wrap max-h">
         <table>
@@ -1604,6 +1605,8 @@ const Render = {
         ? `<div class="p-chip-pts ${H.ptsClass(p.livePoints)}">${isCap ? p.livePoints*2 : p.livePoints}</div>`
         : '';
       const tip = `${p.Player} (${p.Team})\n${p.Position} · £${p.Price.toFixed(1)}\nGWScore: ${p.GWScore.toFixed(2)}\nFDR: ${H.numFmt(p.FDR_next,1)} · ${p.isHome?'Home':'Away'} vs ${p.opponent||'?'}\nPPG: ${H.numFmt(p.PPG,1)} · xGI: ${H.numFmt(p.xGI,2)}${p.isBlank?' · ⛔ BLANK':''}${p.isDGW?' · 2️⃣ DGW':''}`;
+      const oppLabel = p.isBlank ? '<span class="p-opp-blank">⛔</span>'
+        : `<span class="p-opp-vs">${p.opponent||'?'}</span><span class="p-opp-ha">(${p.isHome?'H':'A'})</span>`;
       return `<div class="player-chip" title="${tip}">
         <div class="p-shirt-img-wrap">
           <img class="p-shirt-img" src="${shirtUrl(p)}" alt="${p.Team}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
@@ -1612,6 +1615,7 @@ const Render = {
         </div>
         <div class="p-chip-name">${p.Player.split(' ').slice(-1)[0]}${isCap?' ★':isVC?' ☆':''}</div>
         <div class="p-chip-score${d}">${p.GWScore.toFixed(1)}</div>
+        <div class="p-chip-fixture"><span class="p-chip-team">${p.Team}</span> ${oppLabel}</div>
         ${ptsHtml}
       </div>`;
     };
@@ -2074,7 +2078,202 @@ const Render = {
       </div>`;
   },
 
-  // ── Shared criteria weight panel (used by WLineUp & Scout Weights) ──
+  // ══════════════════════════════════════════════════════
+  // HEAD-TO-HEAD DASHBOARD
+  // ══════════════════════════════════════════════════════
+  headToHead() {
+    const managers = Store.leagueManagers || [];
+    if (!managers.length) return H.info('Data liga belum dimuat.');
+    const m1Id = Store._h2h1 || managers[0]?.entryId;
+    const m2Id = Store._h2h2 || (managers.length > 1 ? managers[1].entryId : managers[0]?.entryId);
+
+    const sel = (id, storeKey) => `<select class="header-select" style="max-width:200px" onchange="Store.${storeKey}=+this.value;Nav.goSubtab('league','h2h')">
+      ${managers.map(m => `<option value="${m.entryId}" ${m.entryId==id?'selected':''}>${m.entryName}</option>`).join('')}</select>`;
+
+    const h1 = Store.managerHistory[m1Id] || Store.managerHistory[String(m1Id)];
+    const h2 = Store.managerHistory[m2Id] || Store.managerHistory[String(m2Id)];
+    const e1 = h1?.current || (Array.isArray(h1) ? h1 : []);
+    const e2 = h2?.current || (Array.isArray(h2) ? h2 : []);
+    const m1 = managers.find(m => m.entryId == m1Id) || {};
+    const m2 = managers.find(m => m.entryId == m2Id) || {};
+
+    const gwLabels = [...new Set([...e1,...e2].map(e => Number(e.event)))].sort((a,b)=>a-b);
+    let w1=0, w2=0, draws=0;
+    const rows = gwLabels.map(gw => {
+      const p1 = Number(e1.find(e=>Number(e.event)===gw)?.points || 0);
+      const p2 = Number(e2.find(e=>Number(e.event)===gw)?.points || 0);
+      if (p1>p2) w1++; else if (p2>p1) w2++; else draws++;
+      const cls1 = p1>p2?'s-hi':p1<p2?'s-lo':'';
+      const cls2 = p2>p1?'s-hi':p2<p1?'s-lo':'';
+      return `<tr><td class="c dim">GW${gw}</td><td class="mono r ${cls1}">${p1}</td><td class="mono r ${cls2}">${p2}</td><td class="c dim">${p1-p2>0?'+':''}${p1-p2}</td></tr>`;
+    }).join('');
+
+    const t1 = m1.total || e1.reduce((s,e)=>Math.max(s,Number(e.total_points)||0),0);
+    const t2 = m2.total || e2.reduce((s,e)=>Math.max(s,Number(e.total_points)||0),0);
+
+    return `
+      ${UI.leagueSelectHTML()}
+      <div class="section-title">⚔ Head-to-Head</div>
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center;flex-wrap:wrap">
+        ${sel(m1Id,'_h2h1')} <span style="color:var(--gold);font-weight:700;font-size:18px">VS</span> ${sel(m2Id,'_h2h2')}
+      </div>
+      <div class="stat-strip">
+        <div class="stat-box"><div class="stat-label">${m1.entryName||'?'}</div><div class="stat-val">${t1}</div></div>
+        <div class="stat-box"><div class="stat-label">GW Menang</div><div class="stat-val" style="color:var(--green)">${w1} - ${draws} - ${w2}</div></div>
+        <div class="stat-box"><div class="stat-label">${m2.entryName||'?'}</div><div class="stat-val">${t2}</div></div>
+        <div class="stat-box"><div class="stat-label">Selisih</div><div class="stat-val ${t1>t2?'':'s-lo'}">${t1-t2>0?'+':''}${t1-t2}</div></div>
+      </div>
+      <div class="table-wrap max-h">
+        <table>
+          <thead><tr><th class="c">GW</th><th class="r">${m1.entryName||'Manager 1'}</th><th class="r">${m2.entryName||'Manager 2'}</th><th class="c">Δ</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  },
+
+  // ══════════════════════════════════════════════════════
+  // SEASON PLANNER (FDR across remaining GWs)
+  // ══════════════════════════════════════════════════════
+  seasonPlanner() {
+    if (!Store.bootstrap || !Store.fixtures) return H.info('Data belum dimuat.');
+    const bs = Store.bootstrap;
+    const teamMap = {};
+    bs.teams.forEach(t => { teamMap[t.id] = t; });
+    const gw = Store.currentGW || 1;
+    const upcoming = Store.fixtures.filter(f => !f.finished_provisional).sort((a,b)=>a.event-b.event);
+    const gwRange = [...new Set(upcoming.map(f=>f.event))].sort((a,b)=>a-b);
+
+    // Build FDR per team per GW
+    const strDef = bs.teams.flatMap(t=>[t.strength_defence_home,t.strength_defence_away]);
+    const strAtk = bs.teams.flatMap(t=>[t.strength_attack_home,t.strength_attack_away]);
+    const [mnD,mxD]=[Math.min(...strDef),Math.max(...strDef)];
+    const [mnA,mxA]=[Math.min(...strAtk),Math.max(...strAtk)];
+    const nFDR=(v,mn,mx)=>mn===mx?3:+(1+(v-mn)/(mx-mn)*4).toFixed(1);
+
+    const teamData = bs.teams.map(t => {
+      let totalFdr = 0, count = 0;
+      const gwCells = gwRange.map(gwN => {
+        const fixes = upcoming.filter(f=>f.event===gwN&&(f.team_h===t.id||f.team_a===t.id));
+        if (!fixes.length) return { opp:'–', fdr:0, blank:true, dgw:false, isHome:false };
+        return fixes.map(f => {
+          const isH = f.team_h===t.id;
+          const opp = teamMap[isH?f.team_a:f.team_h];
+          const fdr = nFDR(isH?opp?.strength_attack_away||1200:opp?.strength_attack_home||1200,mnD,mxD);
+          totalFdr += fdr; count++;
+          return { opp:opp?.short_name||'?', fdr, blank:false, dgw:fixes.length>1, isHome:isH };
+        });
+      });
+      return { team:t.short_name, id:t.id, avg: count>0?+(totalFdr/count).toFixed(1):3, gwCells };
+    }).sort((a,b)=>a.avg-b.avg);
+
+    // Find rotation pairs (2 teams where combined FDR is consistently low)
+    const pairs = [];
+    for (let i=0;i<teamData.length;i++) {
+      for (let j=i+1;j<teamData.length;j++) {
+        const t1=teamData[i], t2=teamData[j];
+        let combined=0, cnt=0;
+        gwRange.forEach((gwN,gi)=>{
+          const c1=t1.gwCells[gi], c2=t2.gwCells[gi];
+          const f1=Array.isArray(c1)?Math.min(...c1.map(x=>x.fdr)):c1.fdr||3;
+          const f2=Array.isArray(c2)?Math.min(...c2.map(x=>x.fdr)):c2.fdr||3;
+          combined+=Math.min(f1,f2); cnt++;
+        });
+        pairs.push({t1:t1.team,t2:t2.team,avg:+(combined/cnt).toFixed(2)});
+      }
+    }
+    pairs.sort((a,b)=>a.avg-b.avg);
+    const topPairs = pairs.slice(0,5);
+
+    const gwHeaders = gwRange.map(g=>`<th class="c" style="font-size:9px;min-width:50px">GW${g}</th>`).join('');
+    const trows = teamData.map(td => {
+      const cells = td.gwCells.map(c => {
+        if (!Array.isArray(c)) {
+          if (c.blank) return `<td class="fdr-cell fdr-none">–</td>`;
+          return `<td class="fdr-cell ${H.fdrClass(c.fdr)}"><div class="fc-opp">${c.opp}</div><div class="fc-ha">${c.isHome?'(H)':'(A)'}</div></td>`;
+        }
+        return c.map(x => `<td class="fdr-cell ${H.fdrClass(x.fdr)}"><div class="fc-opp">${x.opp}</div><div class="fc-ha">${x.isHome?'(H)':'(A)'}</div></td>`).join('');
+      }).join('');
+      return `<tr><td style="font-weight:700;position:sticky;left:0;background:var(--bg2);z-index:1">${td.team}</td>${cells}<td class="fdr-avg-col ${H.fdrClass(td.avg)}">${td.avg}</td></tr>`;
+    }).join('');
+
+    const pairCards = topPairs.map((p,i)=>
+      `<div class="stat-box"><div class="stat-label">#${i+1} Rotation Pair</div><div class="stat-val" style="font-size:14px">${p.t1} + ${p.t2}</div><div class="dim" style="font-size:11px">Avg FDR: ${p.avg}</div></div>`
+    ).join('');
+
+    return `
+      <div class="section-title">📅 Season Planner — Sisa ${gwRange.length} GW</div>
+      ${H.info('FDR seluruh sisa musim. Rotation Pairs = 2 tim yang bergantian fixture mudah.')}
+      <div class="stat-strip">${pairCards}</div>
+      <div class="table-wrap" style="overflow:auto;max-height:calc(100vh - 340px)">
+        <table class="fdr-table"><thead><tr><th>Tim</th>${gwHeaders}<th class="c">Avg</th></tr></thead><tbody>${trows}</tbody></table>
+      </div>`;
+  },
+
+  // ══════════════════════════════════════════════════════
+  // SET & FORGET VS ACTIVE
+  // ══════════════════════════════════════════════════════
+  setAndForget() {
+    const hist = Store.managerHistory[CFG.myTeamId] || Store.managerHistory[String(CFG.myTeamId)];
+    const events = hist?.current || (Array.isArray(hist)?hist:[]);
+    if (!events.length) return H.info('Memerlukan data history. Pastikan Team ID benar dan data sudah dimuat.');
+
+    let cumActive=0, cumSetForget=0, totalTransCost=0;
+    const gwData = events.sort((a,b)=>Number(a.event)-Number(b.event)).map(e => {
+      const pts = Number(e.points)||0;
+      const transCost = Number(e.event_transfers_cost)||0;
+      totalTransCost += transCost;
+      cumActive += pts - transCost;
+      cumSetForget += pts;
+      return {
+        gw: Number(e.event),
+        pts, transCost,
+        active: cumActive,
+        setForget: cumSetForget,
+        diff: cumActive - cumSetForget,
+        transfers: Number(e.event_transfers)||0,
+      };
+    });
+
+    const lastGW = gwData[gwData.length-1];
+    const totalDiff = lastGW?.diff || 0;
+    const isActive = totalDiff >= 0;
+
+    const rows = gwData.map(d => {
+      const dCls = d.diff>0?'s-hi':d.diff<0?'s-lo':'';
+      const hitCls = d.transCost>0?'s-lo':'dim';
+      return `<tr>
+        <td class="c dim">GW${d.gw}</td>
+        <td class="mono r">${d.pts}</td>
+        <td class="mono r ${hitCls}">${d.transCost>0?`-${d.transCost}`:''}</td>
+        <td class="mono r">${d.transfers}</td>
+        <td class="mono r" style="color:var(--green)">${d.active}</td>
+        <td class="mono r" style="color:var(--blue)">${d.setForget}</td>
+        <td class="mono r ${dCls}">${d.diff>0?'+':''}${d.diff}</td>
+      </tr>`;
+    }).join('');
+
+    return `
+      <div class="section-title">📊 Set & Forget vs Active Manager</div>
+      ${H.info('Perbandingan poin Anda (aktif transfer) vs jika tidak pernah transfer (Set & Forget). Selisih negatif = transfer Anda merugikan secara netto.')}
+      <div class="stat-strip">
+        <div class="stat-box"><div class="stat-label">Active Total</div><div class="stat-val">${lastGW?.active||0}</div></div>
+        <div class="stat-box"><div class="stat-label">Set & Forget</div><div class="stat-val" style="color:var(--blue)">${lastGW?.setForget||0}</div></div>
+        <div class="stat-box"><div class="stat-label">Selisih</div><div class="stat-val ${isActive?'':'s-lo'}">${totalDiff>0?'+':''}${totalDiff}</div></div>
+        <div class="stat-box"><div class="stat-label">Total Hit Cost</div><div class="stat-val s-lo">${totalTransCost>0?'-'+totalTransCost:'0'}</div></div>
+        <div class="stat-box"><div class="stat-label">Verdict</div><div class="stat-val" style="font-size:13px;color:${isActive?'var(--green)':'var(--red)'}">${isActive?'✓ Transfer Menguntungkan':'✗ Sebaiknya Set & Forget'}</div></div>
+      </div>
+      <div class="table-wrap max-h">
+        <table>
+          <thead><tr>
+            <th class="c">GW</th><th class="r">Poin</th><th class="r">Hit</th><th class="r">Trans</th>
+            <th class="r" style="color:var(--green)">Active Cum</th>
+            <th class="r" style="color:var(--blue)">S&F Cum</th>
+            <th class="r">Δ</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  },
   _criteriaWeightPanel(mode, weights, title, hint) {
     const prefix = mode === 'gw' ? 'gwt' : 'scwt';
     const pos = ['GK','DEF','MID','FWD'];
@@ -2816,7 +3015,10 @@ const Render = {
         <div class="stat-box"><div class="stat-label">Pemimpin</div><div class="stat-val" style="font-size:14px;color:var(--gold)">${entries[0]?.entryName?.split(' ')[0]||'–'}</div></div>
         <div class="stat-box"><div class="stat-label">Pts Tertinggi</div><div class="stat-val gold">${entries[0]?.total||0}</div></div>
       </div>
-      <div class="section-title">Rekap Liga — ${Store.leagueData?.league?.name||CFG.leagues[CFG.selectedLeagueIdx]?.name||'–'}</div>
+      <div class="chart-header">
+        <div class="section-title" style="margin-bottom:0">Rekap Liga — ${Store.leagueData?.league?.name||CFG.leagues[CFG.selectedLeagueIdx]?.name||'–'}</div>
+        <button class="btn btn-sm btn-secondary" onclick="UI.exportLeagueRekap()" title="Export CSV">📥 CSV</button>
+      </div>
       ${hasHist?'':'<div class="info-box" style="margin-bottom:12px">ℹ Data transfer belum dimuat. Tiebreaker (poin sama → transfer lebih sedikit = rank lebih baik) akan aktif setelah history dimuat.</div>'}
       <div class="table-wrap max-h">
         <table>
@@ -4199,6 +4401,61 @@ const UI = {
     return finalWeights;
   },
 
+  // ── Deadline Countdown ──
+  startDeadlineTimer() {
+    const update = () => {
+      const el = document.getElementById('deadline-timer');
+      if (!el || !Store.bootstrap) return;
+      const nextEv = Store.bootstrap.events.find(e => e.is_next) || Store.bootstrap.events.find(e => e.is_current);
+      if (!nextEv?.deadline_time) { el.textContent = ''; return; }
+      const deadline = new Date(nextEv.deadline_time);
+      const now = new Date();
+      const diff = deadline - now;
+      if (diff <= 0) { el.innerHTML = '<span class="deadline-timer urgent">DEADLINE PASSED</span>'; return; }
+      const d = Math.floor(diff/86400000);
+      const h = Math.floor((diff%86400000)/3600000);
+      const m = Math.floor((diff%3600000)/60000);
+      const s = Math.floor((diff%60000)/1000);
+      const isUrgent = diff < 3600000; // < 1 hour
+      const text = d > 0 ? `${d}d ${h}h ${m}m` : `${h}h ${m}m ${s}s`;
+      el.innerHTML = `<span class="deadline-timer${isUrgent?' urgent':''}">⏱ GW${nextEv.id} ${text}</span>`;
+    };
+    update();
+    setInterval(update, 1000);
+  },
+
+  // ── Export Data to CSV ──
+  exportCSV(data, filename='export') {
+    if (!data?.length) return;
+    const headers = Object.keys(data[0]);
+    const csv = [headers.join(','), ...data.map(row =>
+      headers.map(h => { const v = row[h]; return typeof v==='string' && v.includes(',') ? `"${v}"` : v ?? ''; }).join(',')
+    )].join('\n');
+    const blob = new Blob([csv], {type:'text/csv'});
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${filename}_GW${Store.currentGW||''}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  },
+
+  exportGWScoring() {
+    const data = Store.scoredPlayers.map(p => ({
+      Player:p.Player, Team:p.Team, Position:p.Position, Price:p.Price,
+      GWScore:p.GWScore, FDR:p.FDR_next, Opponent:p.opponent,
+      Home:p.isHome?'H':'A', PPG:p.PPG, Form:p.Form, xGI:p.xGI, TSB:p.TSB,
+    }));
+    this.exportCSV(data, 'GW_Scoring');
+  },
+
+  exportLeagueRekap() {
+    const entries = Store.leagueManagers || [];
+    const data = entries.map(e => ({
+      Rank:e.rank, Team:e.entryName, Manager:e.playerName, GW_Pts:e.eventTotal, Total:e.total,
+    }));
+    this.exportCSV(data, 'League_Rekap');
+  },
+
   buildLeagueSelect() {
     // No-op: league selector is now inline in League tab renderers
   },
@@ -4494,6 +4751,7 @@ const App = {
     // Render immediately
     Nav.goTab(Nav.current);
     UI.buildGWSelect();
+    UI.startDeadlineTimer();
 
     // ── Step 4: League data (background, concurrency=5) ──
     this.loadLeagueData(gw);
