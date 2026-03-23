@@ -29,28 +29,28 @@ const CFG = {
     u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
   ],
   GW_WEIGHTS: {
-    'FDR Jangka Pendek': { GK:.35, DEF:.30, MID:.30, FWD:.35 },
-    'Home Advantage':    { GK:.15, DEF:.10, MID:.10, FWD:.15 },
-    'Points Per Game':   { GK:.30, DEF:.30, MID:.30, FWD:.25 },
-    'xGI':               { GK:.00, DEF:.10, MID:.20, FWD:.25 },
-    'xGC (Defensive)':   { GK:.00, DEF:.20, MID:.10, FWD:.00 },
-    'Saves (GK)':        { GK:.20, DEF:.00, MID:.00, FWD:.00 },
-    'DGW / Blank':       { GK:.00, DEF:.00, MID:.00, FWD:.00 },
+    'fdr_short':       { GK:.35, DEF:.30, MID:.30, FWD:.35 },
+    'home':            { GK:.15, DEF:.10, MID:.10, FWD:.15 },
+    'ppg':             { GK:.30, DEF:.30, MID:.30, FWD:.25 },
+    'xgi':             { GK:.00, DEF:.10, MID:.20, FWD:.25 },
+    'xgc':             { GK:.00, DEF:.20, MID:.10, FWD:.00 },
+    'saves':           { GK:.20, DEF:.00, MID:.00, FWD:.00 },
+    'dgw_blank':       { GK:.00, DEF:.00, MID:.00, FWD:.00 },
   },
   SCOUT_WEIGHTS: {
-    'FDR Jangka Pendek':  {GK:.15,DEF:.15,MID:.15,FWD:.15},
-    'FDR Jangka Menengah':{GK:.10,DEF:.10,MID:.10,FWD:.10},
-    'Home Advantage':     {GK:.10,DEF:.05,MID:.05,FWD:.05},
-    'Form 3 GW':          {GK:.15,DEF:.10,MID:.15,FWD:.15},
-    'Points Per Game':    {GK:.20,DEF:.15,MID:.10,FWD:.10},
-    'xGI':                {GK:.00,DEF:.10,MID:.10,FWD:.20},
-    'xGC (Defensive)':    {GK:.00,DEF:.15,MID:.10,FWD:.00},
-    'Saves (GK)':         {GK:.15,DEF:.00,MID:.00,FWD:.00},
-    'ICT Index':          {GK:.00,DEF:.05,MID:.10,FWD:.10},
-    'Value (pts/£)':      {GK:.02,DEF:.02,MID:.02,FWD:.02},
-    'Transfer Momentum':  {GK:.08,DEF:.08,MID:.08,FWD:.08},
-    'Suspension Risk':    {GK:.05,DEF:.05,MID:.05,FWD:.05},
-    'DGW / Blank':          {GK:.00,DEF:.00,MID:.00,FWD:.00},
+    'fdr_short':       {GK:.15,DEF:.15,MID:.15,FWD:.15},
+    'home':            {GK:.10,DEF:.05,MID:.05,FWD:.05},
+    'form':            {GK:.15,DEF:.10,MID:.15,FWD:.15},
+    'ppg':             {GK:.20,DEF:.15,MID:.10,FWD:.10},
+    'xgi':             {GK:.00,DEF:.10,MID:.10,FWD:.20},
+    'xgc':             {GK:.00,DEF:.15,MID:.10,FWD:.00},
+    'saves':           {GK:.15,DEF:.00,MID:.00,FWD:.00},
+    'ict_index':       {GK:.00,DEF:.05,MID:.10,FWD:.10},
+    'value_form':      {GK:.02,DEF:.02,MID:.02,FWD:.02},
+    'net_transfers':   {GK:.08,DEF:.08,MID:.08,FWD:.08},
+    'yellow_cards':    {GK:.05,DEF:.05,MID:.05,FWD:.05},
+    'dgw_blank':       {GK:.00,DEF:.00,MID:.00,FWD:.00},
+    'ep_next':         {GK:.10,DEF:.10,MID:.10,FWD:.10},
   },
 };
 
@@ -60,6 +60,64 @@ const MANAGER_COLORS = [
   '#ffe082','#b39ddb','#80deea','#f48fb1','#c5e1a5',
   '#ffab40','#84ffff','#ea80fc','#ff8a65','#b0bec5',
 ];
+
+// ═══════════════════════════════════════════════════════
+// CRITERIA CATALOG — all available scoring criteria
+// type: 'per90'=per 90min normalized, 'direct'=raw normalized, 'computed'=pre-computed, 'inverse_per90'/'inverse_direct'=lower is better
+// posAuto: suggested default weights per position {GK,DEF,MID,FWD} — user can override
+// ═══════════════════════════════════════════════════════
+const CRITERIA = [
+  // ── Computed (fixture-based) ──
+  {key:'fdr_short',    label:'FDR Jangka Pendek',   group:'Fixture', type:'computed', field:null},
+  {key:'home',         label:'Home Advantage',       group:'Fixture', type:'computed', field:null},
+  {key:'dgw_blank',    label:'DGW / Blank',          group:'Fixture', type:'computed', field:null},
+  // ── Performance ──
+  {key:'total_points', label:'Total Points',         group:'Performance', type:'direct',  field:'total_points'},
+  {key:'round_points', label:'Round Points',         group:'Performance', type:'direct',  field:'event_points'},
+  {key:'ppg',          label:'Points Per Game',      group:'Performance', type:'direct',  field:'points_per_game'},
+  {key:'form',         label:'Form',                 group:'Performance', type:'direct',  field:'form'},
+  {key:'ep_next',      label:'Expected Points',      group:'Performance', type:'direct',  field:'ep_next'},
+  {key:'bonus',        label:'Bonus',                group:'Performance', type:'per90',   field:'bonus'},
+  {key:'bps',          label:'Bonus Pts System',     group:'Performance', type:'per90',   field:'bps'},
+  // ── Attacking ──
+  {key:'goals_scored', label:'Goals Scored',         group:'Attacking',   type:'per90',   field:'goals_scored'},
+  {key:'assists',      label:'Assists',              group:'Attacking',   type:'per90',   field:'assists'},
+  {key:'xg',           label:'xG (Total)',           group:'Attacking',   type:'per90',   field:'expected_goals'},
+  {key:'xa',           label:'xA (Total)',           group:'Attacking',   type:'per90',   field:'expected_assists'},
+  {key:'xgi',          label:'xGI (Total)',          group:'Attacking',   type:'per90',   field:'expected_goal_involvements'},
+  // ── Defending ──
+  {key:'clean_sheets', label:'Clean Sheets',         group:'Defending',   type:'per90',   field:'clean_sheets'},
+  {key:'goals_conceded',label:'Goals Conceded',      group:'Defending',   type:'inverse_per90', field:'goals_conceded'},
+  {key:'xgc',          label:'xGC (Total)',          group:'Defending',   type:'inverse_per90', field:'expected_goals_conceded'},
+  {key:'own_goals',    label:'Own Goals',            group:'Defending',   type:'inverse_per90', field:'own_goals'},
+  {key:'penalties_saved',label:'Penalties Saved',    group:'Defending',   type:'per90',   field:'penalties_saved'},
+  {key:'saves',        label:'Saves',                group:'Defending',   type:'per90',   field:'saves'},
+  // ── Creativity & Threat ──
+  {key:'influence',    label:'Influence',            group:'ICT',         type:'direct',  field:'influence'},
+  {key:'creativity',   label:'Creativity',           group:'ICT',         type:'direct',  field:'creativity'},
+  {key:'threat',       label:'Threat',               group:'ICT',         type:'direct',  field:'threat'},
+  {key:'ict_index',    label:'ICT Index',            group:'ICT',         type:'direct',  field:'ict_index'},
+  // ── Discipline ──
+  {key:'yellow_cards', label:'Yellow Cards',         group:'Discipline',  type:'inverse_per90', field:'yellow_cards'},
+  {key:'red_cards',    label:'Red Cards',            group:'Discipline',  type:'inverse_per90', field:'red_cards'},
+  {key:'penalties_missed',label:'Penalties Missed',  group:'Discipline',  type:'inverse_per90', field:'penalties_missed'},
+  // ── Value & Ownership ──
+  {key:'price',        label:'Price',                group:'Value',       type:'inverse_direct', field:'now_cost', transform: v=>v/10},
+  {key:'value_form',   label:'Value (Form)',         group:'Value',       type:'direct',  field:'value_form'},
+  {key:'value_season', label:'Value (Season)',       group:'Value',       type:'direct',  field:'value_season'},
+  {key:'tsb',          label:'Selected By %',        group:'Value',       type:'direct',  field:'selected_by_percent'},
+  // ── Transfers ──
+  {key:'transfers_in', label:'Transfers In (round)', group:'Transfers',   type:'direct',  field:'transfers_in_event'},
+  {key:'transfers_out',label:'Transfers Out (round)',group:'Transfers',   type:'inverse_direct', field:'transfers_out_event'},
+  {key:'net_transfers',label:'Net Transfers (round)',group:'Transfers',   type:'direct',  field:null, compute: p => (+p.transfers_in_event||0) - (+p.transfers_out_event||0)},
+  {key:'cost_change',  label:'Price Change (round)', group:'Transfers',   type:'direct',  field:'cost_change_event'},
+  // ── Minutes ──
+  {key:'minutes',      label:'Minutes Played',       group:'Other',       type:'direct',  field:'minutes'},
+  {key:'starts',       label:'Starts',               group:'Other',       type:'direct',  field:'starts'},
+];
+
+const CRITERIA_MAP = {};
+CRITERIA.forEach(c => { CRITERIA_MAP[c.key] = c; });
 
 // ═══════════════════════════════════════════════════════
 // 2. STORE
@@ -96,6 +154,8 @@ const Store = {
   targetGW:      0,     // 0 = auto (next GW), otherwise user-selected GW
   dataSource:    null,   // 'fpl' | 'sheets' | null
   gwWeights:     JSON.parse(JSON.stringify(CFG.GW_WEIGHTS)),
+  activeGW:      null,    // active criteria keys for lineup (loaded from localStorage)
+  activeScout:   null,    // active criteria keys for scout
   scoutWeights:  null,   // initialized in UI.loadSettings
   chartInstances:{},
   loadProgress:  { done:0, total:0 },
@@ -508,7 +568,7 @@ const Process = {
 
     const norm = (v, mx) => Math.min(10, +((v/mx)*10).toFixed(2));
 
-    return { gw, targetGW, players: avail.map(p => {
+    const rawResult = { gw, targetGW, players: avail.map(p => {
       const pos   = posMap[p.element_type] || 'FWD';
       const team  = teamMap[p.team];
       const fix   = teamFix[p.team] || { opp:'?', isHome:false, fdrAtk:3, fdrDef:3, isDGW:false, isBlank:false, fixtureCount:1 };
@@ -564,7 +624,7 @@ const Process = {
         isDGW:    fix.isDGW,
         isBlank:  fix.isBlank || false,
         fixtureCount: fix.fixtureCount ?? 1,
-        // Scores
+        // Scores (legacy + dynamic)
         score_fdr_short: sFDR,
         score_home:      sHome,
         score_ppg:       sPPG,
@@ -572,12 +632,87 @@ const Process = {
         score_xgc:       sXGC,
         score_saves:     sSaves,
         score_dgw:       sDGW,
+        // All criteria scores (computed below)
+        scores: {},
+        _raw: p, // keep raw FPL data ref for dynamic scoring
         // Live
         livePoints: live.total_points ?? null,
         liveBonus:  live.bonus ?? 0,
         GWScore:    0,
       };
     })};
+
+    // ── Compute all criteria scores for every player ──
+    const result = { gw, targetGW, players: [] };
+    result.players = rawResult.players;
+    Process._computeAllScores(result.players);
+    return result;
+  },
+
+  // ── Bulk score computation for all criteria ──
+  _computeAllScores(players) {
+    if (!players.length) return;
+    const minMins = 45; // minimum minutes for per90
+
+    // Compute max values for normalization
+    const maxVals = {};
+    CRITERIA.forEach(c => {
+      if (c.type === 'computed') return; // already computed
+      let vals;
+      if (c.type === 'per90' || c.type === 'inverse_per90') {
+        vals = players.filter(p => (p._raw?.minutes||0) >= minMins).map(p => {
+          const raw = c.compute ? c.compute(p._raw) : (c.transform ? c.transform(+(p._raw?.[c.field]||0)) : +(p._raw?.[c.field]||0));
+          return Math.abs(raw) / Math.max(p._raw.minutes||1, 1) * 90;
+        });
+      } else {
+        vals = players.map(p => {
+          const raw = c.compute ? c.compute(p._raw) : (c.transform ? c.transform(+(p._raw?.[c.field]||0)) : +(p._raw?.[c.field]||0));
+          return Math.abs(raw);
+        });
+      }
+      maxVals[c.key] = Math.max(...vals, 0.001);
+    });
+
+    // Score each player
+    players.forEach(p => {
+      const raw = p._raw;
+      if (!raw) return;
+      const mins = raw.minutes || 0;
+
+      // Computed scores (already in player obj)
+      p.scores.fdr_short = p.score_fdr_short || 0;
+      p.scores.home      = p.score_home || 0;
+      p.scores.dgw_blank = p.score_dgw || 0;
+
+      CRITERIA.forEach(c => {
+        if (c.type === 'computed') return;
+        const rawVal = c.compute ? c.compute(raw) : (c.transform ? c.transform(+(raw[c.field]||0)) : +(raw[c.field]||0));
+
+        let score = 0;
+        if (c.type === 'per90') {
+          if (mins >= minMins) {
+            const per90 = rawVal / Math.max(mins, 1) * 90;
+            score = Math.min(10, (per90 / maxVals[c.key]) * 10);
+          }
+        } else if (c.type === 'inverse_per90') {
+          if (mins >= minMins) {
+            const per90 = rawVal / Math.max(mins, 1) * 90;
+            score = Math.max(0, (1 - per90 / maxVals[c.key]) * 10);
+          } else {
+            score = 5; // neutral if not enough minutes
+          }
+        } else if (c.type === 'direct') {
+          score = Math.min(10, (rawVal / maxVals[c.key]) * 10);
+        } else if (c.type === 'inverse_direct') {
+          score = Math.max(0, (1 - rawVal / maxVals[c.key]) * 10);
+        }
+
+        p.scores[c.key] = +score.toFixed(2);
+      });
+
+      // Clean up raw ref (save memory)
+      delete p._raw;
+    });
   },
 
   // ── Bootstrap → Teams (EPL table proxy) ──────────────
@@ -813,18 +948,30 @@ const Process = {
     });
   },
 
-  // ── GW Score calculation ──────────────────────────────
+  // ── GW Score calculation (dynamic — uses criteria catalog) ──
   calcGWScore(p, weights) {
-    const w = f => weights[f]?.[p.Position] || 0;
-    return +(
-      p.score_fdr_short * w('FDR Jangka Pendek') +
-      p.score_home      * w('Home Advantage')    +
-      p.score_ppg       * w('Points Per Game')   +
-      p.score_xgi       * w('xGI')               +
-      p.score_xgc       * w('xGC (Defensive)')   +
-      p.score_saves     * w('Saves (GK)')        +
-      p.score_dgw       * w('DGW / Blank')
-    ).toFixed(2);
+    if (!p.scores) return 0;
+    let total = 0;
+    for (const key of Object.keys(weights)) {
+      const crit = CRITERIA_MAP[key];
+      if (!crit) {
+        // Legacy named weight → map to criteria key
+        const legacyMap = {
+          'FDR Jangka Pendek':'fdr_short', 'FDR Jangka Menengah':'fdr_short',
+          'Home Advantage':'home', 'Points Per Game':'ppg', 'xGI':'xgi',
+          'xGC (Defensive)':'xgc', 'Saves (GK)':'saves', 'DGW / Blank':'dgw_blank',
+          'Form 3 GW':'form', 'ICT Index':'ict_index', 'Value (pts/£)':'value_form',
+          'Transfer Momentum':'net_transfers', 'Suspension Risk':'yellow_cards',
+        };
+        const mapped = legacyMap[key];
+        if (mapped && p.scores[mapped] !== undefined) {
+          total += (p.scores[mapped] || 0) * (weights[key]?.[p.Position] || 0);
+        }
+        continue;
+      }
+      total += (p.scores[key] || 0) * (weights[key]?.[p.Position] || 0);
+    }
+    return +total.toFixed(2);
   },
 
   applyScores(players) {
@@ -1020,7 +1167,7 @@ const Render = {
     const fn = map[tab]?.[subtab||'null'];
     el.innerHTML = fn ? fn.call(this) : H.info('Pilih sub-tab');
     if (tab==='league'&&subtab==='charts') setTimeout(()=>Charts.buildAll(),50);
-    // Post-render hooks (scripts in innerHTML don't execute)
+    // Post-render hooks
     if (tab==='lineup'&&subtab==='wlineup') setTimeout(()=>UI.updateWeightTotals('gwt'),10);
     if (tab==='scout'&&subtab==='swt') setTimeout(()=>UI.updateWeightTotals('scwt'),10);
     if (tab==='settings') setTimeout(()=>{UI.updateCacheStats();UI.renderCacheEndpointList();},10);
@@ -1028,34 +1175,8 @@ const Render = {
 
   // ── WLineUp ────────────────────────────────────────────
   lineupWLineup() {
-    const pos = ['GK','DEF','MID','FWD'];
-    const rows = Object.entries(Store.gwWeights).map(([f,vals]) => `
-      <tr>
-        <td>${f}</td>
-        ${pos.map(p=>`<td>
-          <input class="weight-input" type="number"
-            data-factor="${f}" data-pos="${p}"
-            value="${(vals[p]*100).toFixed(0)}"
-            min="0" max="100" step="5"
-            oninput="UI.updateWeightTotals('gwt')">
-        </td>`).join('')}
-      </tr>`).join('');
-    const totRow = pos.map(p=>`<td class="wt-total" id="gwt-${p}">–</td>`).join('');
-    return `
-      <div class="section-title">GW Scoring Weights — WLineUp</div>
-      <div class="info-box">Edit bobot kemudian klik <b>Apply</b>. Perubahan langsung memperbarui GW Scoring dan Recommendation.</div>
-      <div class="table-wrap" style="max-width:580px">
-        <table class="weight-table">
-          <thead><tr><th>Faktor</th>${pos.map(p=>`<th>${p}</th>`).join('')}</tr></thead>
-          <tbody>${rows}</tbody>
-          <tfoot><tr class="wt-trow"><td style="color:var(--text3)">Total</td>${totRow}</tr></tfoot>
-        </table>
-      </div>
-      <div class="btn-row">
-        <button class="btn btn-primary" onclick="UI.applyGWWeights()">✓ Apply & Recalculate</button>
-        <button class="btn btn-secondary" onclick="UI.resetGWWeights()">↺ Reset Default</button>
-      </div>
-      <script>UI.updateWeightTotals('gwt')<\/script>`;
+    return this._criteriaWeightPanel('gw', Store.gwWeights, 'GW Scoring Weights — WLineUp',
+      'Edit bobot kemudian klik <b>Apply</b>. Tambahkan kriteria dari katalog di bawah.');
   },
 
   // ── GW Scoring table ───────────────────────────────────
@@ -1454,34 +1575,84 @@ const Render = {
   // ── Scout Weight (read-only) ───────────────────────────
   scoutWeight() {
     if (!Store.scoutWeights) Store.scoutWeights = JSON.parse(JSON.stringify(CFG.SCOUT_WEIGHTS));
-    const W = Store.scoutWeights;
-    const pos=['GK','DEF','MID','FWD'];
-    const rows = Object.entries(W).map(([f,vals])=>`
-      <tr><td>${f}</td>
-        ${pos.map(p=>`<td>
+    return this._criteriaWeightPanel('scout', Store.scoutWeights, 'Scout Scoring Weights',
+      'Edit bobot lalu klik <b>Apply</b>. Total tiap posisi harus = 100%.');
+  },
+
+  // ── Shared criteria weight panel (used by WLineUp & Scout Weights) ──
+  _criteriaWeightPanel(mode, weights, title, hint) {
+    const prefix = mode === 'gw' ? 'gwt' : 'scwt';
+    const pos = ['GK','DEF','MID','FWD'];
+    const activeKeys = Object.keys(weights);
+
+    // Weight table rows
+    const rows = activeKeys.map(key => {
+      const crit = CRITERIA_MAP[key];
+      const label = crit ? crit.label : key;
+      const group = crit ? `<span class="crit-group">${crit.group}</span>` : '';
+      const vals = weights[key] || {GK:0,DEF:0,MID:0,FWD:0};
+      return `<tr>
+        <td class="crit-cell">
+          <span class="crit-label">${label}</span>${group}
+        </td>
+        ${pos.map(p => `<td>
           <input class="weight-input" type="number"
-            data-factor="${f}" data-pos="${p}"
+            data-factor="${key}" data-pos="${p}" data-mode="${mode}"
             value="${((vals[p]||0)*100).toFixed(0)}"
-            min="0" max="100" step="1"
-            oninput="UI.updateWeightTotals('scwt')">
+            min="0" max="100" step="5"
+            oninput="UI.updateWeightTotals('${prefix}')">
         </td>`).join('')}
-      </tr>`).join('');
-    const totRow = pos.map(p=>`<td class="wt-total" id="scwt-${p}">–</td>`).join('');
+        <td class="crit-action">
+          <button class="btn-crit-remove" onclick="UI.removeCriteria('${mode}','${key}')" title="Hapus">✕</button>
+        </td>
+      </tr>`;
+    }).join('');
+
+    const totRow = pos.map(p => `<td class="wt-total" id="${prefix}-${p}">–</td>`).join('');
+
+    // Criteria selector (grouped)
+    const groups = {};
+    CRITERIA.forEach(c => {
+      if (!groups[c.group]) groups[c.group] = [];
+      groups[c.group].push(c);
+    });
+    const selectorRows = Object.entries(groups).map(([grp, crits]) => {
+      const items = crits.map(c => {
+        const isActive = activeKeys.includes(c.key);
+        return `<button class="crit-chip ${isActive ? 'active' : ''}"
+          onclick="UI.toggleCriteria('${mode}','${c.key}')"
+          ${isActive ? 'disabled' : ''}>
+          ${isActive ? '✓ ' : '+ '}${c.label}
+        </button>`;
+      }).join('');
+      return `<div class="crit-group-row">
+        <div class="crit-group-label">${grp}</div>
+        <div class="crit-chips">${items}</div>
+      </div>`;
+    }).join('');
+
     return `
-      <div class="section-title">Scout Scoring Weights (Editable)</div>
-      ${H.info('Edit bobot lalu klik <b>Apply</b>. Total tiap posisi harus = 100%.')}
-      <div class="table-wrap" style="max-width:620px">
-        <table class="weight-table" id="scout-weight-table">
-          <thead><tr><th>Faktor</th>${pos.map(p=>`<th>${p}</th>`).join('')}</tr></thead>
+      <div class="section-title">${title}</div>
+      <div class="info-box">${hint}</div>
+
+      <div class="table-wrap" style="max-width:700px">
+        <table class="weight-table">
+          <thead><tr>
+            <th>Kriteria</th>${pos.map(p => `<th>${p}</th>`).join('')}<th style="width:36px"></th>
+          </tr></thead>
           <tbody>${rows}</tbody>
-          <tfoot><tr class="wt-trow"><td style="color:var(--text3)">Total</td>${totRow}</tr></tfoot>
+          <tfoot><tr class="wt-trow"><td style="color:var(--text3)">Total</td>${totRow}<td></td></tr></tfoot>
         </table>
       </div>
+
       <div class="btn-row">
-        <button class="btn btn-primary" onclick="UI.applyScoutWeights()">✓ Apply</button>
-        <button class="btn btn-secondary" onclick="UI.resetScoutWeights()">↺ Reset Default</button>
+        <button class="btn btn-primary" onclick="UI.apply${mode==='gw'?'GW':'Scout'}Weights()">✓ Apply & Recalculate</button>
+        <button class="btn btn-secondary" onclick="UI.reset${mode==='gw'?'GW':'Scout'}Weights()">↺ Reset Default</button>
       </div>
-      <script>UI.updateWeightTotals('scwt')<\/script>`;
+
+      <div class="section-title" style="margin-top:24px">Tambah Kriteria</div>
+      <div class="crit-selector">${selectorRows}</div>
+    `;
   },
 
   // ── Scout Scoring ──────────────────────────────────────
@@ -3249,26 +3420,28 @@ const UI = {
   },
 
   applyGWWeights() {
-    document.querySelectorAll('#content-lineup .weight-input').forEach(el=>{
-      const f=el.dataset.factor, p=el.dataset.pos;
-      if(!Store.gwWeights[f])Store.gwWeights[f]={};
-      Store.gwWeights[f][p]=(parseFloat(el.value)||0)/100;
-      if(!CFG.GW_WEIGHTS[f])CFG.GW_WEIGHTS[f]={};
-      CFG.GW_WEIGHTS[f][p]=Store.gwWeights[f][p];
+    const newWeights = {};
+    document.querySelectorAll('.weight-input[data-mode="gw"]').forEach(el => {
+      const f = el.dataset.factor, p = el.dataset.pos;
+      if (!newWeights[f]) newWeights[f] = {GK:0,DEF:0,MID:0,FWD:0};
+      newWeights[f][p] = (parseFloat(el.value)||0) / 100;
     });
+    Store.gwWeights = newWeights;
+    Object.assign(CFG.GW_WEIGHTS, newWeights);
+    try { localStorage.setItem('fplDashGWWeights', JSON.stringify(newWeights)); } catch {}
     Process.applyScores(Store.players);
     Nav.goSubtab('lineup','gwscoring');
   },
 
   applyScoutWeights() {
-    document.querySelectorAll('#scout-weight-table .weight-input').forEach(el=>{
-      const f=el.dataset.factor, p=el.dataset.pos;
-      if(!Store.scoutWeights[f])Store.scoutWeights[f]={};
-      Store.scoutWeights[f][p]=(parseFloat(el.value)||0)/100;
+    const newWeights = {};
+    document.querySelectorAll('.weight-input[data-mode="scout"]').forEach(el => {
+      const f = el.dataset.factor, p = el.dataset.pos;
+      if (!newWeights[f]) newWeights[f] = {GK:0,DEF:0,MID:0,FWD:0};
+      newWeights[f][p] = (parseFloat(el.value)||0) / 100;
     });
-    try {
-      localStorage.setItem('fplDashScoutWeights', JSON.stringify(Store.scoutWeights));
-    } catch {}
+    Store.scoutWeights = newWeights;
+    try { localStorage.setItem('fplDashScoutWeights', JSON.stringify(newWeights)); } catch {}
     Nav.goSubtab('scout','swt');
   },
 
@@ -3279,19 +3452,27 @@ const UI = {
   },
 
   resetGWWeights() {
-    const def={
-      'FDR Jangka Pendek':{GK:.35,DEF:.30,MID:.30,FWD:.35},
-      'Home Advantage':   {GK:.15,DEF:.10,MID:.10,FWD:.15},
-      'Points Per Game':  {GK:.30,DEF:.30,MID:.30,FWD:.25},
-      'xGI':              {GK:.00,DEF:.10,MID:.20,FWD:.25},
-      'xGC (Defensive)':  {GK:.00,DEF:.20,MID:.10,FWD:.00},
-      'Saves (GK)':       {GK:.20,DEF:.00,MID:.00,FWD:.00},
-      'DGW / Blank':        {GK:.00,DEF:.00,MID:.00,FWD:.00},
-    };
-    Store.gwWeights=JSON.parse(JSON.stringify(def));
-    Object.assign(CFG.GW_WEIGHTS,def);
+    Store.gwWeights = JSON.parse(JSON.stringify(CFG.GW_WEIGHTS));
+    try { localStorage.removeItem('fplDashGWWeights'); } catch {}
     Process.applyScores(Store.players);
     Nav.goSubtab('lineup','wlineup');
+  },
+
+  toggleCriteria(mode, key) {
+    const weights = mode === 'gw' ? Store.gwWeights : Store.scoutWeights;
+    if (weights[key]) return; // already active
+    weights[key] = {GK:0, DEF:0, MID:0, FWD:0};
+    const tab = mode === 'gw' ? 'lineup' : 'scout';
+    const subtab = mode === 'gw' ? 'wlineup' : 'swt';
+    Nav.goSubtab(tab, subtab);
+  },
+
+  removeCriteria(mode, key) {
+    const weights = mode === 'gw' ? Store.gwWeights : Store.scoutWeights;
+    delete weights[key];
+    const tab = mode === 'gw' ? 'lineup' : 'scout';
+    const subtab = mode === 'gw' ? 'wlineup' : 'swt';
+    Nav.goSubtab(tab, subtab);
   },
 
   buildLeagueSelect() {
@@ -3425,6 +3606,29 @@ const UI = {
       const sw = JSON.parse(localStorage.getItem('fplDashScoutWeights')||'null');
       Store.scoutWeights = sw || JSON.parse(JSON.stringify(CFG.SCOUT_WEIGHTS));
     } catch { Store.scoutWeights = JSON.parse(JSON.stringify(CFG.SCOUT_WEIGHTS)); }
+    // Load GW weights
+    try {
+      const gw = JSON.parse(localStorage.getItem('fplDashGWWeights')||'null');
+      if (gw && Object.keys(gw).length > 0) {
+        // Validate: keys should be criteria keys, not legacy names
+        const hasLegacy = Object.keys(gw).some(k => k.includes(' '));
+        if (!hasLegacy) {
+          Store.gwWeights = gw;
+        } else {
+          console.log('[Settings] Legacy GW weights detected, resetting to defaults');
+          localStorage.removeItem('fplDashGWWeights');
+        }
+      }
+    } catch {}
+    // Validate scout weights too
+    try {
+      const sw = Store.scoutWeights;
+      if (sw && Object.keys(sw).some(k => k.includes(' '))) {
+        console.log('[Settings] Legacy Scout weights detected, resetting');
+        Store.scoutWeights = JSON.parse(JSON.stringify(CFG.SCOUT_WEIGHTS));
+        localStorage.removeItem('fplDashScoutWeights');
+      }
+    } catch {}
   },
 };
 
