@@ -570,11 +570,11 @@ td.dim  { color: var(--text3); font-size: 12px; }
 /* Lineup container */
 .lineup-container {
   display: grid;
-  grid-template-columns: 1fr 320px;
+  grid-template-columns: 1fr 480px;
   gap: 18px;
-  align-items: start;
+  align-items: stretch;
 }
-@media (max-width: 1000px) { .lineup-container { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { .lineup-container { grid-template-columns: 1fr; } }
 
 /* Lineup table specific */
 tr.row-sep  { border-top: 2px solid var(--border2); }
@@ -589,12 +589,15 @@ tr.row-rank { background: rgba(0,230,118,.03); }
   border-radius: 10px;
   padding: 14px;
   position: sticky;
-  top: 90px;
+  top: 140px;
+  display: flex;
+  flex-direction: column;
 }
 .pitch {
   position: relative;
   width: 100%;
-  padding-bottom: 148%;
+  flex: 1;
+  min-height: 560px;
   background: var(--pitch-bg);
   border-radius: 6px;
   overflow: hidden;
@@ -623,14 +626,14 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 }
 
 /* Player chip on pitch */
-.player-chip { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.player-chip { display: flex; flex-direction: column; align-items: center; gap: 3px; cursor: default; }
 .p-shirt {
-  width: 32px; height: 32px;
+  width: 40px; height: 40px;
   border-radius: 50% 50% 38% 38%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.3px;
   border: 2px solid rgba(255,255,255,.12);
@@ -641,10 +644,10 @@ tr.row-rank { background: rgba(0,230,118,.03); }
   text-shadow: 0 1px 3px rgba(0,0,0,.8);
 }
 .p-shirt.cap-s::after, .p-shirt.vc-s::after {
-  position: absolute; top: -7px; right: -7px;
-  width: 14px; height: 14px;
+  position: absolute; top: -8px; right: -8px;
+  width: 16px; height: 16px;
   border-radius: 50%;
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 800;
   display: flex;
   align-items: center;
@@ -655,10 +658,10 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 .p-shirt.vc-s::after  { content: 'V'; background: var(--blue); color: #fff; }
 
 .p-chip-name {
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 700;
   text-align: center;
-  max-width: 46px;
+  max-width: 60px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -667,7 +670,7 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 }
 .p-chip-score {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 700;
   color: var(--green);
   text-shadow: 0 1px 3px rgba(0,0,0,.8);
