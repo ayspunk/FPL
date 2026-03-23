@@ -472,7 +472,9 @@ const Process = {
         event: targetGW,
       };
     });
-    console.log(`[FPL] Team fixtures: ${Object.values(teamFix).filter(f=>f.isBlank).length} blank, ${Object.values(teamFix).filter(f=>f.isDGW).length} DGW, ${Object.values(teamFix).filter(f=>!f.isBlank&&!f.isDGW).length} normal`);
+    const blankTeams = Object.entries(teamFix).filter(([_,f])=>f.isBlank).map(([id,_])=>teamMap[+id]?.short_name||id);
+    const dgwTeams = Object.entries(teamFix).filter(([_,f])=>f.isDGW).map(([id,_])=>teamMap[+id]?.short_name||id);
+    console.log(`[FPL] Team fixtures: ${blankTeams.length} blank [${blankTeams.join(',')}], ${dgwTeams.length} DGW [${dgwTeams.join(',')}], ${Object.values(teamFix).filter(f=>!f.isBlank&&!f.isDGW).length} normal`);
 
     // Live stats map (if available)
     const liveMap = {};
