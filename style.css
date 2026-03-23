@@ -1085,6 +1085,7 @@ tr:last-child .hm-me { border-bottom: 2px solid var(--green) !important; }
   position: relative;
 }
 .chip-card.active-gw { border-color: var(--green2); background: rgba(0,230,118,.04); }
+.chip-card.chip-after-wc { opacity: .5; border-style: dashed; }
 .chip-gw    { font-size: 10px; color: var(--text3); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; }
 .chip-best  { font-size: 22px; font-weight: 800; margin-bottom: 4px; }
 .chip-alasan{ font-size: 13px; color: var(--text2); line-height: 1.5; margin-bottom: 12px; }
