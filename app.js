@@ -2642,7 +2642,11 @@ const Render = {
     ).join('');
 
     return `
-      <div class="section-title">Transfer & Chips per GW</div>
+      <div id="card-transfers">
+      <div class="chart-header">
+        <div class="section-title" style="margin-bottom:0">Transfer & Chips per GW</div>
+        ${UI.shareBar('card-transfers','Transfer_Chips')}
+      </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
         ${legend}
         <span style="font-size:13px;margin-left:8px">🎯 FH &nbsp; 🃏 WC &nbsp; 💺 BB &nbsp; 👑 TC</span>
@@ -2652,6 +2656,7 @@ const Render = {
           <thead><tr><th class="gw-h">GW</th>${head}</tr></thead>
           <tbody>${trows}</tbody>
         </table>
+      </div>
       </div>`;
   },
 
