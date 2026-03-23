@@ -784,6 +784,7 @@ const Process = {
       hist.forEach(e => { rankMap[Number(e.event)] = Number(e.overall_rank); });
       return {
         name:    m.entryName,
+        playerName: m.playerName || '',
         entryId: m.entryId,
         isMe:    m.entryName.toLowerCase().includes(CFG.myTeamName.toLowerCase()),
         ranks:   gwLabels.map(gw => rankMap[gw] ?? null),
@@ -868,6 +869,7 @@ const Process = {
 
     const series = managers.map(m => ({
       name:    m.entryName,
+      playerName: m.playerName || '',
       entryId: m.entryId,
       isMe:    m.entryName.toLowerCase().includes(CFG.myTeamName.toLowerCase()),
       ranks:   gwLabels.map(gw => {
@@ -2349,14 +2351,17 @@ const Render = {
       <div class="charts-grid">
         <div class="chart-card wide" id="card-bumpchart">
           <div class="chart-header"><div class="chart-title">📈 Ranking per GW — Bump Chart</div>${UI.shareBar('card-bumpchart','Bump_Chart')}</div>
+          <div class="hm-league-name">${ligaName}</div>
           <div id="bump-chart-wrap" class="bump-svg-wrap">${hasMatrix?H.loader('Membangun chart…'):H.info('Data ranking per GW belum tersedia.')}</div>
         </div>
         <div class="chart-card" id="card-highlights" style="max-height:${Math.max(440, (managers.length||10)*36+40)}px">
           <div class="chart-header"><div class="chart-title">🏆 Manager Highlights — GW ${Store.currentGW||'–'}</div>${UI.shareBar('card-highlights','Manager_Highlights')}</div>
+          <div class="hm-league-name">${ligaName}</div>
           <div id="manager-highlights" style="flex:1;overflow-y:auto">${this._managerHighlights()}</div>
         </div>
         <div class="chart-card" id="card-standings">
           <div class="chart-header"><div class="chart-title">🏅 Total Points Standings</div>${UI.shareBar('card-standings','Standings')}</div>
+          <div class="hm-league-name">${ligaName}</div>
           <div class="chart-canvas-wrap" style="min-height:${Math.max(280, (managers.length||10)*30)}px"><canvas id="chart-standings"></canvas></div>
         </div>
       </div>`;
@@ -3132,8 +3137,8 @@ const Charts = {
     const gridStroke = cs.getPropertyValue('--border').trim() || 'rgba(30,48,72,.4)';
 
     const N=series.length, GW=gwLabels.length;
-    const W=Math.max(800, GW*50), H_svg=N*26+60;
-    const PL=16, PR=160, PT=28, PB=20;
+    const W=Math.max(900, GW*50), H_svg=N*26+60;
+    const PL=16, PR=280, PT=28, PB=20;
     const IW=W-PL-PR, IH=H_svg-PT-PB;
     const xOf=i=>PL+(i/(GW-1||1))*IW;
     const yOf=r=>PT+((r-1)/(N-1||1))*IH;
@@ -3152,8 +3157,10 @@ const Charts = {
       const dots = pts.map(p=>`<circle cx="${p.x}" cy="${p.y}" r="${s.isMe?4:2}" fill="${col}" stroke="none"/>`).join('');
       const lastPt=pts[pts.length-1];
       const lastR =s.ranks[gwLabels.length-1]||'?';
+      // Label: "TeamName (PlayerName) #rank"
+      const fullName = s.playerName ? `${s.name} (${s.playerName})` : s.name;
       const lbl=`<text x="${lastPt.x+10}" y="${lastPt.y+4}" fill="${col}" font-size="${s.isMe?12:10}"
-        font-weight="${s.isMe?700:400}" font-family="Barlow Condensed,sans-serif">${s.name.split(' ')[0]} #${lastR}</text>`;
+        font-weight="${s.isMe?700:400}" font-family="Barlow Condensed,sans-serif">${fullName} #${lastR}</text>`;
       return `<g class="bump-manager">
         <path class="bump-line ${s.isMe?'hl':''}" d="${d}" stroke="${col}" stroke-width="${thick}" opacity="${opa}"/>
         ${dots}${lbl}
