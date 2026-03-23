@@ -2621,18 +2621,18 @@ const Render = {
     const myName = CFG.myTeamName.toLowerCase();
     const head = managers.map((m,i)=>{
       const isMe=m.entryName.toLowerCase().includes(myName);
-      return `<th class="${isMe?'hm-me-head':''}" style="min-width:72px;max-width:72px;overflow:hidden;text-overflow:ellipsis;font-size:10px;padding:6px 4px" title="${m.entryName}">${m.entryName.split(' ')[0]}</th>`;
+      return `<th class="${isMe?'hm-me-head':''}" data-col="${i}" style="min-width:72px;max-width:72px;overflow:hidden;text-overflow:ellipsis;font-size:10px;padding:6px 4px;cursor:pointer" title="${m.entryName}" onclick="UI.highlightHeatmapCol(${i})">${m.entryName.split(' ')[0]}</th>`;
     }).join('');
 
     const trows = rows.map(row => {
-      const cells = managers.map(m => {
+      const cells = managers.map((m,i) => {
         const val = row[m.entryId] || {count:0, chip:null};
         const isMe = m.entryName.toLowerCase().includes(myName);
         const chip = val.chip ? H.chipEmoji(val.chip) : null;
         const n    = val.count;
         const cls  = chip ? 'hm-chip' : `hm-${Math.min(n,5)}`;
         const disp = chip || (n===0?'–':n);
-        return `<td class="${cls}${isMe?' hm-me':''}" title="${m.entryName}: ${chip||n+' transfer'}">${disp}</td>`;
+        return `<td class="${cls}${isMe?' hm-me':''}" data-col="${i}" title="${m.entryName}: ${chip||n+' transfer'}">${disp}</td>`;
       }).join('');
       return `<tr><td class="hm-gw">GW${row.gw}</td>${cells}</tr>`;
     }).join('');
@@ -2786,10 +2786,18 @@ const Render = {
     const midSeason = Math.ceil(totalGW / 2);
     const currentHalf = gw <= midSeason ? 'H1' : 'H2';
 
-    // Detect chips already used (from history)
-    const hist = Store.managerHistory[CFG.myTeamId] || Store.managerHistory[String(CFG.myTeamId)];
-    const chipList = hist?.chips || [];
-    const usedChips = new Set(chipList.map(c => (c.name||'').toLowerCase().replace(/[_ ]/g,'')));
+    // Detect chips already used (from history) — filter by CURRENT half only
+    const myId = CFG.myTeamId;
+    const hist = Store.managerHistory[myId] || Store.managerHistory[String(myId)] || Store.managerHistory[Number(myId)];
+    const allChipEntries = hist?.chips || [];
+    // Filter to current half: H1 chips have event <= midSeason, H2 > midSeason
+    const halfChips = allChipEntries.filter(c => {
+      const ev = Number(c.event) || 0;
+      return currentHalf === 'H1' ? ev <= midSeason : ev > midSeason;
+    });
+    console.log(`[ChipRec] myId=${myId}, hist found=${!!hist}, all chips=${allChipEntries.length}, half ${currentHalf} chips=${halfChips.length}:`, halfChips.map(c=>`${c.name}@GW${c.event}`));
+
+    const usedChips = new Set(halfChips.map(c => (c.name||'').toLowerCase().replace(/[_ ]/g,'')));
 
     const allChips = [
       { key:'wildcard',  label:'🃏 Wildcard',       short:'WC',  used: usedChips.has('wildcard') },
@@ -3235,6 +3243,23 @@ const UI = {
     document.documentElement.setAttribute('data-theme', saved);
     const btn = document.getElementById('theme-btn');
     if (btn) btn.textContent = this.THEME_ICONS[saved] || '🌙';
+  },
+
+  // ── Heatmap column highlight on click ──
+  _hlCol: -1,
+  highlightHeatmapCol(colIdx) {
+    // Toggle: click same column again to deselect
+    if (this._hlCol === colIdx) { this._hlCol = -1; } else { this._hlCol = colIdx; }
+    const table = document.querySelector('.heatmap-table');
+    if (!table) return;
+    // Remove existing highlights
+    table.querySelectorAll('.hm-hl, .hm-hl-head').forEach(el => { el.classList.remove('hm-hl','hm-hl-head'); });
+    if (this._hlCol < 0) return;
+    // Add highlights to column
+    table.querySelectorAll(`[data-col="${colIdx}"]`).forEach(el => {
+      if (el.classList.contains('hm-me') || el.classList.contains('hm-me-head')) return; // don't override own highlight
+      el.classList.add(el.tagName === 'TH' ? 'hm-hl-head' : 'hm-hl');
+    });
   },
 
   // ── Save / Share card as image ──
