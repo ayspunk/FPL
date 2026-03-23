@@ -717,16 +717,34 @@ const Process = {
 
   // ── Bootstrap → Teams (EPL table proxy) ──────────────
   teamsFromBootstrap(bs) {
-    // FPL bootstrap doesn't include W/D/L/pts, but has strength
-    // We build best-effort from team data
-    return bs.teams.map((t,i) => ({
-      pos:      i+1,
-      club:     t.name,
-      short:    t.short_name,
-      strength: t.strength,
-      strengthAtk: Math.round((t.strength_attack_home + t.strength_attack_away)/2),
-      strengthDef: Math.round((t.strength_defence_home + t.strength_defence_away)/2),
+    return bs.teams.map(t => ({
+      pos:0, club:t.name, short:t.short_name, strength:t.strength,
+      strengthAtk: Math.round((t.strength_attack_home+t.strength_attack_away)/2),
+      strengthDef: Math.round((t.strength_defence_home+t.strength_defence_away)/2),
     })).sort((a,b) => b.strength - a.strength);
+  },
+
+  // ── EPL Standings computed from finished fixtures ──
+  eplFromFixtures(bs, fixtures) {
+    if (!bs || !fixtures) return [];
+    const teamMap = {};
+    bs.teams.forEach(t => { teamMap[t.id] = { id:t.id, club:t.name, short:t.short_name, strength:t.strength, p:0,w:0,d:0,l:0,gf:0,ga:0,gd:0,pts:0,results:[] }; });
+    const finished = fixtures.filter(f => f.finished && f.team_h_score != null);
+    finished.sort((a,b) => a.event - b.event);
+    finished.forEach(f => {
+      const h = teamMap[f.team_h], a = teamMap[f.team_a];
+      if (!h || !a) return;
+      const hg = f.team_h_score, ag = f.team_a_score;
+      h.p++; a.p++; h.gf += hg; h.ga += ag; a.gf += ag; a.ga += hg;
+      if (hg > ag)      { h.w++; a.l++; h.pts+=3; h.results.push('W'); a.results.push('L'); }
+      else if (hg < ag) { a.w++; h.l++; a.pts+=3; h.results.push('L'); a.results.push('W'); }
+      else              { h.d++; a.d++; h.pts+=1; a.pts+=1; h.results.push('D'); a.results.push('D'); }
+    });
+    return Object.values(teamMap).map(t => {
+      t.gd = t.gf - t.ga;
+      t.form = t.results.slice(-5).join('');
+      return t;
+    }).sort((a,b) => b.pts - a.pts || b.gd - a.gd || b.gf - a.gf);
   },
 
   // ── League Standings → Managers list ─────────────────
@@ -2154,21 +2172,13 @@ const Render = {
           <tbody>${rows}</tbody>
         </table></div>`;
     }
-    // Fall back to bootstrap team list sorted by strength
-    if (!Store.bootstrap) return H.info('EPL Table memerlukan Google Sheets (FORM sheet) atau FPL API.');
-    const teams = Process.teamsFromBootstrap(Store.bootstrap);
-    const rows  = teams.map((t,i) => `<tr>
-      <td class="epl-pos">${i+1}</td>
-      <td class="epl-team">${t.club} <span class="epl-short">${t.short}</span></td>
-      <td class="c dim">–</td><td class="c dim">–</td><td class="c dim">–</td><td class="c dim">–</td>
-      <td class="c dim">–</td><td class="c dim">–</td>
-      <td class="c dim">–</td><td class="epl-pts" style="color:var(--text2)">–</td>
-      <td><div class="epl-form"></div></td>
-      <td class="epl-str c">${t.strength}</td>
-    </tr>`).join('');
+    // Compute from fixtures
+    if (!Store.bootstrap) return H.info('EPL Table memerlukan FPL API.');
+    const teams = Process.eplFromFixtures(Store.bootstrap, Store.fixtures);
+    if (!teams.length) return H.info('Belum ada data fixture yang selesai.');
+    const rows = teams.map((t,i)=>this._eplRow(t,i+1)).join('');
     return `
-      <div class="section-title">EPL Table</div>
-      ${H.info('Standings (W/D/L/Pts) memerlukan Google Sheets. Menampilkan urutan berdasarkan FPL team strength.')}
+      <div class="section-title">EPL Table — GW ${Store.currentGW||'–'}</div>
       <div class="table-wrap max-h"><table>
         <thead><tr><th class="c">#</th><th>Klub</th>
           <th class="c">P</th><th class="c">W</th><th class="c">D</th><th class="c">L</th>
@@ -2611,7 +2621,7 @@ const Render = {
     const myName = CFG.myTeamName.toLowerCase();
     const head = managers.map((m,i)=>{
       const isMe=m.entryName.toLowerCase().includes(myName);
-      return `<th class="${isMe?'s-hi':''}" style="min-width:72px;max-width:72px;overflow:hidden;text-overflow:ellipsis;font-size:10px;padding:6px 4px" title="${m.entryName}">${m.entryName.split(' ')[0]}</th>`;
+      return `<th class="${isMe?'hm-me-head':''}" style="min-width:72px;max-width:72px;overflow:hidden;text-overflow:ellipsis;font-size:10px;padding:6px 4px" title="${m.entryName}">${m.entryName.split(' ')[0]}</th>`;
     }).join('');
 
     const trows = rows.map(row => {
@@ -2774,119 +2784,147 @@ const Render = {
     const gw = Store.currentGW || 1;
     const totalGW = Store.bootstrap.events.length;
     const midSeason = Math.ceil(totalGW / 2);
+    const currentHalf = gw <= midSeason ? 'H1' : 'H2';
 
-    // Detect chips already used
-    const hist = Store.managerHistory[CFG.myTeamId];
+    // Detect chips already used (from history)
+    const hist = Store.managerHistory[CFG.myTeamId] || Store.managerHistory[String(CFG.myTeamId)];
     const chipList = hist?.chips || [];
-    const usedChips = new Set(chipList.map(c => c.name.toLowerCase().replace(/[_ ]/g,'')));
+    const usedChips = new Set(chipList.map(c => (c.name||'').toLowerCase().replace(/[_ ]/g,'')));
+
     const allChips = [
-      { key:'wildcard',  label:'🃏 Wildcard',      short:'WC',  used: usedChips.has('wildcard'), desc:'Ganti seluruh 15 pemain tanpa penalti poin.' },
-      { key:'freehit',   label:'🎯 Free Hit',      short:'FH',  used: usedChips.has('freehit'),  desc:'Skuad berubah 1 GW saja, lalu kembali.' },
-      { key:'bboost',    label:'💺 Bench Boost',   short:'BB',  used: usedChips.has('bboost'),   desc:'Semua pemain bench ikut dihitung poinnya.' },
-      { key:'3xc',       label:'👑 Triple Captain', short:'TC', used: usedChips.has('3xc'),      desc:'Captain mendapat ×3 poin (bukan ×2).' },
+      { key:'wildcard',  label:'🃏 Wildcard',       short:'WC',  used: usedChips.has('wildcard') },
+      { key:'freehit',   label:'🎯 Free Hit',       short:'FH',  used: usedChips.has('freehit') },
+      { key:'bboost',    label:'💺 Bench Boost',    short:'BB',  used: usedChips.has('bboost') || usedChips.has('benchboost') },
+      { key:'3xc',       label:'👑 Triple Captain',  short:'TC',  used: usedChips.has('3xc') || usedChips.has('triplecaptain') },
     ];
     const remaining = allChips.filter(c => !c.used);
 
-    // Analyze upcoming GWs for DGW, blank GW, FDR
-    const upcoming = (Store.fixtures||[]).filter(f => !f.finished_provisional && f.event >= gw).sort((a,b)=>a.event-b.event);
-    const gwRange = [...new Set(upcoming.map(f=>f.event))].sort((a,b)=>a-b).slice(0,10);
+    // Squad analysis
+    const squad = Store.mySquadData || [];
+    const squadAvg = squad.length ? +(squad.reduce((s,p)=>(s+(p.ScoutScore||p.GWScore||0)),0)/squad.length).toFixed(1) : 0;
+    const benchPlayers = squad.filter(p=>p.squad_role==='Bench');
+    const benchAvg = benchPlayers.length ? +(benchPlayers.reduce((s,p)=>(s+(p.ScoutScore||p.GWScore||0)),0)/benchPlayers.length).toFixed(1) : 0;
+    const bestPlayer = squad.length ? squad.reduce((b,p)=>(p.ScoutScore||p.GWScore||0)>(b.ScoutScore||b.GWScore||0)?p:b,squad[0]) : null;
+    const lowScorers = squad.filter(p=>p.squad_role!=='Bench'&&(p.ScoutScore||p.GWScore||0)<3).length;
+
+    // Analyze upcoming GWs
+    const upcoming = (Store.fixtures||[]).filter(f=>!f.finished_provisional&&f.event>gw).sort((a,b)=>a.event-b.event);
+    const gwRange = [...new Set(upcoming.map(f=>f.event))].sort((a,b)=>a-b).slice(0,8);
 
     const gwAnalysis = gwRange.map(gwNum => {
       const gwFixes = upcoming.filter(f => f.event === gwNum);
       const teamCounts = {};
-      gwFixes.forEach(f => {
-        teamCounts[f.team_h] = (teamCounts[f.team_h]||0) + 1;
-        teamCounts[f.team_a] = (teamCounts[f.team_a]||0) + 1;
-      });
+      gwFixes.forEach(f => { teamCounts[f.team_h]=(teamCounts[f.team_h]||0)+1; teamCounts[f.team_a]=(teamCounts[f.team_a]||0)+1; });
       const dgwTeams = Object.entries(teamCounts).filter(([_,c])=>c>1).length;
-      const totalMatches = gwFixes.length;
       const isHalf = gwNum <= midSeason ? 'H1' : 'H2';
-      return { gw:gwNum, matches:totalMatches, dgwTeams, isHalf };
+      // Count how many of MY squad have blanks this GW
+      const myBlanks = squad.filter(p => {
+        const teamId = Store.bootstrap?.teams?.find(t=>t.short_name===p.Team)?.id;
+        return teamId && !teamCounts[teamId];
+      }).length;
+      // Best captain candidate FDR
+      const capFDR = bestPlayer?.FDR_next || 3;
+      return { gw:gwNum, matches:gwFixes.length, dgwTeams, isHalf, myBlanks, capFDR };
     });
 
-    // Score each remaining chip for each GW
+    // Score each chip per GW
+    let wcRecommended = false;
     const recommendations = gwAnalysis.map(ga => {
       const scores = {};
+      if (wcRecommended) {
+        // After WC, squad composition unknown
+        remaining.forEach(c => { scores[c.short] = 0; });
+        return { ...ga, scores, best:null, reason:'⚠ Setelah WC, komposisi tim berubah — evaluasi ulang.' };
+      }
+
       remaining.forEach(chip => {
-        let score = 5; // base
+        let score = 0;
+
         if (chip.key === 'freehit') {
-          if (ga.matches < 8)  score += 4; // blank GW — FH ideal
-          if (ga.dgwTeams > 2) score += 2;
+          // FH: best for blank GWs where many of your players don't play
+          if (ga.matches < 8) score += 6;
+          if (ga.matches < 6) score += 3;
+          if (ga.myBlanks >= 4) score += 4;
+          if (ga.myBlanks >= 6) score += 3;
         }
         if (chip.key === 'bboost') {
-          if (ga.dgwTeams >= 3) score += 4; // DGW with many doubles
-          if (ga.dgwTeams >= 5) score += 2;
+          // BB: best when all 15 players play, especially DGW
+          if (ga.dgwTeams >= 3) score += 4;
+          if (ga.dgwTeams >= 5) score += 3;
+          if (benchAvg >= 3) score += 2; // bench has decent players
+          if (ga.myBlanks === 0) score += 2; // no blanks
         }
         if (chip.key === '3xc') {
-          if (ga.dgwTeams >= 2) score += 3; // TC on DGW captain
+          // TC: best when top captain has easy fixture or DGW
+          if (ga.dgwTeams >= 2) score += 4;
+          if (bestPlayer && (bestPlayer.ScoutScore||bestPlayer.GWScore||0) >= 6) score += 3;
+          if (ga.capFDR < 2.5) score += 2; // easy fixture
         }
         if (chip.key === 'wildcard') {
+          // WC: when squad is struggling
+          if (lowScorers >= 4) score += 5; // many bad players
+          if (lowScorers >= 6) score += 3;
           if (ga.dgwTeams >= 4) score += 2; // restructure for DGW
-          // WC better used early in half
-          if (ga.gw === gw || ga.gw === gw+1) score += 1;
+          if (ga.gw === gw+1) score += 1; // use early to get max benefit
         }
+
         scores[chip.short] = Math.min(10, score);
       });
+
       const best = remaining.reduce((b,c) => (!b || (scores[c.short]||0) > (scores[b.short]||0)) ? c : b, null);
-      return { ...ga, scores, best };
+      let reason = '';
+      if (best) {
+        if (best.key === 'freehit') reason = `${ga.matches} match (${ga.myBlanks} pemain blank) — ideal FH`;
+        else if (best.key === 'bboost') reason = `${ga.dgwTeams} tim DGW, bench avg ${benchAvg} — BB kuat`;
+        else if (best.key === '3xc') reason = `${bestPlayer?.Player||'?'} (FDR ${ga.capFDR.toFixed(1)}) — TC potensial`;
+        else if (best.key === 'wildcard') reason = `${lowScorers} pemain skor rendah — WC diperlukan`;
+        if (scores[best.short] < 4) reason = 'Belum ada GW ideal — simpan chip.';
+
+        if (best.key === 'wildcard' && scores[best.short] >= 5) wcRecommended = true;
+      }
+
+      return { ...ga, scores, best: (scores[best?.short]||0) >= 4 ? best : null, reason };
     });
 
     // Build HTML
     let html = `
-      <div class="section-title">Chip Recommendation — dari FPL API</div>
+      <div class="section-title">Chip Recommendation — GW${gw} (${currentHalf})</div>
       <div class="eval-summary-strip">
-        <div class="eval-stat">
-          <div class="eval-stat-label">GW Saat Ini</div>
-          <div class="eval-stat-val">${gw}</div>
-        </div>
-        <div class="eval-stat">
-          <div class="eval-stat-label">Chip Tersisa</div>
-          <div class="eval-stat-val" style="color:var(--gold)">${remaining.length} / ${allChips.length}</div>
-        </div>
+        <div class="eval-stat"><div class="eval-stat-label">GW Saat Ini</div><div class="eval-stat-val">${gw}</div></div>
+        <div class="eval-stat"><div class="eval-stat-label">Half</div><div class="eval-stat-val" style="color:var(--blue)">${currentHalf}</div></div>
+        <div class="eval-stat"><div class="eval-stat-label">Chip Tersisa</div><div class="eval-stat-val" style="color:var(--gold)">${remaining.length}/${allChips.length}</div></div>
+        <div class="eval-stat"><div class="eval-stat-label">Squad Avg</div><div class="eval-stat-val">${squadAvg}</div></div>
+        <div class="eval-stat"><div class="eval-stat-label">Bench Avg</div><div class="eval-stat-val" style="color:var(--text2)">${benchAvg}</div></div>
         ${allChips.map(c => `
         <div class="eval-stat" ${c.used?'style="opacity:.5"':''}>
           <div class="eval-stat-label">${c.short}</div>
-          <div class="eval-stat-val" style="color:${c.used?'var(--red)':'var(--green)'}">
-            ${c.used?'✗ Terpakai':'✓ Tersedia'}
-          </div>
+          <div class="eval-stat-val" style="color:${c.used?'var(--red)':'var(--green)'}">${c.used?'✗ Used':'✓'}</div>
         </div>`).join('')}
       </div>`;
 
-    if (!remaining.length) {
-      html += H.info('Semua chip sudah digunakan musim ini.');
-      return html;
-    }
-
-    html += `<div class="chip-grid">`;
-    recommendations.forEach(r => {
-      const isNow = r.gw === gw;
+    const cards = recommendations.map(r => {
       const isDGW = r.dgwTeams > 0;
       const isBlank = r.matches < 10;
-      html += `<div class="chip-card ${isNow?'active-gw':''}">
-        ${isNow?'<div style="position:absolute;top:10px;right:12px;font-size:10px;background:var(--green);color:#000;padding:2px 7px;border-radius:3px;font-weight:700;letter-spacing:1px">NOW</div>':''}
-        <div class="chip-gw">GW ${r.gw} — ${r.isHalf}${isDGW?' · <span style="color:var(--blue)">DGW ('+r.dgwTeams+' tim)</span>':''}${isBlank?' · <span style="color:var(--red)">Blank ('+r.matches+' match)</span>':''}</div>
-        <div class="chip-best">${r.best?r.best.label:'–'}</div>
-        <div class="chip-alasan" style="font-size:12px;margin:6px 0">${r.matches} pertandingan${isDGW?', '+r.dgwTeams+' tim DGW':''}</div>
-        <div class="chip-scores">
-          ${remaining.map(c=>`
-          <div class="chip-score-item">
-            <div class="csi-label">${c.short}</div>
-            <div class="csi-val csi-${c.short.toLowerCase()}">${r.scores[c.short]||0}</div>
-          </div>`).join('')}
-        </div>
+      const chipScores = remaining.map(c => {
+        const s = r.scores[c.short]||0;
+        const col = s>=7?'var(--green)':s>=4?'var(--gold)':'var(--text3)';
+        return `<div class="chip-score-item"><div class="csi-label">${c.short}</div><div class="csi-val" style="color:${col}">${s.toFixed(0)}</div></div>`;
+      }).join('');
+
+      return `<div class="chip-card ${r.gw===gw+1?'active-gw':''}">
+        ${r.gw===gw+1?'<div style="position:absolute;top:8px;right:10px;font-size:9px;background:var(--green);color:#000;padding:2px 6px;border-radius:3px;font-weight:700;letter-spacing:1px">NEXT GW</div>':''}
+        <div class="chip-gw">GW ${r.gw} — ${r.isHalf}${isDGW?' · <span style="color:var(--blue)">DGW ('+r.dgwTeams+')</span>':''}${isBlank?' · <span style="color:var(--red)">'+r.matches+' match</span>':''}</div>
+        <div class="chip-best" style="font-size:18px">${r.best?r.best.label:'💤 Simpan Chip'}</div>
+        <div class="chip-alasan">${r.reason||'–'}</div>
+        <div class="chip-scores">${chipScores}</div>
+        <div style="margin-top:8px;font-size:11px;color:var(--text3)">${r.matches} match · ${r.myBlanks} blank saya · ${r.dgwTeams} DGW</div>
       </div>`;
-    });
-    html += `</div>`;
+    }).join('');
 
-    // Chip descriptions
-    html += `<div style="margin-top:20px">`;
-    remaining.forEach(c => {
-      html += `<div style="margin-bottom:6px;font-size:13px;color:var(--text2)">${c.label} — ${c.desc}</div>`;
-    });
-    html += `</div>`;
-
+    html += `<div class="chip-grid">${cards}</div>`;
     return html;
   },
+
 
   // ── Settings ───────────────────────────────────────────
   settings() {
@@ -3842,6 +3880,21 @@ const App = {
       });
       histOK = Object.keys(Store.managerHistory).length;
       console.log(`[League] GitHub history: ${histOK} managers`);
+    }
+
+    // ── GitHub Chips ──
+    const ghChips = await Fetch.githubJSON('chips.json');
+    if (ghChips && Array.isArray(ghChips) && ghChips.length > 0) {
+      ghChips.forEach(chip => {
+        const eid = chip.entry_id;
+        const key = Store.managerHistory[eid] ? eid : (Store.managerHistory[Number(eid)] ? Number(eid) : null);
+        if (!key) return;
+        if (!Store.managerHistory[key].chips) Store.managerHistory[key].chips = [];
+        // Avoid duplicates
+        const exists = Store.managerHistory[key].chips.some(c => c.event === chip.event && c.name === chip.name);
+        if (!exists) Store.managerHistory[key].chips.push(chip);
+      });
+      console.log(`[League] GitHub chips: ${ghChips.length} usages loaded`);
     }
 
     // ── Proxy: only fetch what GitHub doesn't have ──
