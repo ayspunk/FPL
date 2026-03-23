@@ -13,7 +13,10 @@
 <header id="app-header">
   <div class="logo">⚽ <span class="logo-fpl">FPL</span><span class="logo-dash">Dashboard</span></div>
   <div class="header-right">
-    <div class="badge badge-gw" id="gw-badge">GW –</div>
+    <div class="badge badge-gw" id="gw-badge" title="GW aktif">GW –</div>
+    <select class="gw-select" id="gw-select" onchange="UI.changeTargetGW(+this.value)" title="Pilih GW untuk analisis">
+      <option value="0">Auto</option>
+    </select>
     <div class="badge badge-src" id="src-badge">–</div>
     <button class="btn btn-sm btn-theme" id="theme-btn" onclick="UI.cycleTheme()" title="Ganti tema">🌙</button>
     <button class="btn btn-sm btn-refresh" onclick="App.refresh()">↻ Refresh</button>
