@@ -3856,6 +3856,10 @@ const UI = {
     return finalWeights;
   },
 
+  buildLeagueSelect() {
+    // No-op: league selector is now inline in League tab renderers
+  },
+
   buildGWSelect() {
     const sel = document.getElementById('gw-select');
     if (!sel || !Store.bootstrap) return;
