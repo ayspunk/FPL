@@ -2827,63 +2827,87 @@ const Render = {
       return { gw:gwNum, matches:gwFixes.length, dgwTeams, isHalf, myBlanks, capFDR };
     });
 
-    // Score each chip per GW
-    let wcRecommended = false;
-    const recommendations = gwAnalysis.map(ga => {
-      const scores = {};
-      if (wcRecommended) {
-        // After WC, squad composition unknown
-        remaining.forEach(c => { scores[c.short] = 0; });
-        return { ...ga, scores, best:null, reason:'⚠ Setelah WC, komposisi tim berubah — evaluasi ulang.' };
-      }
-
-      remaining.forEach(chip => {
-        let score = 0;
-
+    // Score each chip per GW (raw scores)
+    const scoreMatrix = {}; // {chipKey: {gwNum: score}}
+    remaining.forEach(chip => {
+      scoreMatrix[chip.key] = {};
+      gwAnalysis.forEach(ga => {
+        let score = 1; // base (never 0 — all chips must be used)
         if (chip.key === 'freehit') {
-          // FH: best for blank GWs where many of your players don't play
           if (ga.matches < 8) score += 6;
           if (ga.matches < 6) score += 3;
           if (ga.myBlanks >= 4) score += 4;
           if (ga.myBlanks >= 6) score += 3;
         }
         if (chip.key === 'bboost') {
-          // BB: best when all 15 players play, especially DGW
           if (ga.dgwTeams >= 3) score += 4;
           if (ga.dgwTeams >= 5) score += 3;
-          if (benchAvg >= 3) score += 2; // bench has decent players
-          if (ga.myBlanks === 0) score += 2; // no blanks
+          if (benchAvg >= 3) score += 2;
+          if (ga.myBlanks === 0) score += 2;
         }
         if (chip.key === '3xc') {
-          // TC: best when top captain has easy fixture or DGW
           if (ga.dgwTeams >= 2) score += 4;
           if (bestPlayer && (bestPlayer.ScoutScore||bestPlayer.GWScore||0) >= 6) score += 3;
-          if (ga.capFDR < 2.5) score += 2; // easy fixture
+          if (ga.capFDR < 2.5) score += 2;
         }
         if (chip.key === 'wildcard') {
-          // WC: when squad is struggling
-          if (lowScorers >= 4) score += 5; // many bad players
+          if (lowScorers >= 4) score += 5;
           if (lowScorers >= 6) score += 3;
-          if (ga.dgwTeams >= 4) score += 2; // restructure for DGW
-          if (ga.gw === gw+1) score += 1; // use early to get max benefit
+          if (ga.dgwTeams >= 4) score += 2;
+          if (ga.gw === gw+1) score += 1;
         }
-
-        scores[chip.short] = Math.min(10, score);
+        scoreMatrix[chip.key][ga.gw] = Math.min(10, score);
       });
+    });
 
-      const best = remaining.reduce((b,c) => (!b || (scores[c.short]||0) > (scores[b.short]||0)) ? c : b, null);
+    // Greedy assignment: pick highest (chip,GW) pair, assign, repeat
+    const assigned = {}; // {gwNum: chipObj}
+    const assignedChips = new Set();
+    const chipsToAssign = [...remaining];
+    const gwPool = gwAnalysis.map(ga => ga.gw);
+
+    // Limit to current half GWs
+    const halfEndGW = currentHalf === 'H1' ? midSeason : totalGW;
+    const halfGWs = gwPool.filter(g => g <= halfEndGW);
+
+    for (let round = 0; round < chipsToAssign.length; round++) {
+      let bestScore = -1, bestChip = null, bestGW = null;
+      chipsToAssign.forEach(chip => {
+        if (assignedChips.has(chip.key)) return;
+        halfGWs.forEach(gwNum => {
+          if (assigned[gwNum]) return;
+          const s = scoreMatrix[chip.key]?.[gwNum] || 0;
+          if (s > bestScore) { bestScore = s; bestChip = chip; bestGW = gwNum; }
+        });
+      });
+      if (bestChip && bestGW) {
+        assigned[bestGW] = bestChip;
+        assignedChips.add(bestChip.key);
+      }
+    }
+
+    // Build recommendations with assignments
+    let wcGW = assigned[Object.keys(assigned).find(g => assigned[g]?.key === 'wildcard')] ? +Object.keys(assigned).find(g => assigned[g]?.key === 'wildcard') : 999;
+
+    const recommendations = gwAnalysis.map(ga => {
+      const scores = {};
+      remaining.forEach(c => { scores[c.short] = scoreMatrix[c.key]?.[ga.gw] || 0; });
+
+      const assignedChip = assigned[ga.gw] || null;
       let reason = '';
-      if (best) {
-        if (best.key === 'freehit') reason = `${ga.matches} match (${ga.myBlanks} pemain blank) — ideal FH`;
-        else if (best.key === 'bboost') reason = `${ga.dgwTeams} tim DGW, bench avg ${benchAvg} — BB kuat`;
-        else if (best.key === '3xc') reason = `${bestPlayer?.Player||'?'} (FDR ${ga.capFDR.toFixed(1)}) — TC potensial`;
-        else if (best.key === 'wildcard') reason = `${lowScorers} pemain skor rendah — WC diperlukan`;
-        if (scores[best.short] < 4) reason = 'Belum ada GW ideal — simpan chip.';
 
-        if (best.key === 'wildcard' && scores[best.short] >= 5) wcRecommended = true;
+      if (assignedChip) {
+        if (assignedChip.key === 'freehit') reason = `${ga.matches} match (${ga.myBlanks} pemain blank)`;
+        else if (assignedChip.key === 'bboost') reason = `${ga.dgwTeams} DGW, bench avg ${benchAvg}`;
+        else if (assignedChip.key === '3xc') reason = `Captain: ${bestPlayer?.Player||'?'} (FDR ${ga.capFDR.toFixed(1)})`;
+        else if (assignedChip.key === 'wildcard') reason = `${lowScorers} pemain skor rendah — restruktur tim`;
       }
 
-      return { ...ga, scores, best: (scores[best?.short]||0) >= 4 ? best : null, reason };
+      // After WC GW, mark as "evaluasi ulang"
+      const afterWC = ga.gw > wcGW && !assignedChip;
+      if (afterWC) reason = '⚠ Tim berubah setelah WC — evaluasi ulang';
+
+      return { ...ga, scores, best: assignedChip, reason, afterWC };
     });
 
     // Build HTML
@@ -2911,10 +2935,10 @@ const Render = {
         return `<div class="chip-score-item"><div class="csi-label">${c.short}</div><div class="csi-val" style="color:${col}">${s.toFixed(0)}</div></div>`;
       }).join('');
 
-      return `<div class="chip-card ${r.gw===gw+1?'active-gw':''}">
+      return `<div class="chip-card ${r.gw===gw+1?'active-gw':''} ${r.afterWC?'chip-after-wc':''}">
         ${r.gw===gw+1?'<div style="position:absolute;top:8px;right:10px;font-size:9px;background:var(--green);color:#000;padding:2px 6px;border-radius:3px;font-weight:700;letter-spacing:1px">NEXT GW</div>':''}
         <div class="chip-gw">GW ${r.gw} — ${r.isHalf}${isDGW?' · <span style="color:var(--blue)">DGW ('+r.dgwTeams+')</span>':''}${isBlank?' · <span style="color:var(--red)">'+r.matches+' match</span>':''}</div>
-        <div class="chip-best" style="font-size:18px">${r.best?r.best.label:'💤 Simpan Chip'}</div>
+        <div class="chip-best" style="font-size:18px">${r.best?r.best.label:(r.afterWC?'❓ Evaluasi ulang':'–')}</div>
         <div class="chip-alasan">${r.reason||'–'}</div>
         <div class="chip-scores">${chipScores}</div>
         <div style="margin-top:8px;font-size:11px;color:var(--text3)">${r.matches} match · ${r.myBlanks} blank saya · ${r.dgwTeams} DGW</div>
