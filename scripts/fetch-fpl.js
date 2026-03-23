@@ -301,7 +301,9 @@ async function fetchLeagueData(gw) {
   saveJSON('history.json', allHistory);
   saveJSON('transfers.json', allTransfers);
   saveJSON('league-picks.json', allPicks);
+  saveJSON('chips.json', allChips);
   log(`  ✅ league-picks: ${Object.keys(allPicks).length} managers`);
+  log(`  ✅ chips: ${allChips.length} chip usages`);
 
   return { managers, rekap: standings, transfer: transferData, standings };
 }
