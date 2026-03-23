@@ -2619,12 +2619,28 @@ const Render = {
   _renderTransferHeatmap(matrix) {
     const {managers, rows} = matrix;
     const myName = CFG.myTeamName.toLowerCase();
+    const totalGW = Store.bootstrap?.events?.length || 38;
+    const midGW = Math.ceil(totalGW / 2);
+    const leagueName = Store.leagueData?.league?.name || CFG.leagues[CFG.selectedLeagueIdx]?.name || 'Liga';
+
     const head = managers.map((m,i)=>{
       const isMe=m.entryName.toLowerCase().includes(myName);
-      return `<th class="${isMe?'hm-me-head':''}" data-col="${i}" style="min-width:72px;max-width:72px;overflow:hidden;text-overflow:ellipsis;font-size:10px;padding:6px 4px;cursor:pointer" title="${m.entryName}" onclick="UI.highlightHeatmapCol(${i})">${m.entryName.split(' ')[0]}</th>`;
+      return `<th class="${isMe?'hm-me-head':''}" data-col="${i}" style="min-width:72px;max-width:72px;overflow:hidden;text-overflow:ellipsis;font-size:10px;padding:6px 4px;cursor:pointer;text-align:center" title="${m.entryName}" onclick="UI.highlightHeatmapCol(${i})">${m.entryName.split(' ')[0]}</th>`;
     }).join('');
 
+    // Compute totals per manager (only count numeric transfers, not chips)
+    const totals = {};
+    managers.forEach(m => { totals[m.entryId] = 0; });
+    rows.forEach(row => {
+      managers.forEach(m => {
+        const val = row[m.entryId] || {count:0, chip:null};
+        if (!val.chip) totals[m.entryId] += val.count;
+      });
+    });
+
     const trows = rows.map(row => {
+      const gwNum = row.gw;
+      const isHalfBorder = gwNum === midGW;
       const cells = managers.map((m,i) => {
         const val = row[m.entryId] || {count:0, chip:null};
         const isMe = m.entryName.toLowerCase().includes(myName);
@@ -2632,9 +2648,17 @@ const Render = {
         const n    = val.count;
         const cls  = chip ? 'hm-chip' : `hm-${Math.min(n,5)}`;
         const disp = chip || (n===0?'–':n);
-        return `<td class="${cls}${isMe?' hm-me':''}" data-col="${i}" title="${m.entryName}: ${chip||n+' transfer'}">${disp}</td>`;
+        return `<td class="${cls}${isMe?' hm-me':''}" data-col="${i}" title="${m.entryName}: ${chip||n+' transfer'}" style="text-align:center">${disp}</td>`;
       }).join('');
-      return `<tr><td class="hm-gw">GW${row.gw}</td>${cells}</tr>`;
+      const rowCls = isHalfBorder ? ' class="hm-half-border"' : '';
+      return `<tr${rowCls}><td class="hm-gw">GW${gwNum}</td>${cells}</tr>`;
+    }).join('');
+
+    // Totals row
+    const totalCells = managers.map((m,i) => {
+      const isMe = m.entryName.toLowerCase().includes(myName);
+      const t = totals[m.entryId] || 0;
+      return `<td class="hm-total${isMe?' hm-me':''}" data-col="${i}" style="text-align:center">${t}</td>`;
     }).join('');
 
     const legend = [0,1,2,3,4,5].map(n =>
@@ -2647,6 +2671,7 @@ const Render = {
         <div class="section-title" style="margin-bottom:0">Transfer & Chips per GW</div>
         ${UI.shareBar('card-transfers','Transfer_Chips')}
       </div>
+      <div class="hm-league-name">${leagueName}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
         ${legend}
         <span style="font-size:13px;margin-left:8px">🎯 FH &nbsp; 🃏 WC &nbsp; 💺 BB &nbsp; 👑 TC</span>
@@ -2655,6 +2680,7 @@ const Render = {
         <table class="heatmap-table">
           <thead><tr><th class="gw-h">GW</th>${head}</tr></thead>
           <tbody>${trows}</tbody>
+          <tfoot><tr class="hm-total-row"><td class="hm-gw" style="font-weight:700">Total</td>${totalCells}</tr></tfoot>
         </table>
       </div>
       </div>`;
