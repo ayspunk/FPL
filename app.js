@@ -2670,9 +2670,9 @@ const Render = {
 
           let verdict, vcls;
           if (delta >= 1.5 && affordable) {
-            verdict = '✓ Transfer masuk'; vcls = 'verdict-good';
+            verdict = '✓ Transfer masuk'; vcls = 'verdict-rec';
           } else if (delta >= 0.5 && affordable) {
-            verdict = '↔ Pertimbangkan'; vcls = 'verdict-marg';
+            verdict = '↔ Pertimbangkan'; vcls = 'verdict-watch';
           } else if (delta > 0 && !affordable) {
             verdict = '💰 Over budget'; vcls = 'verdict-warn';
           } else {
@@ -2687,9 +2687,9 @@ const Render = {
       if (gwScore <= 2 || sq.status === 'i' || sq.status === 'u') {
         urgency = '🔴 Transfer Segera'; urgCls = 'urg-high'; urgOrder = 0;
       } else if (bestDelta >= 1.5 && candidates[0]?.affordable) {
-        urgency = '🔵 Rekomendasi Transfer'; urgCls = 'urg-rec'; urgOrder = 1;
+        urgency = '🟡 Rekomendasi Transfer'; urgCls = 'urg-rec'; urgOrder = 1;
       } else if (sq.status === 'd' || gwScore <= 3.5 || (bestDelta >= 0.5 && candidates[0]?.affordable)) {
-        urgency = '🟡 Perlu Pantau'; urgCls = 'urg-mid'; urgOrder = 2;
+        urgency = '🔵 Perlu Pantau'; urgCls = 'urg-mid'; urgOrder = 2;
       } else {
         urgency = '🟢 Aman'; urgCls = 'urg-low'; urgOrder = 3;
       }
@@ -2747,15 +2747,15 @@ const Render = {
         </div>`:''}
         <div class="eval-stat" ${urgCounts.high?'style="border-color:rgba(255,82,82,.3)"':''}>
           <div class="eval-stat-label">🔴 Transfer Segera</div>
-          <div class="eval-stat-val" style="color:${urgCounts.high?'var(--red)':'var(--green)'}">${urgCounts.high}</div>
+          <div class="eval-stat-val" style="color:var(--red)">${urgCounts.high}</div>
         </div>
-        <div class="eval-stat" ${urgCounts.rec?'style="border-color:rgba(68,138,255,.3)"':''}>
-          <div class="eval-stat-label">🔵 Rekomendasi</div>
-          <div class="eval-stat-val" style="color:${urgCounts.rec?'var(--blue)':'var(--green)'}">${urgCounts.rec}</div>
+        <div class="eval-stat" ${urgCounts.rec?'style="border-color:rgba(255,215,64,.3)"':''}>
+          <div class="eval-stat-label">🟡 Rekomendasi</div>
+          <div class="eval-stat-val" style="color:var(--gold)">${urgCounts.rec}</div>
         </div>
         <div class="eval-stat">
-          <div class="eval-stat-label">🟡 Perlu Pantau</div>
-          <div class="eval-stat-val" style="color:var(--gold)">${urgCounts.mid}</div>
+          <div class="eval-stat-label">🔵 Perlu Pantau</div>
+          <div class="eval-stat-val" style="color:var(--blue)">${urgCounts.mid}</div>
         </div>
         <div class="eval-stat">
           <div class="eval-stat-label">🟢 Aman</div>
@@ -5021,8 +5021,6 @@ const UI = {
 
     const encoded = encodeURIComponent(msg);
     window.open(`https://wa.me/?text=${encoded}`, '_blank');
-    // Also trigger ICS download
-    setTimeout(() => this.exportDeadlineICS(), 500);
   },
 
   // ── ICS Calendar Export for Deadline ──
