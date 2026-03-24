@@ -149,6 +149,7 @@ const Store = {
 
   // Sheets (fallback / pre-computed)
   sheetsData:    null,
+  setForgetData: null,  // GW1 squad tracking from set-forget.json
 
   // State
   currentGW:     null,
@@ -1113,7 +1114,7 @@ const SUBTABS = {
   fdr:     [{k:'fdr-def',  l:'DEF Matrix'},       {k:'fdr-atk',  l:'ATK Matrix'},{k:'fdr-ovr',l:'OVR Matrix'},{k:'fdrinfo',l:'Team Strength'},{k:'season',l:'📅 Season Planner'}],
   epl:     [],
   league:  [{k:'rekap',    l:'Rekap'},             {k:'charts',   l:'Grafik'},   {k:'transfer',l:'Transfer & Chips'},{k:'h2h',l:'⚔ Head-to-Head'}],
-  other:   [{k:'mysquad',  l:'My Squad'},          {k:'chiprec',  l:'Chip Recommendation'},{k:'setforget',l:'📊 Set & Forget'}],
+  other:   [{k:'mysquad',  l:'My Squad'},          {k:'chiprec',  l:'Chip Recommendation'},{k:'setforget',l:'📊 Transfer Impact'}],
   settings:[],
 };
 
@@ -1236,7 +1237,16 @@ const Render = {
       el.innerHTML = H.loader('Menunggu data FPL…'); return;
     }
     const fn = map[tab]?.[subtab||'null'];
-    el.innerHTML = fn ? fn.call(this) : H.info('Pilih sub-tab');
+    let html = fn ? fn.call(this) : H.info('Pilih sub-tab');
+    // Show ID notification if not set (except settings page)
+    if (!CFG.myTeamId && tab !== 'settings') {
+      html = `<div class="id-banner" onclick="Nav.goTab('settings')">
+        <span class="id-banner-icon">👤</span>
+        <div><b>FPL Team ID belum dimasukkan.</b> Beberapa fitur (My Squad, Transfer Analysis, Liga) membutuhkan Team ID Anda.
+        <span class="id-banner-link">Klik di sini untuk ke Settings →</span></div>
+      </div>` + html;
+    }
+    el.innerHTML = html;
     if (tab==='league'&&subtab==='charts') setTimeout(()=>Charts.buildAll(),50);
     // Post-render hooks
     if (tab==='lineup'&&subtab==='wlineup') setTimeout(()=>UI.updateWeightTotals('gwt'),10);
@@ -2213,62 +2223,101 @@ const Render = {
   // SET & FORGET VS ACTIVE
   // ══════════════════════════════════════════════════════
   setAndForget() {
-    const hist = Store.managerHistory[CFG.myTeamId] || Store.managerHistory[String(CFG.myTeamId)];
+    const myId = CFG.myTeamId;
+    if (!myId) return H.info('Masukkan FPL Team ID di Settings terlebih dahulu.');
+    const hist = Store.managerHistory[myId] || Store.managerHistory[String(myId)];
     const events = hist?.current || (Array.isArray(hist)?hist:[]);
     if (!events.length) return H.info('Memerlukan data history. Pastikan Team ID benar dan data sudah dimuat.');
 
-    let cumActive=0, cumSetForget=0, totalTransCost=0;
+    const bs = Store.bootstrap;
+    const transfers = Store.managerTransfers[myId] || Store.managerTransfers[String(myId)] || [];
+    const playerMap = {};
+    if (bs?.elements) bs.elements.forEach(p => { playerMap[p.id] = p; });
+
+    // Load Set & Forget data (GW1 squad tracking from GitHub Actions)
+    const sfJson = Store.setForgetData;
+    const sfMap = {};
+    if (sfJson?.sfData) sfJson.sfData.forEach(d => { sfMap[d.gw] = d.sfPts; });
+    const hasSF = Object.keys(sfMap).length > 0;
+
+    // Build per-GW comparison
+    let cumActual=0, cumSF=0, totalHitCost=0, totalTrans=0;
     const gwData = events.sort((a,b)=>Number(a.event)-Number(b.event)).map(e => {
-      const pts = Number(e.points)||0;
-      const transCost = Number(e.event_transfers_cost)||0;
-      totalTransCost += transCost;
-      cumActive += pts - transCost;
-      cumSetForget += pts;
-      return {
-        gw: Number(e.event),
-        pts, transCost,
-        active: cumActive,
-        setForget: cumSetForget,
-        diff: cumActive - cumSetForget,
-        transfers: Number(e.event_transfers)||0,
-      };
+      const gwNum = Number(e.event);
+      const gwPts = Number(e.points) || 0;
+      const hitCost = Number(e.event_transfers_cost) || 0;
+      const netPts = gwPts - hitCost;
+      const nTrans = Number(e.event_transfers) || 0;
+      const benchPts = Number(e.points_on_bench) || 0;
+      const sfPts = sfMap[gwNum] ?? null;
+
+      totalHitCost += hitCost;
+      totalTrans += nTrans;
+      cumActual += netPts;
+      if (sfPts != null) cumSF += sfPts;
+
+      return { gw:gwNum, gwPts, hitCost, netPts, nTrans, benchPts, sfPts, cumActual, cumSF };
     });
 
-    const lastGW = gwData[gwData.length-1];
-    const totalDiff = lastGW?.diff || 0;
-    const isActive = totalDiff >= 0;
+    const last = gwData[gwData.length-1] || {};
+    const diff = hasSF ? last.cumActual - last.cumSF : -totalHitCost;
+    const isWinning = diff >= 0;
+
+    // GW1 squad info
+    let gw1Info = '';
+    if (sfJson?.gw1squad?.length) {
+      const gw1names = sfJson.gw1squad
+        .filter(p => p.multiplier > 0)
+        .map(p => {
+          const pl = playerMap[p.element];
+          return pl ? `${pl.web_name}${p.is_captain?' (C)':p.is_vice_captain?' (V)':''}` : `#${p.element}`;
+        });
+      gw1Info = `<div class="info-box" style="margin-bottom:12px"><b>Skuad GW1:</b> ${gw1names.join(', ')}</div>`;
+    }
 
     const rows = gwData.map(d => {
-      const dCls = d.diff>0?'s-hi':d.diff<0?'s-lo':'';
-      const hitCls = d.transCost>0?'s-lo':'dim';
-      return `<tr>
+      const hasHit = d.hitCost > 0;
+      const gwDiff = d.sfPts != null ? d.netPts - d.sfPts : null;
+      const diffCls = gwDiff != null ? (gwDiff > 0 ? 's-hi' : gwDiff < 0 ? 's-lo' : '') : 'dim';
+      return `<tr class="${hasHit?'row-cap':''}">
         <td class="c dim">GW${d.gw}</td>
-        <td class="mono r">${d.pts}</td>
-        <td class="mono r ${hitCls}">${d.transCost>0?`-${d.transCost}`:''}</td>
-        <td class="mono r">${d.transfers}</td>
-        <td class="mono r" style="color:var(--green)">${d.active}</td>
-        <td class="mono r" style="color:var(--blue)">${d.setForget}</td>
-        <td class="mono r ${dCls}">${d.diff>0?'+':''}${d.diff}</td>
+        <td class="mono r">${d.gwPts}</td>
+        <td class="mono r ${hasHit?'s-lo':'dim'}">${hasHit?'-'+d.hitCost:''}</td>
+        <td class="mono r" style="font-weight:600">${d.netPts}</td>
+        ${hasSF?`<td class="mono r" style="color:var(--blue)">${d.sfPts??'–'}</td>`:''}
+        ${hasSF?`<td class="mono r ${diffCls}">${gwDiff!=null?(gwDiff>0?'+':'')+gwDiff:'–'}</td>`:''}
+        <td class="mono r dim">${d.nTrans||'–'}</td>
+        <td class="mono r dim">${d.benchPts||'–'}</td>
+        <td class="mono r" style="color:var(--green)">${d.cumActual}</td>
+        ${hasSF?`<td class="mono r" style="color:var(--blue)">${d.cumSF}</td>`:''}
       </tr>`;
     }).join('');
 
     return `
       <div class="section-title">📊 Set & Forget vs Active Manager</div>
-      ${H.info('Perbandingan poin Anda (aktif transfer) vs jika tidak pernah transfer (Set & Forget). Selisih negatif = transfer Anda merugikan secara netto.')}
+      ${hasSF
+        ? H.info('Perbandingan poin aktual Anda vs poin jika tetap menggunakan <b>skuad GW1 tanpa transfer</b> sepanjang musim. Data dihitung dari poin riil pemain GW1 per minggu.')
+        : H.info('Data Set & Forget (skuad GW1) belum tersedia. <b>Jalankan GitHub Actions</b> untuk generate <code>set-forget.json</code>. Saat ini menampilkan Transfer Hit Analysis saja.')
+      }
+      ${gw1Info}
       <div class="stat-strip">
-        <div class="stat-box"><div class="stat-label">Active Total</div><div class="stat-val">${lastGW?.active||0}</div></div>
-        <div class="stat-box"><div class="stat-label">Set & Forget</div><div class="stat-val" style="color:var(--blue)">${lastGW?.setForget||0}</div></div>
-        <div class="stat-box"><div class="stat-label">Selisih</div><div class="stat-val ${isActive?'':'s-lo'}">${totalDiff>0?'+':''}${totalDiff}</div></div>
-        <div class="stat-box"><div class="stat-label">Total Hit Cost</div><div class="stat-val s-lo">${totalTransCost>0?'-'+totalTransCost:'0'}</div></div>
-        <div class="stat-box"><div class="stat-label">Verdict</div><div class="stat-val" style="font-size:13px;color:${isActive?'var(--green)':'var(--red)'}">${isActive?'✓ Transfer Menguntungkan':'✗ Sebaiknya Set & Forget'}</div></div>
+        <div class="stat-box"><div class="stat-label">Active Total</div><div class="stat-val">${last.cumActual||0}</div></div>
+        ${hasSF?`<div class="stat-box"><div class="stat-label">Set & Forget</div><div class="stat-val" style="color:var(--blue)">${last.cumSF||0}</div></div>`:''}
+        <div class="stat-box"><div class="stat-label">Selisih</div><div class="stat-val ${isWinning?'':'s-lo'}">${diff>0?'+':''}${diff}</div></div>
+        <div class="stat-box"><div class="stat-label">Total Hit</div><div class="stat-val s-lo">${totalHitCost>0?'-'+totalHitCost:'0'}</div></div>
+        <div class="stat-box"><div class="stat-label">Total Trans</div><div class="stat-val dim">${totalTrans}</div></div>
+        <div class="stat-box"><div class="stat-label">Verdict</div><div class="stat-val" style="font-size:12px;color:${isWinning?'var(--green)':'var(--red)'}">
+          ${isWinning ? '✓ Transfer menguntungkan' : hasSF ? '✗ Lebih baik Set & Forget' : '✗ Hit cost merugikan'}
+        </div></div>
       </div>
       <div class="table-wrap max-h">
         <table>
           <thead><tr>
-            <th class="c">GW</th><th class="r">Poin</th><th class="r">Hit</th><th class="r">Trans</th>
-            <th class="r" style="color:var(--green)">Active Cum</th>
-            <th class="r" style="color:var(--blue)">S&F Cum</th>
-            <th class="r">Δ</th>
+            <th class="c">GW</th><th class="r">Poin GW</th><th class="r">Hit</th><th class="r">Net</th>
+            ${hasSF?'<th class="r" style="color:var(--blue)">S&F Poin</th><th class="r">Δ</th>':''}
+            <th class="r">Trans</th><th class="r">Bench</th>
+            <th class="r" style="color:var(--green)">Cum Active</th>
+            ${hasSF?'<th class="r" style="color:var(--blue)">Cum S&F</th>':''}
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -4456,6 +4505,65 @@ const UI = {
     this.exportCSV(data, 'League_Rekap');
   },
 
+  // ── WhatsApp Reminder ──
+  sendWhatsAppReminder() {
+    const bs = Store.bootstrap;
+    if (!bs) { alert('Data belum dimuat.'); return; }
+    const nextEv = bs.events.find(e => e.is_next) || bs.events.find(e => e.is_current);
+    if (!nextEv) return;
+
+    const deadline = new Date(nextEv.deadline_time);
+    const now = new Date();
+    const diff = deadline - now;
+    const d = Math.floor(diff/86400000);
+    const h = Math.floor((diff%86400000)/3600000);
+    const m = Math.floor((diff%3600000)/60000);
+    const timeLeft = diff <= 0 ? 'SUDAH LEWAT!' : d > 0 ? `${d} hari ${h} jam ${m} menit` : `${h} jam ${m} menit`;
+
+    // Top 3 captain picks
+    const capScore = p => ((p.scores?.form||0)*0.25+(p.scores?.xgi||0)*0.25+(p.scores?.ppg||0)*0.20+(p.scores?.fdr_short||0)*0.15+(p.scores?.ep_next||0)*0.10+(p.scores?.home||0)*0.05);
+    const capCandidates = Store.scoredPlayers
+      .filter(p => !p.isBlank && p.Position !== 'GK')
+      .sort((a,b) => capScore(b) - capScore(a))
+      .slice(0, 3);
+
+    // Top 3 differentials
+    const diffs = Store.scoredPlayers
+      .filter(p => p.TSB <= 10 && p.TSB > 0 && !p.isBlank)
+      .sort((a,b) => b.GWScore - a.GWScore)
+      .slice(0, 3);
+
+    // Top formation
+    const topForm = Store.formations?.length ? Store.formations.sort((a,b) => b.total - a.total)[0] : null;
+
+    let msg = `⚽ *FPL REMINDER — GW${nextEv.id}*\n`;
+    msg += `⏱ Deadline: ${timeLeft}\n\n`;
+
+    if (capCandidates.length) {
+      msg += `👑 *Captain Pick:*\n`;
+      capCandidates.forEach((p,i) => {
+        msg += `${i===0?'🥇':i===1?'🥈':'🥉'} ${p.Player} (${p.Team}) vs ${p.opponent} ${p.isHome?'(H)':'(A)'}\n`;
+      });
+      msg += '\n';
+    }
+
+    if (diffs.length) {
+      msg += `🔮 *Differentials (TSB<10%):*\n`;
+      diffs.forEach(p => { msg += `• ${p.Player} (${p.Team}) — Score ${p.GWScore.toFixed(1)}, TSB ${p.TSB}%\n`; });
+      msg += '\n';
+    }
+
+    if (topForm) {
+      msg += `📋 *Best Formation:* ${topForm.name} (Score ${topForm.total.toFixed(1)})\n\n`;
+    }
+
+    msg += `📊 Lihat detail: https://ayspunk.github.io/FPL/\n`;
+    msg += `_Credit: ays_`;
+
+    const encoded = encodeURIComponent(msg);
+    window.open(`https://wa.me/?text=${encoded}`, '_blank');
+  },
+
   buildLeagueSelect() {
     // No-op: league selector is now inline in League tab renderers
   },
@@ -4759,6 +4867,9 @@ const App = {
     // ── Step 5: My Squad (background) ──
     if (CFG.myTeamId) this.loadMySquad(gw);
 
+    // ── Step 7: Set & Forget data (background) ──
+    this.loadSetForget();
+
     // ── Step 6: Sheets pre-computed (background) ──
     const sheetsUrl = CFG.sheetsUrl || document.getElementById('sheets-url')?.value || '';
     if (sheetsUrl) this.loadSheets(sheetsUrl);
@@ -4950,6 +5061,15 @@ const App = {
 
     // Final re-render
     if (Nav.current === 'league') Nav.goTab('league');
+  },
+
+  async loadSetForget() {
+    const sf = await Fetch.githubJSON('set-forget.json');
+    if (sf?.sfData) {
+      Store.setForgetData = sf;
+      console.log(`[App] ✓ Set & Forget: ${sf.sfData.length} GWs, ${sf.gw1squad?.length||0} players`);
+      if (Nav.current==='other' && Store.subtab['other']==='setforget') Nav.goSubtab('other','setforget');
+    }
   },
 
   async loadMySquad(gw) {
