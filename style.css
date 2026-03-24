@@ -1249,19 +1249,21 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 .rec-candidates { padding: 0; }
 .rec-candidates table { font-size: 13px; }
 .verdict-good { color: var(--green); }
+.verdict-rec  { color: var(--gold); }
+.verdict-watch{ color: var(--blue); }
 .verdict-marg { color: var(--gold); }
-.verdict-keep { color: var(--text2); }
+.verdict-keep { color: var(--green); }
 .verdict-warn { color: var(--orange); }
 
 /* Urgency indicators */
 .rec-player-block.urg-high { border-left: 3px solid var(--red); }
-.rec-player-block.urg-rec  { border-left: 3px solid var(--blue); }
-.rec-player-block.urg-mid  { border-left: 3px solid var(--gold); }
+.rec-player-block.urg-rec  { border-left: 3px solid var(--gold); }
+.rec-player-block.urg-mid  { border-left: 3px solid var(--blue); }
 .rec-player-block.urg-low  { border-left: 3px solid var(--green3); }
 .rec-urgency { font-size: 12px; font-weight: 600; letter-spacing: 0.5px; white-space: nowrap; }
 .rec-urgency.urg-high { color: var(--red); }
-.rec-urgency.urg-rec  { color: var(--blue); }
-.rec-urgency.urg-mid  { color: var(--gold); }
+.rec-urgency.urg-rec  { color: var(--gold); }
+.rec-urgency.urg-mid  { color: var(--blue); }
 .rec-urgency.urg-low  { color: var(--green); }
 
 /* Status badges */
