@@ -150,6 +150,7 @@ const Store = {
   // Sheets (fallback / pre-computed)
   sheetsData:    null,
   setForgetData: null,  // Transfer impact data from transfer-impact.json
+  _ts: { outs: [], ins: [], ft: null },  // Transfer simulation state
 
   // State
   currentGW:     null,
@@ -1004,7 +1005,10 @@ const Process = {
         Position:   pos,
         Player:     el.web_name || '?',
         Team:       team.short_name || '?',
+        TeamCode:   team.code || 0,
         Price:      (el.now_cost||0)/10,
+        sellPrice:  (pick.selling_price||el.now_cost||0)/10,
+        purchasePrice: (pick.purchase_price||el.now_cost||0)/10,
         status:     el.status || 'a',
         multiplier: pick.multiplier,
         is_captain: pick.is_captain,
@@ -1014,7 +1018,9 @@ const Process = {
         xGI:        +el.expected_goal_involvements || 0,
         FDR_next:   scored?.FDR_next || null,
         ScoutScore: scored?.GWScore || 0,
+        GWScore:    scored?.GWScore || 0,
         livePoints: scored?.livePoints ?? null,
+        scores:     scored?.scores || {},
       };
     });
   },
@@ -1113,7 +1119,7 @@ const SUBTABS = {
   fdr:     [{k:'fdr-def',  l:'DEF Matrix'},       {k:'fdr-atk',  l:'ATK Matrix'},{k:'fdr-ovr',l:'OVR Matrix'},{k:'fdrinfo',l:'Team Strength'},{k:'season',l:'📅 Season Planner'}],
   epl:     [],
   league:  [{k:'rekap',    l:'Rekap'},             {k:'charts',   l:'Grafik'},   {k:'transfer',l:'Transfer & Chips'},{k:'h2h',l:'⚔ Head-to-Head'}],
-  other:   [{k:'mysquad',l:'My Squad'},{k:'myformation',l:'My Formation'},{k:'chiprec',l:'Chip Recommendation'},{k:'setforget',l:'📊 Transfer Impact'}],
+  other:   [{k:'mysquad',l:'My Squad'},{k:'myformation',l:'My Formation'},{k:'transfersim',l:'🔄 Transfer Sim'},{k:'chiprec',l:'Chip Recommendation'},{k:'setforget',l:'📊 Transfer Impact'}],
   settings:[],
 };
 
@@ -1229,7 +1235,7 @@ const Render = {
                  'fdr-ovr':()=>this.fdrMatrix('ovr'), fdrinfo:this.fdrInfo, season:this.seasonPlanner },
       epl:     { null:this.epl },
       league:  { rekap:this.leagueRekap, charts:this.leagueCharts, transfer:this.leagueTransfer, h2h:this.headToHead },
-      other:   { mysquad:this.otherSquad, myformation:this.myFormation, chiprec:this.otherChip, setforget:this.setAndForget },
+      other:   { mysquad:this.otherSquad, myformation:this.myFormation, transfersim:this.transferSim, chiprec:this.otherChip, setforget:this.setAndForget },
       settings:{ null:this.settings },
     };
     if (!Store.players.length && tab!=='settings') {
@@ -2485,13 +2491,14 @@ const Render = {
     </select>`;
 
     // Price filter
-    const priceFilter = `<div style="display:flex;align-items:center;gap:4px">
-      <span class="dim" style="font-size:10px">£</span>
-      <input type="number" class="weight-input" style="width:50px" value="${minPrice}" min="0" max="20" step="0.5"
-        onchange="Store._scoutMinPrice=+this.value;Nav.goSubtab('scout','sscoring')" title="Min price">
+    const priceFilter = `<div class="price-slider-wrap">
+      <span class="dim" style="font-size:10px">£${minPrice.toFixed(1)}</span>
+      <input type="range" class="fdr-slider" min="3" max="16" step="0.5" value="${minPrice}"
+        oninput="Store._scoutMinPrice=+this.value;document.getElementById('scout-minp').textContent='£'+this.value;Nav.goSubtab('scout','sscoring')">
       <span class="dim">–</span>
-      <input type="number" class="weight-input" style="width:50px" value="${maxPrice}" min="0" max="20" step="0.5"
-        onchange="Store._scoutMaxPrice=+this.value;Nav.goSubtab('scout','sscoring')" title="Max price">
+      <input type="range" class="fdr-slider" min="3" max="16" step="0.5" value="${maxPrice}"
+        oninput="Store._scoutMaxPrice=+this.value;document.getElementById('scout-maxp').textContent='£'+this.value;Nav.goSubtab('scout','sscoring')">
+      <span class="dim" style="font-size:10px" id="scout-maxp">£${maxPrice.toFixed(1)}</span>
     </div>`;
 
     // Apply filters
@@ -3748,6 +3755,161 @@ const Render = {
       </div>`;
   },
 
+  // ══════════════════════════════════════════════════════
+  // TRANSFER SIMULATION
+  // ══════════════════════════════════════════════════════
+  transferSim() {
+    const squad = Store.mySquadData;
+    if (!squad?.length) {
+      if (!CFG.myTeamId) return H.info('Masukkan FPL Team ID di Settings.');
+      return H.info('Skuad sedang dimuat…');
+    }
+
+    const ts = Store._ts;
+    const mi = Store.myManagerInfo;
+    const bank = mi?.last_deadline_bank ? mi.last_deadline_bank / 10 : 0;
+    const ft = ts.ft ?? (mi?.last_deadline_value ? 1 : 1); // Default 1 FT
+
+    // Selling value of selected outs
+    const outsValue = ts.outs.reduce((s,p) => s + p.sellPrice, 0);
+    // Cost of selected ins
+    const insValue = ts.ins.reduce((s,p) => s + p.Price, 0);
+    // Available budget
+    const budget = +(bank + outsValue - insValue).toFixed(1);
+
+    // Hit calculation
+    const numTransfers = ts.outs.length;
+    const hitCost = Math.max(0, (numTransfers - ft)) * 4;
+
+    // Build current squad with transfer markers
+    const posOrder = {GK:0,DEF:1,MID:2,FWD:3};
+    const sortedSquad = [...squad].sort((a,b) => posOrder[a.Position] - posOrder[b.Position]);
+    const outIds = new Set(ts.outs.map(p=>p.id));
+    const inIds = new Set(ts.ins.map(p=>p.id));
+
+    // Score delta
+    const oldScore = ts.outs.reduce((s,p) => s + (p.GWScore||0), 0);
+    const newScore = ts.ins.reduce((s,p) => s + (p.GWScore||0), 0);
+    const scoreDelta = +(newScore - oldScore).toFixed(2);
+
+    // Squad rows
+    const squadRows = sortedSquad.map(p => {
+      const isOut = outIds.has(p.id);
+      const sc = p.GWScore || 0;
+      return `<tr class="${isOut?'ts-out-row':''}">
+        <td>${H.posPill(p.Position)}</td>
+        <td style="font-weight:600${isOut?';text-decoration:line-through;opacity:.5':''}">${p.Player}</td>
+        <td>${H.teamTag(p.Team)}</td>
+        <td class="mono r ${H.scoreClass(sc)}">${sc.toFixed(1)}</td>
+        <td class="mono dim r">£${p.sellPrice.toFixed(1)}</td>
+        <td class="mono dim r" style="font-size:10px">£${p.Price.toFixed(1)}</td>
+        <td class="c">${isOut
+          ? `<button class="btn btn-sm" style="font-size:10px;padding:2px 6px;color:var(--green);border-color:var(--green)" onclick="UI.tsUndoOut(${p.id})">↩ Undo</button>`
+          : `<button class="btn btn-sm btn-secondary" style="font-size:10px;padding:2px 6px" onclick="UI.tsSelectOut(${p.id})">Sell</button>`
+        }</td>
+      </tr>`;
+    }).join('');
+
+    // Incoming transfers
+    const insRows = ts.ins.map(p => `<tr class="ts-in-row">
+      <td>${H.posPill(p.Position)}</td>
+      <td style="font-weight:600">${p.Player}</td>
+      <td>${H.teamTag(p.Team)}</td>
+      <td class="mono r ${H.scoreClass(p.GWScore)}">${(p.GWScore||0).toFixed(1)}</td>
+      <td class="mono dim r">£${p.Price.toFixed(1)}</td>
+      <td class="c"><button class="btn btn-sm" style="font-size:10px;padding:2px 6px;color:var(--red);border-color:var(--red)" onclick="UI.tsUndoIn(${p.id})">✕</button></td>
+    </tr>`).join('');
+
+    // Candidates panel — show when there are outs without matching ins
+    const outsWithoutIn = ts.outs.filter((_,i) => !ts.ins[i]);
+    let candidatesHtml = '';
+    if (outsWithoutIn.length > 0) {
+      const targetPos = outsWithoutIn[outsWithoutIn.length-1].Position;
+      const maxPT = CFG.maxPerTeam || 3;
+      // Count current team composition (excluding outs, including ins)
+      const teamCount = {};
+      squad.forEach(p => { if (!outIds.has(p.id)) teamCount[p.Team] = (teamCount[p.Team]||0)+1; });
+      ts.ins.forEach(p => { teamCount[p.Team] = (teamCount[p.Team]||0)+1; });
+
+      const candidates = Store.scoredPlayers
+        .filter(p => p.Position === targetPos)
+        .filter(p => p.Price <= budget + 0.01)
+        .filter(p => !squad.some(sq => sq.id === p.id) || outIds.has(p.id)) // not already in squad (unless being sold)
+        .filter(p => !inIds.has(p.id)) // not already selected as in
+        .filter(p => (teamCount[p.Team]||0) < maxPT) // max per team rule
+        .sort((a,b) => b.GWScore - a.GWScore)
+        .slice(0, 30);
+
+      const candRows = candidates.map(p => {
+        const sc = p.GWScore || 0;
+        const scored = Store.scoredPlayers.find(sp=>sp.id===p.id);
+        return `<tr class="ts-cand-row" onclick="UI.tsSelectIn(${p.id})" style="cursor:pointer">
+          <td>${H.posPill(p.Position)}</td>
+          <td style="font-weight:600">${p.Player}${p.doubt?'<span class="doubt-tag">⚠</span>':''}</td>
+          <td>${H.teamTag(p.Team)}</td>
+          <td class="mono r ${H.scoreClass(sc)}">${sc.toFixed(2)}</td>
+          <td class="mono dim r">${H.numFmt(p.FDR_next,1)}</td>
+          <td class="c">${p.isHome?'🏠':'✈'} <span class="dim" style="font-size:10px">${p.opponent||''}</span></td>
+          <td class="mono r">${H.numFmt(p.Form,1)}</td>
+          <td class="mono r">${H.numFmt(p.PPG,1)}</td>
+          <td class="mono r">${H.numFmt(p.xGI,2)}</td>
+          <td class="mono dim r">£${p.Price.toFixed(1)}</td>
+        </tr>`;
+      }).join('');
+
+      candidatesHtml = `
+        <div class="section-title" style="margin-top:16px">Kandidat ${targetPos} — Budget £${budget.toFixed(1)}</div>
+        <div class="table-wrap" style="max-height:350px;overflow-y:auto">
+          <table>
+            <thead><tr><th>Pos</th><th>Pemain</th><th>Tim</th><th class="r">Score</th><th class="r">FDR</th><th>Lawan</th><th class="r">Form</th><th class="r">PPG</th><th class="r">xGI</th><th class="r">£</th></tr></thead>
+            <tbody>${candRows||'<tr><td colspan="10" class="dim c">Tidak ada kandidat sesuai budget</td></tr>'}</tbody>
+          </table>
+        </div>`;
+    }
+
+    return `
+      <div class="section-title">🔄 Transfer Simulation</div>
+      ${H.info('Klik <b>Sell</b> pada pemain yang ingin dijual, lalu pilih pengganti dari tabel kandidat. Bisa multi-transfer.')}
+
+      <div class="stat-strip">
+        <div class="stat-box"><div class="stat-label">Bank</div><div class="stat-val" style="color:var(--text2)">£${bank.toFixed(1)}</div></div>
+        <div class="stat-box"><div class="stat-label">Budget</div><div class="stat-val ${budget<0?'s-lo':''}" style="font-size:20px">£${budget.toFixed(1)}</div></div>
+        <div class="stat-box"><div class="stat-label">Free Transfers</div>
+          <div class="stat-val"><input type="number" class="weight-input" style="width:40px;font-size:16px" value="${ft}" min="0" max="5"
+            onchange="Store._ts.ft=+this.value;Nav.goSubtab('other','transfersim')"></div></div>
+        <div class="stat-box"><div class="stat-label">Transfers</div><div class="stat-val">${numTransfers}</div></div>
+        <div class="stat-box"><div class="stat-label">Hit Cost</div><div class="stat-val ${hitCost>0?'s-lo':''}">${hitCost>0?'-'+hitCost:'0'}</div></div>
+        <div class="stat-box"><div class="stat-label">Score Δ</div><div class="stat-val ${scoreDelta>=0?'s-hi':'s-lo'}">${scoreDelta>=0?'+':''}${scoreDelta}</div></div>
+        <div class="stat-box"><button class="btn btn-sm btn-secondary" onclick="UI.tsReset()" style="margin-top:4px">↺ Reset</button></div>
+      </div>
+
+      <div class="two-col">
+        <div>
+          <div class="section-title">My Squad <span class="dim" style="font-size:10px">(sell price / current price)</span></div>
+          <div class="table-wrap" style="max-height:400px;overflow-y:auto">
+            <table>
+              <thead><tr><th>Pos</th><th>Pemain</th><th>Tim</th><th class="r">Score</th><th class="r">Sell £</th><th class="r">Now £</th><th></th></tr></thead>
+              <tbody>${squadRows}</tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          ${ts.ins.length ? `
+            <div class="section-title" style="color:var(--green)">Transfers In (${ts.ins.length})</div>
+            <div class="table-wrap" style="margin-bottom:12px">
+              <table>
+                <thead><tr><th>Pos</th><th>Pemain</th><th>Tim</th><th class="r">Score</th><th class="r">£</th><th></th></tr></thead>
+                <tbody>${insRows}</tbody>
+              </table>
+            </div>` : ''}
+          ${ts.outs.length ? `
+            <div class="section-title" style="color:var(--red)">Transfers Out (${ts.outs.length})</div>
+            <div style="margin-bottom:8px">${ts.outs.map(p=>`<span class="team-tag" style="margin-right:4px">❌ ${p.Player} (£${p.sellPrice.toFixed(1)})</span>`).join('')}</div>` : ''}
+        </div>
+      </div>
+      ${candidatesHtml}`;
+  },
+
   // ── Chip Recommendation ────────────────────────────────
   otherChip() {
     // Try sheets first
@@ -3838,8 +4000,10 @@ const Render = {
       const [mnA,mxA]=[Math.min(...strAtk),Math.max(...strAtk)];
       const nFDR=(v,mn,mx)=>mn===mx?3:+(1+(v-mn)/(mx-mn)*4).toFixed(2);
 
+      // Find best captain for THIS GW from ALL available players (user can transfer 1 in)
       let bestCap = null, bestCapFDR = 5, bestCapScore = 0;
-      squad.filter(p => p.squad_role !== 'Bench' && p.Position !== 'GK').forEach(p => {
+      const allOutfield = Store.scoredPlayers.filter(p => p.Position !== 'GK' && !p.isBlank);
+      allOutfield.forEach(p => {
         const teamId = bs.teams.find(t=>t.short_name===p.Team)?.id;
         if (!teamId) return;
         const fixes = gwFixes.filter(f=>f.team_h===teamId||f.team_a===teamId);
@@ -3849,11 +4013,11 @@ const Render = {
         const opp = teamMap[isHome?fix.team_a:fix.team_h];
         if (!opp) return;
         const fdr = nFDR(isHome?opp.strength_defence_away:opp.strength_defence_home,mnA,mxA);
-        const score = (p.ScoutScore||p.GWScore||0) + (isHome?1:0) + (fdr<2.5?2:0);
-        if (score > bestCapScore || (score === bestCapScore && fdr < bestCapFDR)) {
-          bestCap = { ...p, oppName: opp.short_name, isHome };
+        const capS = (p.GWScore||0) + (isHome?1.5:0) + (fdr<2.0?3:fdr<2.5?1.5:0) + (p.Form||0)*0.3;
+        if (capS > bestCapScore || (capS === bestCapScore && fdr < bestCapFDR)) {
+          bestCap = { Player:p.Player, Team:p.Team, Position:p.Position, oppName:opp.short_name, isHome, GWScore:p.GWScore, Form:p.Form };
           bestCapFDR = fdr;
-          bestCapScore = score;
+          bestCapScore = capS;
         }
       });
 
@@ -4739,6 +4903,35 @@ const UI = {
       Rank:e.rank, Team:e.entryName, Manager:e.playerName, GW_Pts:e.eventTotal, Total:e.total,
     }));
     this.exportCSV(data, 'League_Rekap');
+  },
+
+  // ── Transfer Simulation UI ──
+  tsSelectOut(id) {
+    const p = Store.mySquadData.find(p => p.id === id);
+    if (!p || Store._ts.outs.some(o => o.id === id)) return;
+    Store._ts.outs.push(p);
+    Nav.goSubtab('other', 'transfersim');
+  },
+  tsUndoOut(id) {
+    const idx = Store._ts.outs.findIndex(p => p.id === id);
+    if (idx >= 0) Store._ts.outs.splice(idx, 1);
+    // Also remove matching in if exists
+    if (Store._ts.ins.length > Store._ts.outs.length) Store._ts.ins.pop();
+    Nav.goSubtab('other', 'transfersim');
+  },
+  tsSelectIn(id) {
+    const p = Store.scoredPlayers.find(p => p.id === id);
+    if (!p || Store._ts.ins.some(i => i.id === id)) return;
+    Store._ts.ins.push(p);
+    Nav.goSubtab('other', 'transfersim');
+  },
+  tsUndoIn(id) {
+    Store._ts.ins = Store._ts.ins.filter(p => p.id !== id);
+    Nav.goSubtab('other', 'transfersim');
+  },
+  tsReset() {
+    Store._ts = { outs: [], ins: [], ft: Store._ts.ft };
+    Nav.goSubtab('other', 'transfersim');
   },
 
   // ── WhatsApp Reminder ──
