@@ -149,7 +149,7 @@ const Store = {
 
   // Sheets (fallback / pre-computed)
   sheetsData:    null,
-  setForgetData: null,  // GW1 squad tracking from set-forget.json
+  setForgetData: null,  // Transfer impact data from transfer-impact.json
 
   // State
   currentGW:     null,
@@ -2226,97 +2226,104 @@ const Render = {
     if (!myId) return H.info('Masukkan FPL Team ID di Settings terlebih dahulu.');
     const hist = Store.managerHistory[myId] || Store.managerHistory[String(myId)];
     const events = hist?.current || (Array.isArray(hist)?hist:[]);
-    if (!events.length) return H.info('Memerlukan data history. Pastikan Team ID benar dan data sudah dimuat.');
+    if (!events.length) return H.info('Memerlukan data history. Pastikan Team ID benar.');
 
-    const bs = Store.bootstrap;
-    const transfers = Store.managerTransfers[myId] || Store.managerTransfers[String(myId)] || [];
-    const playerMap = {};
-    if (bs?.elements) bs.elements.forEach(p => { playerMap[p.id] = p; });
+    const impactJson = Store.setForgetData;
+    const impactMap = {};
+    if (impactJson?.impactData) {
+      impactJson.impactData.forEach(d => { impactMap[d.gw] = d; });
+    }
+    const hasImpact = Object.keys(impactMap).length > 0;
 
-    // Load Set & Forget data (GW1 squad tracking from GitHub Actions)
-    const sfJson = Store.setForgetData;
-    const sfMap = {};
-    if (sfJson?.sfData) sfJson.sfData.forEach(d => { sfMap[d.gw] = d.sfPts; });
-    const hasSF = Object.keys(sfMap).length > 0;
-
-    // Build per-GW comparison
-    let cumActual=0, cumSF=0, totalHitCost=0, totalTrans=0;
+    // Build per-GW data
+    let cumActual=0, cumNoTransfer=0, totalHitCost=0, totalTrans=0, totalImpact=0;
     const gwData = events.sort((a,b)=>Number(a.event)-Number(b.event)).map(e => {
       const gwNum = Number(e.event);
       const gwPts = Number(e.points) || 0;
       const hitCost = Number(e.event_transfers_cost) || 0;
-      const netPts = gwPts - hitCost;
       const nTrans = Number(e.event_transfers) || 0;
       const benchPts = Number(e.points_on_bench) || 0;
-      const sfPts = sfMap[gwNum] ?? null;
+      const netPts = gwPts - hitCost;
+
+      // Transfer impact: points gained by transferring
+      const imp = impactMap[gwNum];
+      const gwImpact = imp?.impact ?? null;  // null = no data, 0 = no transfer
+      const hasTrans = imp?.transfers?.length > 0;
+      
+      // No-transfer points: what you'd get if you kept old players
+      // = actual GW points - impact of new players + 0 hit cost
+      const noTransPts = hasImpact && gwImpact != null
+        ? gwPts - gwImpact  // Points with old players instead of new
+        : gwPts;            // No transfer data → assume same
 
       totalHitCost += hitCost;
       totalTrans += nTrans;
+      if (gwImpact != null) totalImpact += gwImpact;
       cumActual += netPts;
-      if (sfPts != null) cumSF += sfPts;
+      cumNoTransfer += noTransPts;
 
-      return { gw:gwNum, gwPts, hitCost, netPts, nTrans, benchPts, sfPts, cumActual, cumSF };
+      return {
+        gw: gwNum, gwPts, hitCost, netPts, nTrans, benchPts,
+        gwImpact, noTransPts, hasTrans,
+        details: imp?.transfers || [],
+        cumActual, cumNoTransfer,
+      };
     });
 
     const last = gwData[gwData.length-1] || {};
-    const diff = hasSF ? last.cumActual - last.cumSF : -totalHitCost;
-    const isWinning = diff >= 0;
+    const netBenefit = totalImpact - totalHitCost;  // Net value of all transfers
+    const isPositive = netBenefit >= 0;
 
-    // GW1 squad info
-    let gw1Info = '';
-    if (sfJson?.gw1squad?.length) {
-      const gw1names = sfJson.gw1squad
-        .filter(p => p.multiplier > 0)
-        .map(p => {
-          const pl = playerMap[p.element];
-          return pl ? `${pl.web_name}${p.is_captain?' (C)':p.is_vice_captain?' (V)':''}` : `#${p.element}`;
-        });
-      gw1Info = `<div class="info-box" style="margin-bottom:12px"><b>Skuad GW1:</b> ${gw1names.join(', ')}</div>`;
-    }
-
+    // Transfer detail rows (expandable)
     const rows = gwData.map(d => {
       const hasHit = d.hitCost > 0;
-      const gwDiff = d.sfPts != null ? d.netPts - d.sfPts : null;
-      const diffCls = gwDiff != null ? (gwDiff > 0 ? 's-hi' : gwDiff < 0 ? 's-lo' : '') : 'dim';
+      const impCls = d.gwImpact > 0 ? 's-hi' : d.gwImpact < 0 ? 's-lo' : 'dim';
+      const detailHtml = d.details.length ? d.details.map(t =>
+        `<div style="font-size:10px;color:var(--text3);padding:0 12px">` +
+        `❌ ${t.playerOut} (${t.outPts}pts) → ✅ ${t.playerIn} (${t.inPts}pts) = ` +
+        `<span style="color:${t.impact>=0?'var(--green)':'var(--red)'}">` +
+        `${t.impact>=0?'+':''}${t.impact}</span></div>`
+      ).join('') : '';
+
       return `<tr class="${hasHit?'row-cap':''}">
         <td class="c dim">GW${d.gw}</td>
         <td class="mono r">${d.gwPts}</td>
         <td class="mono r ${hasHit?'s-lo':'dim'}">${hasHit?'-'+d.hitCost:''}</td>
         <td class="mono r" style="font-weight:600">${d.netPts}</td>
-        ${hasSF?`<td class="mono r" style="color:var(--blue)">${d.sfPts??'–'}</td>`:''}
-        ${hasSF?`<td class="mono r ${diffCls}">${gwDiff!=null?(gwDiff>0?'+':'')+gwDiff:'–'}</td>`:''}
+        ${hasImpact?`<td class="mono r" style="color:var(--blue)">${d.hasTrans?d.noTransPts:'–'}</td>`:''}
+        ${hasImpact?`<td class="mono r ${impCls}">${d.gwImpact!=null&&d.hasTrans?(d.gwImpact>0?'+':'')+d.gwImpact:'–'}</td>`:''}
         <td class="mono r dim">${d.nTrans||'–'}</td>
         <td class="mono r dim">${d.benchPts||'–'}</td>
         <td class="mono r" style="color:var(--green)">${d.cumActual}</td>
-        ${hasSF?`<td class="mono r" style="color:var(--blue)">${d.cumSF}</td>`:''}
-      </tr>`;
+      </tr>${detailHtml?'<tr><td colspan="9" style="padding:0;border:none">'+detailHtml+'</td></tr>':''}`;
     }).join('');
 
     return `
-      <div class="section-title">📊 Set & Forget vs Active Manager</div>
-      ${hasSF
-        ? H.info('Perbandingan poin aktual Anda vs poin jika tetap menggunakan <b>skuad GW1 tanpa transfer</b> sepanjang musim. Data dihitung dari poin riil pemain GW1 per minggu.')
-        : H.info('Data Set & Forget (skuad GW1) belum tersedia. <b>Jalankan GitHub Actions</b> untuk generate <code>set-forget.json</code>. Saat ini menampilkan Transfer Hit Analysis saja.')
+      <div class="section-title">📊 Transfer Impact Analysis</div>
+      ${hasImpact
+        ? H.info(`Membandingkan poin <b>pemain yang di-transfer IN</b> vs <b>pemain yang di-transfer OUT</b> di setiap GW.
+          <br>Impact positif = pemain baru mencetak lebih banyak poin. Negatif = pemain lama lebih baik.
+          <br><b>No-Trans Pts</b> = poin jika Anda tidak melakukan transfer di GW tersebut (tetap pakai pemain lama).`)
+        : H.info(`Data transfer impact belum tersedia. <b>Jalankan GitHub Actions</b> untuk generate <code>transfer-impact.json</code>.
+          <br>Saat ini hanya menampilkan hit cost analysis.`)
       }
-      ${gw1Info}
       <div class="stat-strip">
-        <div class="stat-box"><div class="stat-label">Active Total</div><div class="stat-val">${last.cumActual||0}</div></div>
-        ${hasSF?`<div class="stat-box"><div class="stat-label">Set & Forget</div><div class="stat-val" style="color:var(--blue)">${last.cumSF||0}</div></div>`:''}
-        <div class="stat-box"><div class="stat-label">Selisih</div><div class="stat-val ${isWinning?'':'s-lo'}">${diff>0?'+':''}${diff}</div></div>
-        <div class="stat-box"><div class="stat-label">Total Hit</div><div class="stat-val s-lo">${totalHitCost>0?'-'+totalHitCost:'0'}</div></div>
-        <div class="stat-box"><div class="stat-label">Total Trans</div><div class="stat-val dim">${totalTrans}</div></div>
-        <div class="stat-box"><div class="stat-label">Verdict</div><div class="stat-val" style="font-size:12px;color:${isWinning?'var(--green)':'var(--red)'}">
-          ${isWinning ? '✓ Transfer menguntungkan' : hasSF ? '✗ Lebih baik Set & Forget' : '✗ Hit cost merugikan'}
-        </div></div>
+        <div class="stat-box"><div class="stat-label">Total Aktual (Net)</div><div class="stat-val">${last.cumActual||0}</div></div>
+        <div class="stat-box"><div class="stat-label">Total Hit Cost</div><div class="stat-val s-lo">${totalHitCost>0?'-'+totalHitCost:'0'}</div></div>
+        ${hasImpact?`<div class="stat-box"><div class="stat-label">Transfer Impact</div><div class="stat-val ${totalImpact>=0?'':'s-lo'}">${totalImpact>=0?'+':''}${totalImpact} pts</div></div>`:''}
+        ${hasImpact?`<div class="stat-box"><div class="stat-label">Net Benefit</div><div class="stat-val ${isPositive?'':'s-lo'}">${netBenefit>=0?'+':''}${netBenefit} pts</div></div>`:''}
+        <div class="stat-box"><div class="stat-label">Total Transfer</div><div class="stat-val dim">${totalTrans}</div></div>
+        ${hasImpact?`<div class="stat-box"><div class="stat-label">Verdict</div><div class="stat-val" style="font-size:12px;color:${isPositive?'var(--green)':'var(--red)'}">
+          ${isPositive ? '✓ Transfer menguntungkan' : '✗ Transfer merugikan'} (${netBenefit>=0?'+':''}${netBenefit})
+        </div></div>`:''}
       </div>
       <div class="table-wrap max-h">
         <table>
           <thead><tr>
             <th class="c">GW</th><th class="r">Poin GW</th><th class="r">Hit</th><th class="r">Net</th>
-            ${hasSF?'<th class="r" style="color:var(--blue)">S&F Poin</th><th class="r">Δ</th>':''}
+            ${hasImpact?'<th class="r" style="color:var(--blue)" title="Poin jika tetap pakai pemain lama">No-Trans</th><th class="r" title="Selisih poin pemain baru vs lama">Impact</th>':''}
             <th class="r">Trans</th><th class="r">Bench</th>
-            <th class="r" style="color:var(--green)">Cum Active</th>
-            ${hasSF?'<th class="r" style="color:var(--blue)">Cum S&F</th>':''}
+            <th class="r" style="color:var(--green)">Cum Net</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -2443,13 +2450,63 @@ const Render = {
   scoutScoring() {
     const sd = Store.sheetsData?.scoutScoring || [];
     const pl = sd.length ? sd : Store.scoredPlayers.map(p=>({...p, ScoutScore:p.GWScore}));
+
+    // Filter states
+    const posF = Store.posFilter || 'ALL';
+    const teamF = Store._scoutTeam || 'ALL';
+    const sortBy = Store._scoutSortBy || 'ScoutScore';
+    const maxPrice = Store._scoutMaxPrice || 20;
+    const minPrice = Store._scoutMinPrice || 0;
+    const searchQ = Store.searchQuery || '';
+
+    // Position filter
     const fBtns = ['ALL','GK','DEF','MID','FWD'].map(p=>
-      `<button class="filter-btn ${Store.posFilter===p?'active':''}"
+      `<button class="filter-btn ${posF===p?'active':''}"
                onclick="Store.posFilter='${p}';Nav.goSubtab('scout','sscoring')">${p}</button>`
     ).join('');
-    const sorted = [...pl]
-      .filter(p=>Store.posFilter==='ALL'||p.Position===Store.posFilter)
-      .sort((a,b)=>(b.ScoutScore||0)-(a.ScoutScore||0));
+
+    // Team filter
+    const teams = [...new Set(pl.map(p=>p.Team||p.Team2||'?'))].filter(t=>t!=='?').sort();
+    const teamSelect = `<select class="header-select" style="max-width:100px"
+      onchange="Store._scoutTeam=this.value;Nav.goSubtab('scout','sscoring')">
+      <option value="ALL" ${teamF==='ALL'?'selected':''}>All Teams</option>
+      ${teams.map(t=>`<option value="${t}" ${teamF===t?'selected':''}>${t}</option>`).join('')}
+    </select>`;
+
+    // Sort by criteria
+    const sortOptions = [
+      {k:'ScoutScore',l:'Scout Score'},{k:'GWScore',l:'GW Score'},{k:'PPG',l:'PPG'},
+      {k:'Form',l:'Form'},{k:'xGI',l:'xGI'},{k:'ICT',l:'ICT'},{k:'FDR_next',l:'FDR (low first)'},
+      {k:'Price',l:'Price'},{k:'TSB',l:'TSB%'},{k:'EP',l:'EP'},
+    ];
+    const sortSelect = `<select class="header-select" style="max-width:120px"
+      onchange="Store._scoutSortBy=this.value;Nav.goSubtab('scout','sscoring')">
+      ${sortOptions.map(o=>`<option value="${o.k}" ${sortBy===o.k?'selected':''}>${o.l}</option>`).join('')}
+    </select>`;
+
+    // Price filter
+    const priceFilter = `<div style="display:flex;align-items:center;gap:4px">
+      <span class="dim" style="font-size:10px">£</span>
+      <input type="number" class="weight-input" style="width:50px" value="${minPrice}" min="0" max="20" step="0.5"
+        onchange="Store._scoutMinPrice=+this.value;Nav.goSubtab('scout','sscoring')" title="Min price">
+      <span class="dim">–</span>
+      <input type="number" class="weight-input" style="width:50px" value="${maxPrice}" min="0" max="20" step="0.5"
+        onchange="Store._scoutMaxPrice=+this.value;Nav.goSubtab('scout','sscoring')" title="Max price">
+    </div>`;
+
+    // Apply filters
+    let sorted = [...pl]
+      .filter(p => posF==='ALL' || p.Position===posF)
+      .filter(p => teamF==='ALL' || (p.Team||p.Team2)===teamF)
+      .filter(p => (p.Price||0) >= minPrice && (p.Price||0) <= maxPrice)
+      .filter(p => !searchQ || (p.Player||'').toLowerCase().includes(searchQ.toLowerCase()));
+
+    // Sort
+    if (sortBy === 'FDR_next') {
+      sorted.sort((a,b) => (a.FDR_next||a['FDR Next']||5) - (b.FDR_next||b['FDR Next']||5));
+    } else {
+      sorted.sort((a,b) => (b[sortBy]||0) - (a[sortBy]||0));
+    }
 
     const rows = sorted.map((p,i)=>{
       const sc=p.ScoutScore||0;
@@ -2466,14 +2523,21 @@ const Render = {
         <td class="mono r">${H.numFmt(p.PPG,1)}</td>
         <td class="mono r">${H.numFmt(p.xGI,2)}</td>
         <td class="mono r">${H.numFmt(p.ICT,1)}</td>
+        <td class="mono dim r">${H.pct(p.TSB)}</td>
         <td class="mono dim r">£${H.numFmt(p.Price,1)}</td>
       </tr>`;
     }).join('');
 
     return `
-      <div class="filters">${fBtns}
-        <input class="search-input" type="text" placeholder="Cari…"
+      <div class="filters">
+        ${fBtns}
+        ${teamSelect}
+        ${sortSelect}
+        ${priceFilter}
+        <input class="search-input" type="text" placeholder="Cari…" value="${searchQ}"
                oninput="Store.searchQuery=this.value;Nav.goSubtab('scout','sscoring')">
+        <span class="dim" style="font-size:12px;margin-left:auto">${sorted.length} pemain</span>
+        <button class="btn btn-sm btn-secondary" onclick="UI.exportScoutScoring()" title="Export CSV">📥</button>
       </div>
       <div class="table-wrap max-h">
         <table>
@@ -2481,13 +2545,12 @@ const Render = {
             <th>#</th><th>Pos</th><th>Pemain</th><th>Tim</th>
             <th class="r">Scout Score</th><th class="r">FDR</th><th class="c">H/A</th>
             <th class="r">Form</th><th class="r">PPG</th><th class="r">xGI</th>
-            <th class="r">ICT</th><th class="r">£</th>
+            <th class="r">ICT</th><th class="r">TSB%</th><th class="r">£</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;
   },
-
   // ── Scout Recommendation ───────────────────────────────
   scoutRec() {
     // Try sheets pre-computed first
@@ -2823,8 +2886,17 @@ const Render = {
         }).filter(Boolean);
       });
 
-      return {team:t.short_name, avg, fixes, fixtures:upcoming.filter(f=>f.team_h===t.id||f.team_a===t.id).length};
-    }).sort((a,b)=>a.avg-b.avg);
+      return {team:t.short_name, teamId:t.id, avg, fixes, fixtures:upcoming.filter(f=>f.team_h===t.id||f.team_a===t.id).length};
+    });
+
+    // Sort by EPL table position (best team on top)
+    const eplTable = Process.eplFromFixtures ? Process.eplFromFixtures(bs, fix) : [];
+    const eplPos = {};
+    eplTable.forEach((t,i) => { eplPos[t.short||t.short_name] = i; });
+    rows.sort((a,b) => {
+      const pa = eplPos[a.team] ?? 99, pb = eplPos[b.team] ?? 99;
+      return pa - pb;
+    });
 
     const gwLabels = gwRange.map(g=>`GW${g}`);
     return this._renderFDRTableFlat(rows, gwLabels, type.toUpperCase());
@@ -3751,14 +3823,42 @@ const Render = {
       gwFixes.forEach(f => { teamCounts[f.team_h]=(teamCounts[f.team_h]||0)+1; teamCounts[f.team_a]=(teamCounts[f.team_a]||0)+1; });
       const dgwTeams = Object.entries(teamCounts).filter(([_,c])=>c>1).length;
       const isHalf = gwNum <= midSeason ? 'H1' : 'H2';
-      // Count how many of MY squad have blanks this GW
       const myBlanks = squad.filter(p => {
         const teamId = Store.bootstrap?.teams?.find(t=>t.short_name===p.Team)?.id;
         return teamId && !teamCounts[teamId];
       }).length;
-      // Best captain candidate FDR
-      const capFDR = bestPlayer?.FDR_next || 3;
-      return { gw:gwNum, matches:gwFixes.length, dgwTeams, isHalf, myBlanks, capFDR };
+
+      // Find best captain candidate for THIS specific GW
+      const bs = Store.bootstrap;
+      const teamMap = {};
+      bs.teams.forEach(t => { teamMap[t.id] = t; });
+      const strDef = bs.teams.flatMap(t=>[t.strength_defence_home,t.strength_defence_away]);
+      const strAtk = bs.teams.flatMap(t=>[t.strength_attack_home,t.strength_attack_away]);
+      const [mnD,mxD]=[Math.min(...strDef),Math.max(...strDef)];
+      const [mnA,mxA]=[Math.min(...strAtk),Math.max(...strAtk)];
+      const nFDR=(v,mn,mx)=>mn===mx?3:+(1+(v-mn)/(mx-mn)*4).toFixed(2);
+
+      let bestCap = null, bestCapFDR = 5, bestCapScore = 0;
+      squad.filter(p => p.squad_role !== 'Bench' && p.Position !== 'GK').forEach(p => {
+        const teamId = bs.teams.find(t=>t.short_name===p.Team)?.id;
+        if (!teamId) return;
+        const fixes = gwFixes.filter(f=>f.team_h===teamId||f.team_a===teamId);
+        if (!fixes.length) return;
+        const fix = fixes[0];
+        const isHome = fix.team_h === teamId;
+        const opp = teamMap[isHome?fix.team_a:fix.team_h];
+        if (!opp) return;
+        const fdr = nFDR(isHome?opp.strength_defence_away:opp.strength_defence_home,mnA,mxA);
+        const score = (p.ScoutScore||p.GWScore||0) + (isHome?1:0) + (fdr<2.5?2:0);
+        if (score > bestCapScore || (score === bestCapScore && fdr < bestCapFDR)) {
+          bestCap = { ...p, oppName: opp.short_name, isHome };
+          bestCapFDR = fdr;
+          bestCapScore = score;
+        }
+      });
+
+      return { gw:gwNum, matches:gwFixes.length, dgwTeams, isHalf, myBlanks,
+               bestCap, bestCapFDR, bestCapScore };
     });
 
     // Score each chip per GW (raw scores)
@@ -3780,9 +3880,12 @@ const Render = {
           if (ga.myBlanks === 0) score += 2;
         }
         if (chip.key === '3xc') {
-          if (ga.dgwTeams >= 2) score += 4;
-          if (bestPlayer && (bestPlayer.ScoutScore||bestPlayer.GWScore||0) >= 6) score += 3;
-          if (ga.capFDR < 2.5) score += 2;
+          if (ga.dgwTeams >= 2) score += 3;
+          if (ga.bestCap && ga.bestCapFDR < 2.0) score += 4;
+          else if (ga.bestCap && ga.bestCapFDR < 2.5) score += 2;
+          if (ga.bestCap?.isHome) score += 1;
+          if (ga.bestCapScore >= 8) score += 3;
+          else if (ga.bestCapScore >= 6) score += 2;
         }
         if (chip.key === 'wildcard') {
           if (lowScorers >= 4) score += 5;
@@ -3833,7 +3936,7 @@ const Render = {
       if (assignedChip) {
         if (assignedChip.key === 'freehit') reason = `${ga.matches} match (${ga.myBlanks} pemain blank)`;
         else if (assignedChip.key === 'bboost') reason = `${ga.dgwTeams} DGW, bench avg ${benchAvg}`;
-        else if (assignedChip.key === '3xc') reason = `Captain: ${bestPlayer?.Player||'?'} (FDR ${ga.capFDR.toFixed(1)})`;
+        else if (assignedChip.key === '3xc') reason = `Captain: ${ga.bestCap?.Player||'?'} (${ga.bestCap?.Team||''}) vs ${ga.bestCap?.oppName||'?'} ${ga.bestCap?.isHome?'(H)':'(A)'} · FDR ${ga.bestCapFDR.toFixed(1)}`;
         else if (assignedChip.key === 'wildcard') reason = `${lowScorers} pemain skor rendah — restruktur tim`;
       }
 
@@ -4621,6 +4724,15 @@ const UI = {
     this.exportCSV(data, 'GW_Scoring');
   },
 
+  exportScoutScoring() {
+    const data = Store.scoredPlayers.map(p => ({
+      Player:p.Player, Team:p.Team, Position:p.Position, Price:p.Price,
+      ScoutScore:p.ScoutScore||p.GWScore, FDR:p.FDR_next, Opponent:p.opponent,
+      Home:p.isHome?'H':'A', Form:p.Form, PPG:p.PPG, xGI:p.xGI, ICT:p.ICT, TSB:p.TSB,
+    }));
+    this.exportCSV(data, 'Scout_Scoring');
+  },
+
   exportLeagueRekap() {
     const entries = Store.leagueManagers || [];
     const data = entries.map(e => ({
@@ -5246,10 +5358,10 @@ const App = {
   },
 
   async loadSetForget() {
-    const sf = await Fetch.githubJSON('set-forget.json');
-    if (sf?.sfData) {
+    const sf = await Fetch.githubJSON('transfer-impact.json');
+    if (sf?.impactData) {
       Store.setForgetData = sf;
-      console.log(`[App] ✓ Set & Forget: ${sf.sfData.length} GWs, ${sf.gw1squad?.length||0} players`);
+      console.log(`[App] ✓ Transfer Impact: ${sf.impactData.length} GWs, net=${sf.totalImpact}`);
       if (Nav.current==='other' && Store.subtab['other']==='setforget') Nav.goSubtab('other','setforget');
     }
   },
