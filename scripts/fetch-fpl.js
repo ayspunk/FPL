@@ -142,46 +142,66 @@ async function main() {
     } catch(e) { log(`⚠ manager info: ${e.message}`); }
 
     // ═══ SET & FORGET — GW1 squad tracking ═══
+    // ═══ TRANSFER IMPACT — per-GW comparison of transferred players ═══
     try {
-      log('▸ Fetching GW1 picks for Set & Forget…');
-      const gw1picks = await fetchJSON(`${CONFIG.FPL_BASE}/entry/${CONFIG.MY_ENTRY_ID}/event/1/picks/`);
-      if (gw1picks?.picks) {
-        const gw1squad = gw1picks.picks; // [{element, position, multiplier, is_captain, ...}]
-        const gw1playerIds = gw1squad.map(p => p.element);
-
-        // Fetch element-summary for each GW1 player (gives per-GW points history)
-        log(`▸ Fetching history for ${gw1playerIds.length} GW1 players…`);
-        const playerHistories = {};
-        for (const pid of gw1playerIds) {
+      log('▸ Fetching transfers for impact analysis…');
+      const transfers = await fetchJSON(`${CONFIG.FPL_BASE}/entry/${CONFIG.MY_ENTRY_ID}/transfers/`);
+      
+      if (transfers?.length) {
+        // Collect all unique player IDs involved in transfers
+        const playerIds = new Set();
+        transfers.forEach(t => { playerIds.add(t.element_in); playerIds.add(t.element_out); });
+        
+        log(`▸ Fetching element-summary for ${playerIds.size} transferred players…`);
+        const playerGWPts = {}; // {playerId: {gwNum: points}}
+        
+        for (const pid of playerIds) {
           await delay(CONFIG.DELAY_MS);
           try {
             const summary = await fetchJSON(`${CONFIG.FPL_BASE}/element-summary/${pid}/`);
             if (summary?.history) {
-              playerHistories[pid] = summary.history; // [{round, total_points, minutes, ...}]
+              playerGWPts[pid] = {};
+              summary.history.forEach(h => { playerGWPts[pid][h.round] = h.total_points || 0; });
             }
           } catch(e) { log(`⚠ element-summary/${pid}: ${e.message}`); }
         }
-
-        // Build per-GW Set & Forget points
+        
+        // Build per-GW transfer impact
         const finishedGWs = bootstrap.events.filter(e => e.finished).map(e => e.id).sort((a,b)=>a-b);
-        const sfData = finishedGWs.map(gwNum => {
-          let sfPts = 0;
-          gw1squad.forEach(pick => {
-            const hist = playerHistories[pick.element];
-            if (!hist) return;
-            const gwEntry = hist.find(h => h.round === gwNum);
-            if (!gwEntry) return;
-            // Apply original multiplier (captain=2, bench=0, playing=1)
-            sfPts += (gwEntry.total_points || 0) * pick.multiplier;
+        
+        // Player name map
+        const nameMap = {};
+        bootstrap.elements.forEach(p => { nameMap[p.id] = p.web_name; });
+        
+        const impactData = finishedGWs.map(gwNum => {
+          const gwTransfers = transfers.filter(t => t.event === gwNum);
+          if (!gwTransfers.length) return { gw: gwNum, impact: 0, transfers: [] };
+          
+          let totalImpact = 0;
+          const details = gwTransfers.map(t => {
+            const inPts  = playerGWPts[t.element_in]?.[gwNum] ?? 0;
+            const outPts = playerGWPts[t.element_out]?.[gwNum] ?? 0;
+            const impact = inPts - outPts;
+            totalImpact += impact;
+            return {
+              playerIn: nameMap[t.element_in] || `#${t.element_in}`,
+              playerOut: nameMap[t.element_out] || `#${t.element_out}`,
+              inId: t.element_in, outId: t.element_out,
+              inPts, outPts, impact,
+            };
           });
-          return { gw: gwNum, sfPts };
+          
+          return { gw: gwNum, impact: totalImpact, transfers: details };
         });
-
-        const sfResult = { gw1squad, sfData, generated: new Date().toISOString() };
-        saveJSON('set-forget.json', sfResult);
-        log(`✅ Set & Forget: ${sfData.length} GWs tracked, ${gw1playerIds.length} players`);
+        
+        const totalImpact = impactData.reduce((s,d) => s + d.impact, 0);
+        const result = { impactData, totalImpact, generated: new Date().toISOString() };
+        saveJSON('transfer-impact.json', result);
+        log(`✅ Transfer Impact: ${impactData.filter(d=>d.transfers.length).length} GWs with transfers, net impact: ${totalImpact>0?'+':''}${totalImpact}`);
+      } else {
+        log('⚠ No transfers found');
       }
-    } catch(e) { log(`⚠ Set & Forget: ${e.message}`); }
+    } catch(e) { log(`⚠ Transfer Impact: ${e.message}`); }
 
     // ═══ SAVE ALL ═══
     saveJSON('all.json', result);
