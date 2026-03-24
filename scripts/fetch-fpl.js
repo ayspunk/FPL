@@ -141,6 +141,48 @@ async function main() {
       log('✅ my manager info');
     } catch(e) { log(`⚠ manager info: ${e.message}`); }
 
+    // ═══ SET & FORGET — GW1 squad tracking ═══
+    try {
+      log('▸ Fetching GW1 picks for Set & Forget…');
+      const gw1picks = await fetchJSON(`${BASE}/entry/${CONFIG.MY_ENTRY_ID}/event/1/picks/`);
+      if (gw1picks?.picks) {
+        const gw1squad = gw1picks.picks; // [{element, position, multiplier, is_captain, ...}]
+        const gw1playerIds = gw1squad.map(p => p.element);
+
+        // Fetch element-summary for each GW1 player (gives per-GW points history)
+        log(`▸ Fetching history for ${gw1playerIds.length} GW1 players…`);
+        const playerHistories = {};
+        for (const pid of gw1playerIds) {
+          await delay(CONFIG.DELAY_MS);
+          try {
+            const summary = await fetchJSON(`${BASE}/element-summary/${pid}/`);
+            if (summary?.history) {
+              playerHistories[pid] = summary.history; // [{round, total_points, minutes, ...}]
+            }
+          } catch(e) { log(`⚠ element-summary/${pid}: ${e.message}`); }
+        }
+
+        // Build per-GW Set & Forget points
+        const finishedGWs = bootstrap.events.filter(e => e.finished).map(e => e.id).sort((a,b)=>a-b);
+        const sfData = finishedGWs.map(gwNum => {
+          let sfPts = 0;
+          gw1squad.forEach(pick => {
+            const hist = playerHistories[pick.element];
+            if (!hist) return;
+            const gwEntry = hist.find(h => h.round === gwNum);
+            if (!gwEntry) return;
+            // Apply original multiplier (captain=2, bench=0, playing=1)
+            sfPts += (gwEntry.total_points || 0) * pick.multiplier;
+          });
+          return { gw: gwNum, sfPts };
+        });
+
+        const sfResult = { gw1squad, sfData, generated: new Date().toISOString() };
+        saveJSON('set-forget.json', sfResult);
+        log(`✅ Set & Forget: ${sfData.length} GWs tracked, ${gw1playerIds.length} players`);
+      }
+    } catch(e) { log(`⚠ Set & Forget: ${e.message}`); }
+
     // ═══ SAVE ALL ═══
     saveJSON('all.json', result);
     log(`■ SELESAI — ${players.length} pemain, GW${gw}`);
