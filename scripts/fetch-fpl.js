@@ -144,7 +144,7 @@ async function main() {
     // ═══ SET & FORGET — GW1 squad tracking ═══
     try {
       log('▸ Fetching GW1 picks for Set & Forget…');
-      const gw1picks = await fetchJSON(`${BASE}/entry/${CONFIG.MY_ENTRY_ID}/event/1/picks/`);
+      const gw1picks = await fetchJSON(`${CONFIG.FPL_BASE}/entry/${CONFIG.MY_ENTRY_ID}/event/1/picks/`);
       if (gw1picks?.picks) {
         const gw1squad = gw1picks.picks; // [{element, position, multiplier, is_captain, ...}]
         const gw1playerIds = gw1squad.map(p => p.element);
@@ -155,7 +155,7 @@ async function main() {
         for (const pid of gw1playerIds) {
           await delay(CONFIG.DELAY_MS);
           try {
-            const summary = await fetchJSON(`${BASE}/element-summary/${pid}/`);
+            const summary = await fetchJSON(`${CONFIG.FPL_BASE}/element-summary/${pid}/`);
             if (summary?.history) {
               playerHistories[pid] = summary.history; // [{round, total_points, minutes, ...}]
             }
