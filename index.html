@@ -21,6 +21,7 @@
     </select>
     <div class="badge badge-src" id="src-badge">–</div>
     <button class="btn btn-sm btn-theme" id="theme-btn" onclick="UI.cycleTheme()" title="Ganti tema">🌙</button>
+    <button class="btn btn-sm btn-wa" onclick="UI.sendWhatsAppReminder()" title="Kirim reminder ke WhatsApp">💬</button>
     <button class="btn btn-sm btn-refresh" onclick="App.refresh()">↻ Refresh</button>
   </div>
 </header>
@@ -46,6 +47,12 @@
   <div id="panel-other"   class="panel"><div class="panel-inner" id="content-other"></div></div>
   <div id="panel-settings" class="panel"><div class="panel-inner" id="content-settings"></div></div>
 </main>
+
+<footer id="app-footer">
+  <span>⚽ FPL Dashboard</span>
+  <span>Credit: <b>ays</b></span>
+  <span class="dim">Powered by FPL API · Data © Fantasy Premier League</span>
+</footer>
 
 <div id="tooltip" class="tooltip"></div>
 
