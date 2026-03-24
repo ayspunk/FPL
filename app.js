@@ -2681,17 +2681,17 @@ const Render = {
           return { ...c, delta, verdict, vcls, affordable, priceDiff, fixHtml };
         });
 
-      // Determine urgency
+      // Determine urgency — 4 levels
       const bestDelta = candidates[0]?.delta || 0;
-      let urgency, urgCls;
-      if (gwScore <= 2 || (sq.status === 'i' || sq.status === 'u')) {
-        urgency = '🔴 Segera'; urgCls = 'urg-high';
-      } else if (sq.status === 'd' || gwScore <= 3.5) {
-        urgency = '🟡 Pantau'; urgCls = 'urg-mid';
-      } else if (bestDelta >= 2) {
-        urgency = '🟡 Upgrade'; urgCls = 'urg-mid';
+      let urgency, urgCls, urgOrder;
+      if (gwScore <= 2 || sq.status === 'i' || sq.status === 'u') {
+        urgency = '🔴 Transfer Segera'; urgCls = 'urg-high'; urgOrder = 0;
+      } else if (bestDelta >= 1.5 && candidates[0]?.affordable) {
+        urgency = '🔵 Rekomendasi Transfer'; urgCls = 'urg-rec'; urgOrder = 1;
+      } else if (sq.status === 'd' || gwScore <= 3.5 || (bestDelta >= 0.5 && candidates[0]?.affordable)) {
+        urgency = '🟡 Perlu Pantau'; urgCls = 'urg-mid'; urgOrder = 2;
       } else {
-        urgency = '🟢 Aman'; urgCls = 'urg-low';
+        urgency = '🟢 Aman'; urgCls = 'urg-low'; urgOrder = 3;
       }
 
       // Next fixtures for current player
@@ -2709,26 +2709,23 @@ const Render = {
       }
 
       return {
-        ...sq, gwScore, candidates, urgency, urgCls,
+        ...sq, gwScore, candidates, urgency, urgCls, urgOrder,
         full, myFixHtml,
       };
     });
 
-    // Sort: Starting XI first, then by urgency (high → low), then by gwScore ascending
-    const urgOrder = {'🔴 Segera':0, '🟡 Pantau':1, '🟡 Upgrade':1, '🟢 Aman':2};
+    // Sort: by urgency priority (Segera first → Aman last), then by gwScore ascending
     const roleOrder = {'Captain':0,'Vice Captain':1,'Starting XI':2,'Bench':3};
     analysis.sort((a, b) => {
-      const ra = roleOrder[a.squad_role] ?? 9, rb = roleOrder[b.squad_role] ?? 9;
-      if (ra !== rb) return ra - rb;
-      const ua = urgOrder[a.urgency] ?? 9, ub = urgOrder[b.urgency] ?? 9;
-      if (ua !== ub) return ua - ub;
+      if (a.urgOrder !== b.urgOrder) return a.urgOrder - b.urgOrder;
       return a.gwScore - b.gwScore;
     });
 
     // Count urgencies
-    const urgCounts = { high:0, mid:0, low:0 };
+    const urgCounts = { high:0, rec:0, mid:0, low:0 };
     analysis.forEach(a => {
       if (a.urgency.includes('🔴')) urgCounts.high++;
+      else if (a.urgency.includes('🔵')) urgCounts.rec++;
       else if (a.urgency.includes('🟡')) urgCounts.mid++;
       else urgCounts.low++;
     });
@@ -2751,6 +2748,10 @@ const Render = {
         <div class="eval-stat" ${urgCounts.high?'style="border-color:rgba(255,82,82,.3)"':''}>
           <div class="eval-stat-label">🔴 Transfer Segera</div>
           <div class="eval-stat-val" style="color:${urgCounts.high?'var(--red)':'var(--green)'}">${urgCounts.high}</div>
+        </div>
+        <div class="eval-stat" ${urgCounts.rec?'style="border-color:rgba(68,138,255,.3)"':''}>
+          <div class="eval-stat-label">🔵 Rekomendasi</div>
+          <div class="eval-stat-val" style="color:${urgCounts.rec?'var(--blue)':'var(--green)'}">${urgCounts.rec}</div>
         </div>
         <div class="eval-stat">
           <div class="eval-stat-label">🟡 Perlu Pantau</div>
@@ -5015,10 +5016,13 @@ const UI = {
     }
 
     msg += `📊 https://ayspunk.github.io/FPL/\n`;
+    msg += `📅 Tambah deadline ke kalender → klik tombol 📅 di header dashboard\n`;
     msg += `_Credit: ays_`;
 
     const encoded = encodeURIComponent(msg);
     window.open(`https://wa.me/?text=${encoded}`, '_blank');
+    // Also trigger ICS download
+    setTimeout(() => this.exportDeadlineICS(), 500);
   },
 
   // ── ICS Calendar Export for Deadline ──
