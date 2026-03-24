@@ -4986,21 +4986,40 @@ const UI = {
       }
     }
 
-    // Scout recommendations — players to upgrade (worse than top available)
+    // Scout recommendations — use same logic as _scoutRecFromAPI
+    const allPlayers = Store.scoredPlayers;
     const myIds = new Set(squad.map(p=>p.id));
-    const upgrades = [];
-    starters.forEach(p => {
-      const better = Store.scoredPlayers
-        .filter(sp => sp.Position === p.Position && !myIds.has(sp.id) && sp.GWScore > (p.ScoutScore||p.GWScore||0) + 1)
+    const mi = Store.myManagerInfo;
+    const bank = mi?.last_deadline_bank ? mi.last_deadline_bank / 10 : 0;
+
+    const recTransfers = [];
+    squad.forEach(sq => {
+      const gwScore = allPlayers.find(p=>p.id===sq.id)?.GWScore ?? sq.GWScore ?? 0;
+      const sellingPrice = sq.sellPrice || sq.Price;
+      const candidates = allPlayers
+        .filter(p => p.Position === sq.Position && !myIds.has(p.id))
         .sort((a,b) => b.GWScore - a.GWScore)
-        .slice(0, 2);
-      if (better.length) upgrades.push({player:p, replacements:better});
+        .slice(0, 3)
+        .map(c => {
+          const delta = +(c.GWScore - gwScore).toFixed(2);
+          const affordable = (c.Price <= sellingPrice + bank);
+          return { ...c, delta, affordable };
+        })
+        .filter(c => c.delta >= 1.5 && c.affordable); // Only "Transfer masuk" verdict
+
+      if (candidates.length) {
+        recTransfers.push({ player: sq, candidates, bestDelta: candidates[0].delta });
+      }
     });
-    if (upgrades.length) {
-      msg += `🔄 *Transfer Suggestions:*\n`;
-      upgrades.slice(0,3).forEach(u => {
-        const reps = u.replacements.map(r => `${r.Player}(${r.Team},£${r.Price.toFixed(1)})`).join(' / ');
-        msg += `  ❌ ${u.player.Player} → ✅ ${reps}\n`;
+
+    // Sort by highest delta first
+    recTransfers.sort((a,b) => b.bestDelta - a.bestDelta);
+
+    if (recTransfers.length) {
+      msg += `🔄 *Transfer Suggestions (🟡 Rekomendasi):*\n`;
+      recTransfers.forEach(u => {
+        const reps = u.candidates.map(r => `${r.Player}(${r.Team},£${r.Price.toFixed(1)},Δ+${r.delta})`).join(' / ');
+        msg += `  ❌ ${u.player.Player}(${u.player.Team},${(u.player.GWScore||0).toFixed(1)}) → ✅ ${reps}\n`;
       });
       msg += '\n';
     }
