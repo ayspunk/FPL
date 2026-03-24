@@ -1331,6 +1331,45 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 .status-msg.err { color: var(--red); }
 
 /* ══════════════════════════════════════════
+   FOOTER
+   ══════════════════════════════════════════ */
+#app-footer {
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+  padding: 12px 20px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  font-size: 11px;
+  color: var(--text3);
+}
+#app-footer b { color: var(--green); font-weight: 700; }
+#app-footer .dim { color: var(--text4); }
+
+/* ID notification banner */
+.id-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+  background: linear-gradient(135deg, rgba(255,145,0,.08), rgba(255,215,64,.06));
+  border: 1px solid rgba(255,145,0,.3);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.id-banner:hover { border-color: var(--gold); background: rgba(255,215,64,.1); }
+.id-banner-icon { font-size: 24px; }
+.id-banner b { color: var(--gold); }
+.id-banner-link { color: var(--green); font-weight: 700; font-size: 12px; display: block; margin-top: 4px; }
+
+/* WhatsApp button */
+.btn-wa { background: #25d366; color: #fff; border: none; }
+.btn-wa:hover { background: #1da851; }
+
+/* ══════════════════════════════════════════
    TOOLTIP
    ══════════════════════════════════════════ */
 .tooltip {
