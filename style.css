@@ -1374,6 +1374,18 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 .btn-wa { background: #25d366; color: #fff; border: none; }
 .btn-wa:hover { background: #1da851; }
 
+/* Price slider wrap */
+.price-slider-wrap {
+  display: flex; align-items: center; gap: 4px;
+}
+.price-slider-wrap .fdr-slider { width: 80px; }
+
+/* Transfer Simulation */
+.ts-out-row { background: rgba(255,82,82,.06); }
+.ts-out-row td { opacity: .5; }
+.ts-in-row { background: rgba(0,230,118,.06); }
+.ts-cand-row:hover { background: rgba(0,230,118,.08) !important; cursor: pointer; }
+
 /* ══════════════════════════════════════════
    TOOLTIP
    ══════════════════════════════════════════ */
