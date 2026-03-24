@@ -1255,10 +1255,12 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 
 /* Urgency indicators */
 .rec-player-block.urg-high { border-left: 3px solid var(--red); }
+.rec-player-block.urg-rec  { border-left: 3px solid var(--blue); }
 .rec-player-block.urg-mid  { border-left: 3px solid var(--gold); }
 .rec-player-block.urg-low  { border-left: 3px solid var(--green3); }
 .rec-urgency { font-size: 12px; font-weight: 600; letter-spacing: 0.5px; white-space: nowrap; }
 .rec-urgency.urg-high { color: var(--red); }
+.rec-urgency.urg-rec  { color: var(--blue); }
 .rec-urgency.urg-mid  { color: var(--gold); }
 .rec-urgency.urg-low  { color: var(--green); }
 
