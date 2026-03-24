@@ -302,7 +302,6 @@ const Fetch = {
       const hit = Cache.get(url);
       if (hit) {
         Store.cacheHits = (Store.cacheHits||0) + 1;
-        UI.showCacheBadge(hit.ageMs);
         return hit.data;
       }
     }
@@ -1114,7 +1113,7 @@ const SUBTABS = {
   fdr:     [{k:'fdr-def',  l:'DEF Matrix'},       {k:'fdr-atk',  l:'ATK Matrix'},{k:'fdr-ovr',l:'OVR Matrix'},{k:'fdrinfo',l:'Team Strength'},{k:'season',l:'📅 Season Planner'}],
   epl:     [],
   league:  [{k:'rekap',    l:'Rekap'},             {k:'charts',   l:'Grafik'},   {k:'transfer',l:'Transfer & Chips'},{k:'h2h',l:'⚔ Head-to-Head'}],
-  other:   [{k:'mysquad',  l:'My Squad'},          {k:'chiprec',  l:'Chip Recommendation'},{k:'setforget',l:'📊 Transfer Impact'}],
+  other:   [{k:'mysquad',l:'My Squad'},{k:'myformation',l:'My Formation'},{k:'chiprec',l:'Chip Recommendation'},{k:'setforget',l:'📊 Transfer Impact'}],
   settings:[],
 };
 
@@ -1230,7 +1229,7 @@ const Render = {
                  'fdr-ovr':()=>this.fdrMatrix('ovr'), fdrinfo:this.fdrInfo, season:this.seasonPlanner },
       epl:     { null:this.epl },
       league:  { rekap:this.leagueRekap, charts:this.leagueCharts, transfer:this.leagueTransfer, h2h:this.headToHead },
-      other:   { mysquad:this.otherSquad, chiprec:this.otherChip, setforget:this.setAndForget },
+      other:   { mysquad:this.otherSquad, myformation:this.myFormation, chiprec:this.otherChip, setforget:this.setAndForget },
       settings:{ null:this.settings },
     };
     if (!Store.players.length && tab!=='settings') {
@@ -3559,6 +3558,124 @@ const Render = {
       <div class="squad-grid">${cards}</div>`;
   },
 
+  // ── My Formation (current squad on pitch) ──────────────
+  myFormation() {
+    const squad = Store.mySquadData;
+    if (!squad?.length) {
+      if (!CFG.myTeamId) return H.info('Tambahkan FPL Team ID di Settings.');
+      return H.info('Skuad sedang dimuat… Klik Refresh jika tidak muncul.');
+    }
+
+    // Separate by position and role
+    const starters = squad.filter(p => p.squad_role !== 'Bench');
+    const bench = squad.filter(p => p.squad_role === 'Bench');
+    const gk = starters.filter(p => p.Position === 'GK');
+    const def = starters.filter(p => p.Position === 'DEF');
+    const mid = starters.filter(p => p.Position === 'MID');
+    const fwd = starters.filter(p => p.Position === 'FWD');
+    const formName = `${def.length}-${mid.length}-${fwd.length}`;
+
+    // Total score
+    const totalScore = starters.reduce((s,p) => s + (p.ScoutScore||p.GWScore||0), 0);
+
+    // Captain recommendation from own squad
+    const capCandidates = starters.filter(p => p.Position !== 'GK').sort((a,b) => {
+      const sc = p => ((p.scores?.form||0)*0.25+(p.scores?.xgi||0)*0.25+(p.scores?.ppg||0)*0.2+(p.scores?.fdr_short||0)*0.15);
+      return sc(b) - sc(a);
+    });
+    const recCap = capCandidates[0];
+
+    // Shirt URL helper
+    const shirtUrl = (p) => {
+      const code = p.TeamCode || Store.players.find(sp => sp.id === p.id)?.TeamCode || 0;
+      if (!code) return '';
+      return `https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_${code}${p.Position==='GK'?'_1':''}-110.webp`;
+    };
+
+    const chip = (p) => {
+      if (!p) return '';
+      const sc = p.ScoutScore || p.GWScore || 0;
+      const isCap = p.is_captain;
+      const isVC = p.is_vice_captain;
+      const capBadge = isCap ? '<div class="p-cap-badge cap-badge">C</div>' : isVC ? '<div class="p-cap-badge vc-badge">V</div>' : '';
+      const scored = Store.scoredPlayers.find(sp => sp.id === p.id);
+      const opp = scored?.opponent || '?';
+      const isHome = scored?.isHome;
+      const fdr = scored?.FDR_next;
+      const tip = `${p.Player} (${p.Team})\n${p.Position} · £${p.Price.toFixed(1)}\nScore: ${sc.toFixed(2)}\nFDR: ${H.numFmt(fdr,1)} · ${isHome?'Home':'Away'} vs ${opp}\nPPG: ${H.numFmt(p.PPG,1)} · xGI: ${H.numFmt(p.xGI,2)}`;
+      const oppLabel = scored?.isBlank ? '<span class="p-opp-blank">⛔</span>'
+        : `<span class="p-opp-vs">${opp}</span><span class="p-opp-ha">(${isHome?'H':'A'})</span>`;
+      return `<div class="player-chip" title="${tip}">
+        <div class="p-shirt-img-wrap">
+          <img class="p-shirt-img" src="${shirtUrl(p)}" alt="${p.Team}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+          <div class="p-shirt sh-${p.Team||'default'}" style="display:none">${p.Team||'?'}</div>
+          ${capBadge}
+        </div>
+        <div class="p-chip-name">${p.Player.split(' ').slice(-1)[0]}${isCap?' ★':isVC?' ☆':''}</div>
+        <div class="p-chip-score">${sc.toFixed(1)}</div>
+        <div class="p-chip-fixture"><span class="p-chip-team">${p.Team}</span> ${oppLabel}</div>
+      </div>`;
+    };
+
+    const benchChips = bench.map(p => chip(p)).join('');
+
+    return `
+      <div class="section-title">My Formation — ${formName} · GW${Store.currentGW||'–'}</div>
+      ${recCap ? `<div class="info-box">👑 <b>Rekomendasi Captain:</b> ${recCap.Player} (${recCap.Team}) — Form ${H.numFmt(recCap.Form,1)}, PPG ${H.numFmt(recCap.PPG,1)}, xGI ${H.numFmt(recCap.xGI,2)}</div>` : ''}
+      <div class="lineup-container" style="grid-template-columns:1fr 480px">
+        <div>
+          <div class="section-title">Squad</div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Role</th><th>Pemain</th><th>Tim</th><th>Lawan</th><th class="r">Score</th><th class="r">PPG</th><th class="r">£</th></tr></thead>
+              <tbody>
+                ${starters.map(p => {
+                  const scored = Store.scoredPlayers.find(sp=>sp.id===p.id);
+                  const sc = p.ScoutScore||p.GWScore||0;
+                  return `<tr class="${p.is_captain?'row-cap':''}">
+                    <td class="dim" style="font-size:11px;text-transform:uppercase">${p.squad_role}${p.is_captain?' ⭐':p.is_vice_captain?' 🌟':''}</td>
+                    <td style="font-weight:600">${p.Player}</td>
+                    <td>${H.teamTag(p.Team)}</td>
+                    <td class="dim" style="font-size:12px">${scored?.isHome?'🏠':'✈'} ${scored?.opponent||'?'}</td>
+                    <td class="mono r ${H.scoreClass(sc)}">${sc.toFixed(2)}</td>
+                    <td class="mono dim r">${H.numFmt(p.PPG,1)}</td>
+                    <td class="mono dim r">£${p.Price.toFixed(1)}</td>
+                  </tr>`;
+                }).join('')}
+                <tr class="row-sep"><td colspan="7" class="dim" style="font-size:10px;letter-spacing:1px">BENCH</td></tr>
+                ${bench.map(p => {
+                  const sc = p.ScoutScore||p.GWScore||0;
+                  return `<tr style="opacity:.6"><td class="dim" style="font-size:11px">Bench</td>
+                    <td>${p.Player}</td><td>${H.teamTag(p.Team)}</td><td></td>
+                    <td class="mono r dim">${sc.toFixed(2)}</td><td class="mono dim r">${H.numFmt(p.PPG,1)}</td><td class="mono dim r">£${p.Price.toFixed(1)}</td></tr>`;
+                }).join('')}
+                <tr class="row-total"><td>Total</td><td colspan="3"></td><td class="mono r" style="font-size:16px;font-weight:700;color:var(--green)">${totalScore.toFixed(2)}</td><td></td><td></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="pitch-wrap">
+          <div class="section-title">Pitch — ${formName}</div>
+          <div class="pitch">
+            <svg class="pitch-lines" viewBox="0 0 100 150" preserveAspectRatio="none">
+              <rect x="5" y="5" width="90" height="140" rx="1" stroke="white" stroke-width=".8" fill="none"/>
+              <line x1="5" y1="75" x2="95" y2="75" stroke="white" stroke-width=".4"/>
+              <circle cx="50" cy="75" r="12" stroke="white" stroke-width=".4" fill="none"/>
+              <rect x="25" y="5" width="50" height="18" stroke="white" stroke-width=".4" fill="none"/>
+              <rect x="25" y="127" width="50" height="18" stroke="white" stroke-width=".4" fill="none"/>
+            </svg>
+            <div class="pitch-inner">
+              <div class="pitch-row" style="flex:1.2">${fwd.map(p=>chip(p)).join('')}</div>
+              <div class="pitch-row" style="flex:1.4">${mid.map(p=>chip(p)).join('')}</div>
+              <div class="pitch-row" style="flex:1.4">${def.map(p=>chip(p)).join('')}</div>
+              <div class="pitch-row" style="flex:1">${gk.map(p=>chip(p)).join('')}</div>
+              <div class="pitch-row" style="flex:.6;background:rgba(0,0,0,.15);font-size:9px;color:var(--text3)">${benchChips}</div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  },
+
   // ── Chip Recommendation ────────────────────────────────
   otherChip() {
     // Try sheets first
@@ -3882,6 +3999,13 @@ const Render = {
             <b style="color:var(--green)">✓ entry/{TID}/</b> — info manajer (overall rank, team value, bank)<br>
             <b style="color:var(--green)">✓ element-summary/{EID}/</b> — fixture per pemain (next 3 GW)
           </div>
+        </div>
+      </div>
+        <div class="settings-card" style="text-align:center;padding:24px">
+          <div style="font-size:32px;margin-bottom:8px">⚽</div>
+          <div style="font-size:14px;font-weight:700;letter-spacing:2px;color:var(--green)">FPL DASHBOARD</div>
+          <div style="font-size:12px;color:var(--text3);margin-top:4px">Credit: <b style="color:var(--text)">ays</b></div>
+          <div style="font-size:10px;color:var(--text4);margin-top:8px">Powered by FPL API · Data © Fantasy Premier League</div>
         </div>
       </div>
       <script>
@@ -4467,7 +4591,7 @@ const UI = {
       const s = Math.floor((diff%60000)/1000);
       const isUrgent = diff < 3600000; // < 1 hour
       const text = d > 0 ? `${d}d ${h}h ${m}m` : `${h}h ${m}m ${s}s`;
-      el.innerHTML = `<span class="deadline-timer${isUrgent?' urgent':''}">⏱ GW${nextEv.id} ${text}</span>`;
+      el.innerHTML = `<span class="deadline-timer${isUrgent?' urgent':''}">⏱ GW${nextEv.id} ${text}</span><button class="btn-ics" onclick="UI.exportDeadlineICS()" title="Tambah ke Kalender">📅</button>`;
     };
     update();
     setInterval(update, 1000);
@@ -4520,50 +4644,108 @@ const UI = {
     const m = Math.floor((diff%3600000)/60000);
     const timeLeft = diff <= 0 ? 'SUDAH LEWAT!' : d > 0 ? `${d} hari ${h} jam ${m} menit` : `${h} jam ${m} menit`;
 
-    // Top 3 captain picks
-    const capScore = p => ((p.scores?.form||0)*0.25+(p.scores?.xgi||0)*0.25+(p.scores?.ppg||0)*0.20+(p.scores?.fdr_short||0)*0.15+(p.scores?.ep_next||0)*0.10+(p.scores?.home||0)*0.05);
-    const capCandidates = Store.scoredPlayers
-      .filter(p => !p.isBlank && p.Position !== 'GK')
-      .sort((a,b) => capScore(b) - capScore(a))
-      .slice(0, 3);
-
-    // Top 3 differentials
-    const diffs = Store.scoredPlayers
-      .filter(p => p.TSB <= 10 && p.TSB > 0 && !p.isBlank)
-      .sort((a,b) => b.GWScore - a.GWScore)
-      .slice(0, 3);
-
-    // Top formation
-    const topForm = Store.formations?.length ? Store.formations.sort((a,b) => b.total - a.total)[0] : null;
-
     let msg = `⚽ *FPL REMINDER — GW${nextEv.id}*\n`;
     msg += `⏱ Deadline: ${timeLeft}\n\n`;
 
-    if (capCandidates.length) {
-      msg += `👑 *Captain Pick:*\n`;
-      capCandidates.forEach((p,i) => {
-        msg += `${i===0?'🥇':i===1?'🥈':'🥉'} ${p.Player} (${p.Team}) vs ${p.opponent} ${p.isHome?'(H)':'(A)'}\n`;
+    // My Formation & captain from own squad
+    const squad = Store.mySquadData || [];
+    const starters = squad.filter(p => p.squad_role !== 'Bench');
+    if (starters.length) {
+      const def = starters.filter(p=>p.Position==='DEF').length;
+      const mid = starters.filter(p=>p.Position==='MID').length;
+      const fwd = starters.filter(p=>p.Position==='FWD').length;
+      msg += `📋 *My Formation: ${def}-${mid}-${fwd}*\n`;
+      starters.forEach(p => {
+        const scored = Store.scoredPlayers.find(sp=>sp.id===p.id);
+        const opp = scored?.opponent||'?';
+        const ha = scored?.isHome?'H':'A';
+        const role = p.is_captain?' (C)':p.is_vice_captain?' (V)':'';
+        msg += `  ${p.Player}${role} — ${p.Team} vs ${opp}(${ha})\n`;
+      });
+      msg += '\n';
+
+      // Captain recommendation from own squad
+      const capScore = p => {
+        const s = Store.scoredPlayers.find(sp=>sp.id===p.id);
+        return ((s?.scores?.form||0)*0.25+(s?.scores?.xgi||0)*0.25+(s?.scores?.ppg||0)*0.2+(s?.scores?.fdr_short||0)*0.15);
+      };
+      const capPicks = starters.filter(p=>p.Position!=='GK').sort((a,b)=>capScore(b)-capScore(a)).slice(0,3);
+      if (capPicks.length) {
+        msg += `👑 *Rekomendasi Captain:*\n`;
+        capPicks.forEach((p,i) => {
+          const scored = Store.scoredPlayers.find(sp=>sp.id===p.id);
+          msg += `${i===0?'🥇':i===1?'🥈':'🥉'} ${p.Player} (${p.Team}) vs ${scored?.opponent||'?'} (${scored?.isHome?'H':'A'})\n`;
+        });
+        msg += '\n';
+      }
+    }
+
+    // Scout recommendations — players to upgrade (worse than top available)
+    const myIds = new Set(squad.map(p=>p.id));
+    const upgrades = [];
+    starters.forEach(p => {
+      const better = Store.scoredPlayers
+        .filter(sp => sp.Position === p.Position && !myIds.has(sp.id) && sp.GWScore > (p.ScoutScore||p.GWScore||0) + 1)
+        .sort((a,b) => b.GWScore - a.GWScore)
+        .slice(0, 2);
+      if (better.length) upgrades.push({player:p, replacements:better});
+    });
+    if (upgrades.length) {
+      msg += `🔄 *Transfer Suggestions:*\n`;
+      upgrades.slice(0,3).forEach(u => {
+        const reps = u.replacements.map(r => `${r.Player}(${r.Team},£${r.Price.toFixed(1)})`).join(' / ');
+        msg += `  ❌ ${u.player.Player} → ✅ ${reps}\n`;
       });
       msg += '\n';
     }
 
+    // Differentials
+    const diffs = Store.scoredPlayers
+      .filter(p => p.TSB <= 10 && p.TSB > 0 && !p.isBlank)
+      .sort((a,b) => b.GWScore - a.GWScore).slice(0, 3);
     if (diffs.length) {
       msg += `🔮 *Differentials (TSB<10%):*\n`;
-      diffs.forEach(p => { msg += `• ${p.Player} (${p.Team}) — Score ${p.GWScore.toFixed(1)}, TSB ${p.TSB}%\n`; });
+      diffs.forEach(p => { msg += `  • ${p.Player} (${p.Team}) Score ${p.GWScore.toFixed(1)}, TSB ${p.TSB}%\n`; });
       msg += '\n';
     }
 
-    if (topForm) {
-      msg += `📋 *Best Formation:* ${topForm.name} (Score ${topForm.total.toFixed(1)})\n\n`;
-    }
-
-    msg += `📊 Lihat detail: https://ayspunk.github.io/FPL/\n`;
+    msg += `📊 https://ayspunk.github.io/FPL/\n`;
     msg += `_Credit: ays_`;
 
     const encoded = encodeURIComponent(msg);
     window.open(`https://wa.me/?text=${encoded}`, '_blank');
   },
 
+  // ── ICS Calendar Export for Deadline ──
+  exportDeadlineICS() {
+    const bs = Store.bootstrap;
+    if (!bs) { alert('Data belum dimuat.'); return; }
+    const nextEv = bs.events.find(e => e.is_next) || bs.events.find(e => e.is_current);
+    if (!nextEv?.deadline_time) return;
+
+    const dl = new Date(nextEv.deadline_time);
+    const fmt = d => d.toISOString().replace(/[-:]/g,'').replace(/\.\d+/,'');
+    const remind = new Date(dl.getTime() - 3600000); // 1 hour before
+
+    const ics = [
+      'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//FPL Dashboard//EN',
+      'BEGIN:VEVENT',
+      `DTSTART:${fmt(dl)}`,
+      `DTEND:${fmt(new Date(dl.getTime()+900000))}`, // 15 min duration
+      `SUMMARY:⚽ FPL GW${nextEv.id} Deadline`,
+      `DESCRIPTION:Deadline untuk mengatur formasi dan transfer GW${nextEv.id}. Buka: https://ayspunk.github.io/FPL/`,
+      'BEGIN:VALARM', 'TRIGGER:-PT60M', `DESCRIPTION:FPL Deadline GW${nextEv.id} dalam 1 jam!`, 'ACTION:DISPLAY', 'END:VALARM',
+      'BEGIN:VALARM', 'TRIGGER:-PT180M', `DESCRIPTION:FPL Deadline GW${nextEv.id} dalam 3 jam`, 'ACTION:DISPLAY', 'END:VALARM',
+      'END:VEVENT', 'END:VCALENDAR'
+    ].join('\r\n');
+
+    const blob = new Blob([ics], {type:'text/calendar'});
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `FPL_GW${nextEv.id}_Deadline.ics`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  },
   buildLeagueSelect() {
     // No-op: league selector is now inline in League tab renderers
   },
