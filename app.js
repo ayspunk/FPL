@@ -1178,7 +1178,9 @@ const H = {
     const cur = Store.currentGW || 0;
     if (gw <= cur) {
       return `<div class="info-box" style="background:rgba(255,145,0,.08);border-color:rgba(255,145,0,.3);color:var(--orange);margin-bottom:14px">
-        🔍 <b>Backtest Mode — GW${gw}</b> · Fixture dan poin aktual GW${gw}. Rekomendasi formasi dihitung ulang berdasarkan data GW ini untuk menguji model pembobotan.
+        🔍 <b>Backtest Mode — GW${gw}</b> · Fixture dan poin aktual GW${gw}.
+        Skor rekomendasi menggunakan statistik pemain saat ini (PPG, Form, xGI, dll.) — bukan snapshot GW${gw-1}.
+        Bandingkan <b>ranking formasi rekomendasi</b> vs <b>ranking poin aktual</b> di tab Evaluasi Poin.
       </div>`;
     }
     return `<div class="info-box" style="background:rgba(206,147,216,.08);border-color:rgba(206,147,216,.3);color:var(--purple);margin-bottom:14px">
@@ -1697,14 +1699,50 @@ const Render = {
     const fms = Store.formations;
     if (!fms.length) return H.error('Data belum siap.');
     const hasLive = fms[0]?.hasLive;
+    const targetGW = Store.targetGW || Store.currentGW;
+    const isPast = Store.targetGW > 0 && Store.targetGW <= Store.currentGW;
 
-    if (!hasLive)
-      return H.info('Data poin aktual belum tersedia untuk GW ini. Poin akan muncul setelah pertandingan berlangsung.');
+    if (!hasLive) {
+      if (isPast) {
+        return H.gwTargetBanner() + `
+          <div class="error-box">
+            ⚠ <b>Data poin GW${targetGW} gagal dimuat.</b><br>
+            CORS proxy mungkin tidak tersedia. Coba:<br>
+            • Klik ulang GW${targetGW} di dropdown GW selector<br>
+            • Atau buka langsung: <code>fantasy.premierleague.com/api/event/${targetGW}/live/</code> untuk verifikasi API
+          </div>`;
+      }
+      return H.info('Data poin aktual belum tersedia. Poin akan muncul setelah pertandingan GW aktif berlangsung.');
+    }
 
     // Sort formations by actual pts
     const byPts = [...fms].sort((a,b)=>b.totalWithCap-a.totalWithCap);
     const maxPts = Math.max(...byPts.map(f=>f.totalWithCap), 1);
     const bestForm = byPts[0];
+
+    // Percentile for eval
+    let evalPercentile = '';
+    if (bestForm.totalWithCap) {
+      const gwEvent = Store.bootstrap?.events?.find(e => e.id === targetGW);
+      const avgScore = gwEvent?.average_entry_score || 0;
+      const highestScore = gwEvent?.highest_score || 100;
+      if (avgScore > 0) {
+        const std = Math.max(avgScore * 0.45, 10);
+        const z = (bestForm.totalWithCap - avgScore) / std;
+        const pctile = Math.min(99.9, Math.max(0.1, 100 / (1 + Math.exp(-1.7 * z))));
+        const top = (100 - pctile).toFixed(1);
+        const pctColor = pctile >= 90 ? 'var(--gold)' : pctile >= 70 ? 'var(--green)' : pctile >= 50 ? 'var(--text)' : 'var(--red)';
+        evalPercentile = `
+        <div class="eval-stat">
+          <div class="eval-stat-label">GW Avg</div>
+          <div class="eval-stat-val dim">${avgScore}</div>
+        </div>
+        <div class="eval-stat highlight">
+          <div class="eval-stat-label">Percentile</div>
+          <div class="eval-stat-val" style="color:${pctColor}">Top ${top}%</div>
+        </div>`;
+      }
+    }
 
     // Summary
     let html = `
@@ -1725,11 +1763,13 @@ const Render = {
           <div class="eval-stat-label">Captain Terbaik</div>
           <div class="eval-stat-val" style="color:var(--gold)">${bestForm.cap?bestForm.cap.Player+' ('+((bestForm.cap.livePoints||0)*2)+' pts)':'–'}</div>
         </div>
+        ${evalPercentile}
       </div>`;
 
     // Ranking table
     html += `
-      <div class="section-title">Ranking Formasi — Poin Aktual GW ${Store.currentGW}</div>
+      ${H.gwTargetBanner()}
+      <div class="section-title">Ranking Formasi — Poin Aktual GW${targetGW}${isPast?' (Backtest)':''}</div>
       <div class="table-wrap">
         <table>
           <thead><tr>
@@ -1760,9 +1800,38 @@ const Render = {
     });
     html += `</tbody></table></div>`;
 
+    // Model quality: correlation between score rank and points rank
+    const scoreRanks = fms.map(fm => fm.rank);
+    const ptsRanks = fms.map(fm => byPts.findIndex(x=>x.name===fm.name)+1);
+    // Spearman rank correlation
+    const n = scoreRanks.length;
+    const dSq = scoreRanks.reduce((s,sr,i) => s + Math.pow(sr - ptsRanks[i], 2), 0);
+    const spearman = +(1 - (6 * dSq) / (n * (n*n - 1))).toFixed(3);
+    const qualColor = spearman >= 0.8 ? 'var(--green)' : spearman >= 0.5 ? 'var(--gold)' : 'var(--red)';
+    const qualLabel = spearman >= 0.8 ? '✓ Model Baik' : spearman >= 0.5 ? '↔ Cukup' : '✗ Perlu Tune';
+    const bestScoreForm = [...fms].sort((a,b)=>b.total-a.total)[0];
+    const bestPtsFormName = byPts[0]?.name;
+    const match = bestScoreForm.name === bestPtsFormName;
+
+    html += `
+      <div class="stat-strip" style="margin-top:16px">
+        <div class="stat-box">
+          <div class="stat-label">Model Correlation</div>
+          <div class="stat-val" style="color:${qualColor}">${spearman}</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Kualitas Model</div>
+          <div class="stat-val" style="font-size:13px;color:${qualColor}">${qualLabel}</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Best Score = Best Pts?</div>
+          <div class="stat-val" style="color:${match?'var(--green)':'var(--red)'}">${match?'✓ Ya':'✗ Tidak'} (${bestScoreForm.name} vs ${bestPtsFormName})</div>
+        </div>
+      </div>`;
+
     // Detail pemain formasi terbaik
     html += `
-      <div class="section-title" style="margin-top:24px">Detail Poin — ${bestForm.name} (Total: ${bestForm.totalWithCap} pts)</div>
+      <div class="section-title" style="margin-top:24px">Detail Poin — ${bestForm.name} (Total: ${bestForm.totalWithCap} pts) · GW${targetGW}</div>
       <div class="table-wrap">
         <table>
           <thead><tr>
@@ -5140,22 +5209,40 @@ const UI = {
 
     if (!Store.bootstrap || !Store.fixtures) return;
 
-    // For past GWs: fetch that GW's live data to get actual points
-    let liveData = Store.liveEvent; // default: current GW live
     const isPast = gw > 0 && gw <= Store.currentGW;
+    const isFuture = gw > Store.currentGW;
+    let liveData = null;
+
     if (isPast) {
+      // Fetch past GW live data
       this.setProgress(`Fetching GW${gw} live…`);
-      const pastLive = await Fetch.liveEvent(gw);
-      if (pastLive) {
-        liveData = pastLive;
-        console.log(`[UI] ✓ Loaded GW${gw} live data: ${pastLive.elements?.length} players`);
+      // Try cache first (endpointTTL for /live is 5min, but past GWs don't change — force longer cache)
+      const url = CFG.FPL + `event/${gw}/live/`;
+      const cached = Cache.get(url);
+      if (cached) {
+        liveData = cached.data;
+        console.log(`[UI] ✓ GW${gw} live from cache`);
+      } else {
+        // Try all proxies
+        liveData = await Fetch.liveEvent(gw);
+        if (liveData) {
+          // Cache past GW live data for 6 hours (it won't change)
+          Cache.set(url, liveData, Cache.TTL.STATIC);
+          console.log(`[UI] ✓ GW${gw} live fetched & cached (${liveData.elements?.length} players)`);
+        } else {
+          console.log(`[UI] ✗ GW${gw} live fetch failed — all proxies down`);
+        }
       }
     } else if (gw === 0) {
       liveData = Store.liveEvent; // reset to current
     }
+    // Future GWs: no live data (liveData stays null)
+
+    // Store the target GW's live data separately
+    Store._targetLiveData = liveData;
 
     // Re-process players with new fixture target + correct live data
-    const { players, targetGW } = Process.fromBootstrap(Store.bootstrap, Store.fixtures, liveData);
+    const { players } = Process.fromBootstrap(Store.bootstrap, Store.fixtures, liveData);
     Store.players = players;
     Process.applyScores(players);
 
@@ -5173,7 +5260,7 @@ const UI = {
         badge.style.color = 'var(--purple)';
       }
     }
-    this.setSrc(isPast ? 'fpl' : (Store.dataSource || 'fpl'));
+    this.setSrc(isPast && liveData ? 'fpl' : (Store.dataSource || 'fpl'));
     Nav.goTab(Nav.current);
   },
 
