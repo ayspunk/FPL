@@ -1068,10 +1068,33 @@ const Process = {
   },
 
   applyScores(players) {
-    players.forEach(p => { p.GWScore = +Process.calcGWScore(p, Store.gwWeights); });
+    // In backtest mode with adaptive weights: use those instead of manual weights
+    let weights = Store.gwWeights;
+    if (Store._backtestAdaptiveWeights && Store.targetGW > 0 && Store.targetGW <= Store.currentGW) {
+      weights = Process._transposeAdaptiveWeights(Store._backtestAdaptiveWeights);
+      Store._activeBacktestWeights = weights; // Store for display
+    } else {
+      Store._activeBacktestWeights = null;
+    }
+    players.forEach(p => { p.GWScore = +Process.calcGWScore(p, weights); });
     const minMin = +document.getElementById('min-minutes')?.value || CFG.minMinutes;
     Store.scoredPlayers = players.filter(p => p.minutes >= minMin);
     Store.formations    = this.rankFormations(this.buildAllFormations(Store.scoredPlayers));
+  },
+
+  // Transpose {GK:{ppg:0.3,...},DEF:{...}} → {ppg:{GK:0.3,...},form:{...}}
+  _transposeAdaptiveWeights(adaptW) {
+    const result = {};
+    const positions = Object.keys(adaptW); // ['GK','DEF','MID','FWD']
+    positions.forEach(pos => {
+      const posWeights = adaptW[pos];
+      if (!posWeights) return;
+      Object.entries(posWeights).forEach(([key, val]) => {
+        if (!result[key]) result[key] = {GK:0,DEF:0,MID:0,FWD:0};
+        result[key][pos] = val;
+      });
+    });
+    return result;
   },
 
   // ── Formation builders ────────────────────────────────
@@ -1301,8 +1324,58 @@ const Render = {
 
   // ── WLineUp ────────────────────────────────────────────
   lineupWLineup() {
-    return this._criteriaWeightPanel('gw', Store.gwWeights, 'GW Scoring Weights — WLineUp',
+    let html = this._criteriaWeightPanel('gw', Store.gwWeights, 'GW Scoring Weights — WLineUp',
       'Edit bobot kemudian klik <b>Apply</b>. Tambahkan kriteria dari katalog di bawah.');
+
+    // Show adaptive weights comparison when in backtest mode
+    const gw = Store.targetGW;
+    const isPast = gw > 0 && gw <= Store.currentGW;
+    const adaptW = Store._activeBacktestWeights;
+
+    if (isPast && adaptW) {
+      const pos = ['GK','DEF','MID','FWD'];
+      const adaptKeys = Object.keys(adaptW).filter(k => pos.some(p => (adaptW[k]?.[p]||0) > 0.005));
+
+      const compRows = adaptKeys.map(key => {
+        const cr = CRITERIA_MAP[key];
+        const label = cr?.label || key;
+        const userW = Store.gwWeights[key];
+        const cells = pos.map(p => {
+          const aVal = ((adaptW[key]?.[p]||0)*100).toFixed(0);
+          const uVal = userW ? ((userW[p]||0)*100).toFixed(0) : '–';
+          const diff = userW ? +aVal - +uVal : 0;
+          const cls = diff > 5 ? 's-hi' : diff < -5 ? 's-lo' : '';
+          return `<td class="mono c">${uVal}</td><td class="mono c ${cls}" style="font-weight:700">${aVal}</td>`;
+        }).join('');
+        return `<tr><td>${label}</td>${cells}</tr>`;
+      }).join('');
+
+      const compHead = pos.map(p =>
+        `<th class="c" style="font-size:9px">Anda</th><th class="c" style="font-size:9px;color:var(--green)">${p}</th>`
+      ).join('');
+
+      html += `
+        <div class="section-title" style="margin-top:24px">📊 Perbandingan Bobot — GW${gw} Adaptive vs Manual</div>
+        <div class="info-box">
+          <b>Mode Backtest aktif.</b> Rekomendasi GW${gw} saat ini menggunakan <b style="color:var(--green)">adaptive weights</b> (dihitung dari korelasi data GW1-${gw-1}).
+          <br>Kolom hijau = bobot adaptive yang digunakan. Kolom putih = bobot manual Anda.
+        </div>
+        <div class="table-wrap" style="max-width:800px">
+          <table class="weight-table">
+            <thead>
+              <tr><th rowspan="2">Kriteria</th>${pos.map(p => `<th colspan="2" class="c" style="border-bottom:1px solid var(--border2)">${p}</th>`).join('')}</tr>
+              <tr>${pos.map(() => '<th class="c" style="font-size:9px">Manual</th><th class="c" style="font-size:9px;color:var(--green)">Adapt</th>').join('')}</tr>
+            </thead>
+            <tbody>${compRows}</tbody>
+          </table>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="UI.applyAdaptiveAsManual()">✓ Salin Adaptive → Manual</button>
+          <button class="btn btn-secondary" onclick="Store.targetGW=0;UI.changeTargetGW(0)">↩ Kembali ke GW Aktif</button>
+        </div>`;
+    }
+
+    return html;
   },
 
   // ── Backtest Weight Optimizer ──────────────────────────
@@ -1588,8 +1661,19 @@ const Render = {
         `}
       </div>`;
 
+    // Weight source indicator
+    const isPastGW = Store.targetGW > 0 && Store.targetGW <= Store.currentGW;
+    const usingAdaptive = !!Store._activeBacktestWeights;
+    const weightBadge = isPastGW && usingAdaptive
+      ? `<div class="info-box" style="background:rgba(0,230,118,.06);border-color:rgba(0,230,118,.2);color:var(--green);margin-bottom:10px;font-size:12px">
+          ⚡ Menggunakan <b>Adaptive Weights GW${Store.targetGW}</b> (optimal dari data historis).
+          <a href="#" onclick="Nav.goSubtab('lineup','wlineup');return false" style="color:var(--blue);margin-left:8px">Lihat perbandingan →</a>
+        </div>`
+      : '';
+
     return `
       ${H.gwTargetBanner()}
+      ${weightBadge}
       <div class="rank-grid">${cards}</div>
       ${summaryStrip}
       <div class="lineup-container">
@@ -4851,6 +4935,16 @@ const UI = {
       const el=document.getElementById(`${prefix}-${pos}`);
       if(el){el.textContent=`${tot}%`;el.className=`wt-total ${tot>=99&&tot<=101?'wt-ok':'wt-warn'}`;}
     });
+  },
+
+  applyAdaptiveAsManual() {
+    if (!Store._activeBacktestWeights) return;
+    Store.gwWeights = JSON.parse(JSON.stringify(Store._activeBacktestWeights));
+    try { localStorage.setItem('fplDashGWWeights', JSON.stringify(Store.gwWeights)); } catch {}
+    console.log(`[UI] Adaptive weights copied to manual: ${Object.keys(Store.gwWeights).length} criteria`);
+    // Switch back to current GW
+    Store.targetGW = 0;
+    this.changeTargetGW(0);
   },
 
   applyGWWeights() {
