@@ -151,6 +151,7 @@ const Store = {
   sheetsData:    null,
   setForgetData: null,  // Transfer impact data from transfer-impact.json
   _ts: { outs: [], ins: [], ft: null },  // Transfer simulation state
+  _liveAllData: null,  // All past GW live data from live-all.json
 
   // State
   currentGW:     null,
@@ -255,7 +256,20 @@ const Fetch = {
     const errors = [];
     this._requestCount++;
 
-    // Build proxy order: last working first, then others
+    // 1. Try direct fetch first (FPL API sometimes allows CORS)
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(timeout/2) });
+      if (r.ok) {
+        const data = await r.json();
+        console.log(`[FPL] ✓ Direct fetch OK: ${url.split('/').slice(-3).join('/')}`);
+        return data;
+      }
+      errors.push(`direct: HTTP ${r.status}`);
+    } catch (e) {
+      errors.push(`direct: ${e.name||'blocked'}`);
+    }
+
+    // 2. Try proxies: last working first, then others
     const order = [this._lastWorkingProxy];
     for (let i = 0; i < CFG.PROXIES.length; i++) {
       if (i !== this._lastWorkingProxy) order.push(i);
@@ -1707,9 +1721,8 @@ const Render = {
         return H.gwTargetBanner() + `
           <div class="error-box">
             ⚠ <b>Data poin GW${targetGW} gagal dimuat.</b><br>
-            CORS proxy mungkin tidak tersedia. Coba:<br>
-            • Klik ulang GW${targetGW} di dropdown GW selector<br>
-            • Atau buka langsung: <code>fantasy.premierleague.com/api/event/${targetGW}/live/</code> untuk verifikasi API
+            Pastikan <code>live-all.json</code> sudah di-generate via GitHub Actions (<code>fetch-fpl.js</code>).<br>
+            Atau coba klik ulang GW${targetGW} di dropdown — akan mencoba direct fetch + CORS proxy.
           </div>`;
       }
       return H.info('Data poin aktual belum tersedia. Poin akan muncul setelah pertandingan GW aktif berlangsung.');
@@ -5214,23 +5227,36 @@ const UI = {
     let liveData = null;
 
     if (isPast) {
-      // Fetch past GW live data
-      this.setProgress(`Fetching GW${gw} live…`);
-      // Try cache first (endpointTTL for /live is 5min, but past GWs don't change — force longer cache)
-      const url = CFG.FPL + `event/${gw}/live/`;
-      const cached = Cache.get(url);
-      if (cached) {
-        liveData = cached.data;
-        console.log(`[UI] ✓ GW${gw} live from cache`);
+      // Try GitHub live-all.json first (compact format)
+      this.setProgress(`Loading GW${gw} live…`);
+      if (!Store._liveAllData) {
+        const liveAllJson = await Fetch.githubJSON('live-all.json');
+        if (liveAllJson) Store._liveAllData = liveAllJson;
+      }
+      if (Store._liveAllData?.[gw]) {
+        // Convert compact format back to full format
+        liveData = {
+          elements: Store._liveAllData[gw].map(e => ({
+            id: e.id,
+            stats: { total_points: e.tp, bonus: e.bn, minutes: e.mn }
+          }))
+        };
+        console.log(`[UI] ✓ GW${gw} live from live-all.json (${liveData.elements.length} players)`);
       } else {
-        // Try all proxies
-        liveData = await Fetch.liveEvent(gw);
-        if (liveData) {
-          // Cache past GW live data for 6 hours (it won't change)
-          Cache.set(url, liveData, Cache.TTL.STATIC);
-          console.log(`[UI] ✓ GW${gw} live fetched & cached (${liveData.elements?.length} players)`);
+        // Fallback: fetch via proxy/direct
+        const url = CFG.FPL + `event/${gw}/live/`;
+        const cached = Cache.get(url);
+        if (cached) {
+          liveData = cached.data;
+          console.log(`[UI] ✓ GW${gw} live from cache`);
         } else {
-          console.log(`[UI] ✗ GW${gw} live fetch failed — all proxies down`);
+          liveData = await Fetch.liveEvent(gw);
+          if (liveData) {
+            Cache.set(url, liveData, Cache.TTL.STATIC);
+            console.log(`[UI] ✓ GW${gw} live fetched & cached`);
+          } else {
+            console.log(`[UI] ✗ GW${gw} live fetch failed`);
+          }
         }
       }
     } else if (gw === 0) {
