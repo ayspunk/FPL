@@ -152,6 +152,8 @@ const Store = {
   setForgetData: null,  // Transfer impact data from transfer-impact.json
   _ts: { outs: [], ins: [], ft: null },  // Transfer simulation state
   _liveAllData: null,  // All past GW live data from live-all.json
+  _weightsHistory: null, // Per-GW adaptive weights from weights-history.json
+  _snapshotsData: null, // Per-GW player stat snapshots from snapshots.json
 
   // State
   currentGW:     null,
@@ -1191,10 +1193,14 @@ const H = {
     const gw = Store.targetGW;
     const cur = Store.currentGW || 0;
     if (gw <= cur) {
+      const hasSnap = !!Store._snapshotsData?.[gw-1];
+      const hasAdaptW = !!Store._backtestAdaptiveWeights;
+      let statusParts = [];
+      if (hasSnap) statusParts.push(`<span style="color:var(--green)">✓ Data historis GW${gw-1}</span>`);
+      else statusParts.push(`<span style="color:var(--red)">⚠ Snapshot belum ada</span> — run GitHub Actions`);
+      if (hasAdaptW) statusParts.push(`<span style="color:var(--green)">✓ Adaptive weights</span>`);
       return `<div class="info-box" style="background:rgba(255,145,0,.08);border-color:rgba(255,145,0,.3);color:var(--orange);margin-bottom:14px">
-        🔍 <b>Backtest Mode — GW${gw}</b> · Fixture dan poin aktual GW${gw}.
-        Skor rekomendasi menggunakan statistik pemain saat ini (PPG, Form, xGI, dll.) — bukan snapshot GW${gw-1}.
-        Bandingkan <b>ranking formasi rekomendasi</b> vs <b>ranking poin aktual</b> di tab Evaluasi Poin.
+        🔍 <b>Backtest Mode — GW${gw}</b> · ${statusParts.join(' · ')}
       </div>`;
     }
     return `<div class="info-box" style="background:rgba(206,147,216,.08);border-color:rgba(206,147,216,.3);color:var(--purple);margin-bottom:14px">
@@ -5242,53 +5248,106 @@ const UI = {
     const isFuture = gw > Store.currentGW;
     let liveData = null;
 
+    // ── Load snapshots + live-all (once, lazy) ──
     if (isPast) {
-      // Try GitHub live-all.json first (compact format)
-      this.setProgress(`Loading GW${gw} live…`);
-      if (!Store._liveAllData) {
-        const liveAllJson = await Fetch.githubJSON('live-all.json');
-        if (liveAllJson) Store._liveAllData = liveAllJson;
+      this.setProgress(`Loading GW${gw} data…`);
+      if (!Store._snapshotsData) {
+        const snap = await Fetch.githubJSON('snapshots.json');
+        if (snap) { Store._snapshotsData = snap; console.log(`[UI] ✓ Snapshots loaded: ${Object.keys(snap).length} GWs`); }
       }
+      if (!Store._liveAllData) {
+        const la = await Fetch.githubJSON('live-all.json');
+        if (la) { Store._liveAllData = la; console.log(`[UI] ✓ Live-all loaded: ${Object.keys(la).length} GWs`); }
+      }
+      if (!Store._weightsHistory) {
+        const wh = await Fetch.githubJSON('weights-history.json');
+        if (wh) { Store._weightsHistory = wh; console.log(`[UI] ✓ Weights history loaded: ${Object.keys(wh).length} GWs`); }
+      }
+
+      // Live data for target GW
       if (Store._liveAllData?.[gw]) {
-        // Convert compact format back to full format
         liveData = {
           elements: Store._liveAllData[gw].map(e => ({
-            id: e.id,
-            stats: { total_points: e.tp, bonus: e.bn, minutes: e.mn }
+            id: e.id, stats: { total_points: e.tp, bonus: e.bn, minutes: e.mn }
           }))
         };
-        console.log(`[UI] ✓ GW${gw} live from live-all.json (${liveData.elements.length} players)`);
+        console.log(`[UI] ✓ GW${gw} live: ${liveData.elements.length} players`);
       } else {
-        // Fallback: fetch via proxy/direct
-        const url = CFG.FPL + `event/${gw}/live/`;
-        const cached = Cache.get(url);
-        if (cached) {
-          liveData = cached.data;
-          console.log(`[UI] ✓ GW${gw} live from cache`);
-        } else {
-          liveData = await Fetch.liveEvent(gw);
-          if (liveData) {
-            Cache.set(url, liveData, Cache.TTL.STATIC);
-            console.log(`[UI] ✓ GW${gw} live fetched & cached`);
-          } else {
-            console.log(`[UI] ✗ GW${gw} live fetch failed`);
-          }
-        }
+        // Fallback: direct/proxy fetch
+        liveData = await Fetch.liveEvent(gw);
+        if (liveData) Cache.set(CFG.FPL + `event/${gw}/live/`, liveData, Cache.TTL.STATIC);
       }
     } else if (gw === 0) {
-      liveData = Store.liveEvent; // reset to current
+      liveData = Store.liveEvent;
     }
-    // Future GWs: no live data (liveData stays null)
 
-    // Store the target GW's live data separately
     Store._targetLiveData = liveData;
 
-    // Re-process players with new fixture target + correct live data
+    // ── Process players with correct fixtures ──
     const { players } = Process.fromBootstrap(Store.bootstrap, Store.fixtures, liveData);
+
+    // ── Override stats with historical snapshot (GW N-1) ──
+    const snapshotGW = isPast ? gw - 1 : 0;
+    const snapshot = snapshotGW > 0 ? Store._snapshotsData?.[snapshotGW] : null;
+    if (snapshot) {
+      let overridden = 0;
+      players.forEach(p => {
+        const snap = snapshot[p.id];
+        if (!snap) return;
+        overridden++;
+        // Override display values
+        p.PPG = snap.ppg || 0;
+        p.Form = snap.form || 0;
+        p.TP = snap.tp || 0;
+        p.minutes = snap.mn || 0;
+        p.xGI = snap.xgi || 0;
+        p.xGC = snap.xgc || 0;
+        p.Saves = snap.sv || 0;
+        p.ICT = snap.ict || 0;
+        p.YC = snap.yc || 0;
+        p.Price = (snap.pr || 0) / 10;
+        const m90 = p.minutes >= 90 ? p.minutes / 90 : null;
+        p.xGCpm = m90 ? +(p.xGC / m90).toFixed(3) : null;
+        // Also override _raw so _computeAllScores uses historical values
+        if (p._raw) {
+          p._raw.points_per_game = snap.ppg || 0;
+          p._raw.form = snap.form || 0;
+          p._raw.total_points = snap.tp || 0;
+          p._raw.minutes = snap.mn || 0;
+          p._raw.expected_goal_involvements = snap.xgi || 0;
+          p._raw.expected_goals_conceded = snap.xgc || 0;
+          p._raw.saves = snap.sv || 0;
+          p._raw.ict_index = snap.ict || 0;
+          p._raw.yellow_cards = snap.yc || 0;
+          p._raw.now_cost = snap.pr || p._raw.now_cost;
+          p._raw.goals_scored = snap.gl || 0;
+          p._raw.assists = snap.as || 0;
+          p._raw.clean_sheets = snap.cs || 0;
+          p._raw.bonus = snap.bn || 0;
+          // Derived fields
+          const gp = snap.gp || 1;
+          p._raw.value_form = gp > 0 ? +((snap.form||0) / ((snap.pr||100)/10)).toFixed(1) : 0;
+          p._raw.value_season = gp > 0 ? +((snap.tp||0) / ((snap.pr||100)/10)).toFixed(1) : 0;
+        }
+      });
+      console.log(`[UI] ✓ Snapshot GW${snapshotGW} applied: ${overridden} players overridden`);
+    } else if (isPast && snapshotGW > 0) {
+      console.log(`[UI] ⚠ No snapshot for GW${snapshotGW} — using current stats`);
+    }
+
     Store.players = players;
+
+    // ── Apply adaptive weights for this GW if available ──
+    if (isPast && Store._weightsHistory?.[gw]) {
+      Store._backtestAdaptiveWeights = Store._weightsHistory[gw];
+      console.log(`[UI] ✓ Adaptive weights GW${gw}: ${Object.keys(Store._backtestAdaptiveWeights).join(',')}`);
+    } else {
+      Store._backtestAdaptiveWeights = null;
+    }
+
     Process.applyScores(players);
 
-    // Update GW badge
+    // ── Update badge ──
     const badge = document.getElementById('gw-badge');
     if (badge) {
       if (gw === 0) {
