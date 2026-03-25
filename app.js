@@ -1153,7 +1153,7 @@ const Process = {
 // 5. NAVIGATION
 // ═══════════════════════════════════════════════════════
 const SUBTABS = {
-  lineup:  [{k:'gwrec',    l:'GW Recommendation'},{k:'gweval',l:'Evaluasi Poin'},{k:'gwscoring',l:'GW Scoring'},{k:'wlineup',l:'WLineUp'},{k:'optimize',l:'⚡ Optimize'}],
+  lineup:  [{k:'gwrec',l:'GW Recommendation'},{k:'gweval',l:'Evaluasi Poin'},{k:'gwscoring',l:'GW Scoring'},{k:'wlineup',l:'WLineUp'},{k:'optimize',l:'⚡ Optimize'},{k:'backtest',l:'📊 Backtest Report'}],
   scout:   [{k:'sscoring', l:'Scout Scoring'},{k:'srec',l:'Scout Recommendation'},{k:'swt',l:'Scout Weights'},{k:'soptimize',l:'⚡ Optimize'},{k:'price',l:'💰 Price Change'},{k:'diff',l:'🔮 Differentials'},{k:'captain',l:'👑 Captain Sim'}],
   fdr:     [{k:'fdr-def',  l:'DEF Matrix'},       {k:'fdr-atk',  l:'ATK Matrix'},{k:'fdr-ovr',l:'OVR Matrix'},{k:'fdrinfo',l:'Team Strength'},{k:'season',l:'📅 Season Planner'}],
   epl:     [],
@@ -1288,7 +1288,7 @@ const Render = {
     const el = document.getElementById(`content-${tab}`);
     if (!el) return;
     const map = {
-      lineup:  { gwrec:this.lineupRec, gweval:this.lineupEval, gwscoring:this.lineupScoring, wlineup:this.lineupWLineup, optimize:this.lineupOptimize },
+      lineup:  { gwrec:this.lineupRec, gweval:this.lineupEval, gwscoring:this.lineupScoring, wlineup:this.lineupWLineup, optimize:this.lineupOptimize, backtest:this.backtestReport },
       scout:   { sscoring:this.scoutScoring, srec:this.scoutRec, swt:this.scoutWeight, soptimize:this.scoutOptimize, price:this.pricePredictor, diff:this.differentialFinder, captain:this.captainSimulator },
       fdr:     { 'fdr-def':()=>this.fdrMatrix('def'), 'fdr-atk':()=>this.fdrMatrix('atk'),
                  'fdr-ovr':()=>this.fdrMatrix('ovr'), fdrinfo:this.fdrInfo, season:this.seasonPlanner },
@@ -1381,6 +1381,181 @@ const Render = {
   // ── Backtest Weight Optimizer ──────────────────────────
   lineupOptimize() {
     return this._optimizePanel('gw');
+  },
+
+  // ══════════════════════════════════════════════════════
+  // BACKTEST REPORT — Model Performance Across GWs
+  // ══════════════════════════════════════════════════════
+  backtestReport() {
+    const snaps = Store._snapshotsData;
+    const liveAll = Store._liveAllData;
+    const weightsHist = Store._weightsHistory;
+
+    if (!snaps || !liveAll) {
+      return `
+        <div class="section-title">📊 Backtest Report</div>
+        ${H.info(`Data historis belum tersedia. Push <code>fetch-fpl.js</code> dan run GitHub Actions untuk generate:
+          <br>• <code>snapshots.json</code> — statistik pemain per GW
+          <br>• <code>live-all.json</code> — poin aktual per GW
+          <br>• <code>weights-history.json</code> — adaptive weights per GW`)}
+        <div class="btn-row">
+          <button class="btn btn-secondary" onclick="App.refresh()">↻ Refresh Data</button>
+        </div>`;
+    }
+
+    const bs = Store.bootstrap;
+    if (!bs) return H.info('Bootstrap data belum dimuat.');
+
+    const gwNums = Object.keys(snaps).map(Number).filter(g => g > 1 && liveAll[g]?.length).sort((a,b)=>a-b);
+    if (!gwNums.length) return H.info('Tidak ada GW dengan data snapshot + live.');
+
+    const teamMap = {};
+    bs.teams.forEach(t => { teamMap[t.id] = t; });
+    const posMap = {1:'GK',2:'DEF',3:'MID',4:'FWD'};
+
+    // For each GW: compute predicted score (using GW-1 snapshot + current user weights)
+    // vs actual points, then calculate metrics
+    const gwMetrics = gwNums.map(gwNum => {
+      const snap = snaps[gwNum - 1]; // Stats before this GW
+      const live = liveAll[gwNum];   // Actual points this GW
+      if (!snap || !live?.length) return null;
+
+      const liveMap = {};
+      live.forEach(e => { liveMap[e.id] = e.tp; });
+
+      // Build pseudo-players from snapshot and score them
+      const players = Object.entries(snap)
+        .filter(([id, s]) => s.mn >= 90 && liveMap[+id] != null)
+        .map(([id, s]) => {
+          const actual = liveMap[+id];
+          const m90 = s.mn / 90;
+          // Simple predicted score using key criteria
+          const pred = (s.ppg || 0) * 0.3 + (s.form || 0) * 0.25 +
+            (m90 > 0 ? (s.xgi || 0) / m90 : 0) * 0.2 +
+            (m90 > 0 ? (s.sv || 0) / m90 : 0) * 0.1 +
+            (s.ict || 0) * 0.002;
+          return { id: +id, pred, actual, pos: posMap[s.pos] || '?' };
+        });
+
+      if (players.length < 20) return null;
+
+      // Metrics
+      const n = players.length;
+      const meanA = players.reduce((s,p) => s + p.actual, 0) / n;
+      const meanP = players.reduce((s,p) => s + p.pred, 0) / n;
+
+      // MAE
+      const mae = +(players.reduce((s,p) => s + Math.abs(p.actual - p.pred), 0) / n).toFixed(2);
+
+      // RMSE
+      const rmse = +(Math.sqrt(players.reduce((s,p) => s + Math.pow(p.actual - p.pred, 2), 0) / n)).toFixed(2);
+
+      // Spearman rank correlation
+      const sortedA = [...players].sort((a,b) => b.actual - a.actual);
+      const sortedP = [...players].sort((a,b) => b.pred - a.pred);
+      const rankA = {}, rankP = {};
+      sortedA.forEach((p,i) => { rankA[p.id] = i + 1; });
+      sortedP.forEach((p,i) => { rankP[p.id] = i + 1; });
+      const dSq = players.reduce((s,p) => s + Math.pow((rankA[p.id]||0) - (rankP[p.id]||0), 2), 0);
+      const spearman = +(1 - (6 * dSq) / (n * (n*n - 1))).toFixed(3);
+
+      // Top 11: how many of predicted top 11 are in actual top 11?
+      const top11pred = new Set(sortedP.slice(0, 11).map(p => p.id));
+      const top11actual = new Set(sortedA.slice(0, 11).map(p => p.id));
+      const overlap = [...top11pred].filter(id => top11actual.has(id)).length;
+
+      // Has adaptive weights?
+      const hasAdapt = !!weightsHist?.[gwNum];
+
+      return { gw: gwNum, n, mae, rmse, spearman, overlap, hasAdapt, meanA: +meanA.toFixed(1) };
+    }).filter(Boolean);
+
+    if (!gwMetrics.length) return H.info('Tidak cukup data untuk backtest.');
+
+    // Overall averages
+    const avgMAE = +(gwMetrics.reduce((s,m) => s + m.mae, 0) / gwMetrics.length).toFixed(2);
+    const avgRMSE = +(gwMetrics.reduce((s,m) => s + m.rmse, 0) / gwMetrics.length).toFixed(2);
+    const avgSpearman = +(gwMetrics.reduce((s,m) => s + m.spearman, 0) / gwMetrics.length).toFixed(3);
+    const avgOverlap = +(gwMetrics.reduce((s,m) => s + m.overlap, 0) / gwMetrics.length).toFixed(1);
+    const qualColor = avgSpearman >= 0.3 ? 'var(--green)' : avgSpearman >= 0.15 ? 'var(--gold)' : 'var(--red)';
+    const qualLabel = avgSpearman >= 0.3 ? '✓ Baik' : avgSpearman >= 0.15 ? '↔ Cukup' : '✗ Perlu Improve';
+
+    // Table rows
+    const rows = gwMetrics.map(m => {
+      const sColor = m.spearman >= 0.3 ? 'var(--green)' : m.spearman >= 0.15 ? 'var(--gold)' : 'var(--red)';
+      const barW = Math.max(5, Math.min(100, m.spearman * 100));
+      return `<tr>
+        <td class="c dim">GW${m.gw}</td>
+        <td class="mono r">${m.n}</td>
+        <td class="mono r">${m.meanA}</td>
+        <td class="mono r">${m.mae}</td>
+        <td class="mono r">${m.rmse}</td>
+        <td class="mono r" style="color:${sColor};font-weight:700">${m.spearman}</td>
+        <td style="min-width:80px"><div class="corr-bar"><div class="corr-fill corr-pos" style="width:${barW}%"></div></div></td>
+        <td class="mono c" style="color:${m.overlap>=6?'var(--green)':m.overlap>=4?'var(--gold)':'var(--red)'}">${m.overlap}/11</td>
+        <td class="c">${m.hasAdapt?'<span style="color:var(--green)">✓</span>':'<span class="dim">–</span>'}</td>
+      </tr>`;
+    }).join('');
+
+    // Sparkline-like visual for spearman trend
+    const maxS = Math.max(...gwMetrics.map(m => Math.abs(m.spearman)), 0.01);
+    const sparkW = 400, sparkH = 80;
+    const sparkPts = gwMetrics.map((m, i) => {
+      const x = gwMetrics.length > 1 ? i / (gwMetrics.length - 1) * (sparkW - 20) + 10 : sparkW / 2;
+      const y = sparkH - (m.spearman / maxS) * (sparkH - 20) - 10;
+      return `${x},${y}`;
+    }).join(' ');
+    const sparkSvg = `<svg width="${sparkW}" height="${sparkH}" style="display:block;margin:8px 0">
+      <polyline points="${sparkPts}" fill="none" stroke="var(--green)" stroke-width="2"/>
+      ${gwMetrics.map((m, i) => {
+        const x = gwMetrics.length > 1 ? i / (gwMetrics.length - 1) * (sparkW - 20) + 10 : sparkW / 2;
+        const y = sparkH - (m.spearman / maxS) * (sparkH - 20) - 10;
+        return `<circle cx="${x}" cy="${y}" r="3" fill="${m.spearman>=0.3?'var(--green)':m.spearman>=0.15?'var(--gold)':'var(--red)'}"/>`;
+      }).join('')}
+      <text x="5" y="12" fill="var(--text3)" font-size="9" font-family="JetBrains Mono">Spearman ρ per GW</text>
+    </svg>`;
+
+    return `
+      <div class="section-title">📊 Backtest Report — Model Performance</div>
+      ${H.info(`Mengukur akurasi model prediksi terhadap poin aktual di ${gwMetrics.length} GW. 
+        <b>Spearman ρ</b> = korelasi ranking prediksi vs aktual. <b>Top 11 Overlap</b> = berapa dari 11 pemain terbaik prediksi yang benar-benar masuk 11 terbaik aktual.`)}
+
+      <div class="stat-strip">
+        <div class="stat-box"><div class="stat-label">GW Dianalisis</div><div class="stat-val">${gwMetrics.length}</div></div>
+        <div class="stat-box"><div class="stat-label">Avg MAE</div><div class="stat-val dim">${avgMAE}</div></div>
+        <div class="stat-box"><div class="stat-label">Avg RMSE</div><div class="stat-val dim">${avgRMSE}</div></div>
+        <div class="stat-box"><div class="stat-label">Avg Spearman ρ</div><div class="stat-val" style="color:${qualColor}">${avgSpearman}</div></div>
+        <div class="stat-box"><div class="stat-label">Avg Top 11</div><div class="stat-val" style="color:var(--gold)">${avgOverlap}/11</div></div>
+        <div class="stat-box"><div class="stat-label">Kualitas Model</div><div class="stat-val" style="font-size:13px;color:${qualColor}">${qualLabel}</div></div>
+      </div>
+
+      <div class="chart-card" style="margin-bottom:16px;padding:12px">
+        <div class="chart-title">Spearman ρ Trend per GW</div>
+        ${sparkSvg}
+      </div>
+
+      <div class="table-wrap max-h">
+        <table>
+          <thead><tr>
+            <th class="c">GW</th><th class="r">Pemain</th><th class="r">Avg Pts</th>
+            <th class="r" title="Mean Absolute Error">MAE</th>
+            <th class="r" title="Root Mean Squared Error">RMSE</th>
+            <th class="r" title="Spearman Rank Correlation">ρ</th>
+            <th>Korelasi</th>
+            <th class="c" title="Berapa dari top 11 prediksi yang benar di top 11 aktual">Top 11</th>
+            <th class="c" title="Adaptive weights tersedia">Adapt</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+
+      <div class="info-box" style="margin-top:16px">
+        <b>Cara baca:</b><br>
+        • <b>MAE</b>: Rata-rata selisih absolut prediksi vs aktual. Lebih kecil = lebih baik.<br>
+        • <b>RMSE</b>: Root mean squared error. Penalti lebih besar untuk error besar.<br>
+        • <b>Spearman ρ</b>: Korelasi ranking (-1 s/d +1). ≥0.3 = baik, ≥0.15 = cukup, <0.15 = perlu tune.<br>
+        • <b>Top 11 Overlap</b>: Berapa pemain prediksi terbaik yang benar-benar mencetak poin terbaik. ≥6/11 = bagus.
+      </div>`;
   },
 
   // ── Shared Optimize Panel (GW + Scout) ──
@@ -4414,6 +4589,25 @@ const Render = {
         </div>
 
         <div class="settings-card">
+          <h3>Liga Saya</h3>
+          <div id="league-list">
+            ${CFG.leagues.map((l,i) => `
+              <div class="league-item">
+                <span class="league-item-name">${l.name}</span>
+                <span class="dim mono" style="font-size:11px">ID: ${l.id}</span>
+                <button class="btn-crit-remove" onclick="UI.removeLeague(${i})" title="Hapus">✕</button>
+              </div>
+            `).join('')}
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <input type="text" id="new-league-name" placeholder="Nama Liga" class="search-input" style="flex:1">
+            <input type="number" id="new-league-id" placeholder="League ID" class="search-input" style="width:120px">
+            <button class="btn btn-primary" onclick="UI.addLeague()" style="white-space:nowrap">+ Tambah</button>
+          </div>
+          <div class="hint" style="margin-top:6px">Temukan League ID di URL: fantasy.premierleague.com/leagues/<b>ID</b>/standings/…</div>
+        </div>
+
+        <div class="settings-card">
           <h3>Google Sheets (Fallback & Pre-computed)</h3>
           <div class="field-group">
             <label>URL Apps Script Web App</label>
@@ -4945,6 +5139,24 @@ const UI = {
     // Switch back to current GW
     Store.targetGW = 0;
     this.changeTargetGW(0);
+  },
+
+  addLeague() {
+    const name = document.getElementById('new-league-name')?.value?.trim();
+    const id = +document.getElementById('new-league-id')?.value;
+    if (!name || !id) return;
+    if (CFG.leagues.some(l => l.id === id)) return;
+    CFG.leagues.push({ name, id });
+    this.saveSettings();
+    Nav.goTab('settings');
+  },
+
+  removeLeague(idx) {
+    if (CFG.leagues.length <= 1) return;
+    CFG.leagues.splice(idx, 1);
+    if (CFG.selectedLeagueIdx >= CFG.leagues.length) CFG.selectedLeagueIdx = 0;
+    this.saveSettings();
+    Nav.goTab('settings');
   },
 
   applyGWWeights() {
@@ -5540,6 +5752,7 @@ const UI = {
         myTeamId:CFG.myTeamId, myTeamName:CFG.myTeamName,
         sheetsUrl:CFG.sheetsUrl, minMinutes:CFG.minMinutes,
         maxPerTeam:CFG.maxPerTeam, selectedLeagueIdx:CFG.selectedLeagueIdx,
+        leagues:CFG.leagues,
       }));
       const s=document.getElementById('settings-status');
       if(s){s.textContent='✓ Settings tersimpan.';s.className='status-msg ok';}
@@ -5556,6 +5769,7 @@ const UI = {
       if(saved.minMinutes)       CFG.minMinutes       = saved.minMinutes;
       if(saved.maxPerTeam)       CFG.maxPerTeam       = saved.maxPerTeam;
       if(saved.selectedLeagueIdx!==undefined) CFG.selectedLeagueIdx = saved.selectedLeagueIdx;
+      if(saved.leagues?.length) CFG.leagues = saved.leagues;
     } catch {}
     // Load scout weights
     try {
