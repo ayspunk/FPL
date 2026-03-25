@@ -1255,6 +1255,15 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 .verdict-keep { color: var(--green); }
 .verdict-warn { color: var(--orange); }
 
+/* League management */
+.league-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; background: var(--bg3);
+  border: 1px solid var(--border); border-radius: 4px;
+  margin-bottom: 6px;
+}
+.league-item-name { flex: 1; font-weight: 600; font-size: 13px; }
+
 /* Urgency indicators */
 .rec-player-block.urg-high { border-left: 3px solid var(--red); }
 .rec-player-block.urg-rec  { border-left: 3px solid var(--gold); }
@@ -1302,6 +1311,13 @@ tr.row-rank { background: rgba(0,230,118,.03); }
   color: var(--text3);
   margin-bottom: 16px;
 }
+.league-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; background: var(--bg3);
+  border: 1px solid var(--border); border-radius: 4px;
+  margin-bottom: 6px;
+}
+.league-item-name { flex: 1; font-weight: 600; font-size: 13px; }
 .field-group { margin-bottom: 14px; }
 .field-group label {
   display: block;
@@ -1377,6 +1393,15 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 /* WhatsApp button */
 .btn-wa { background: #25d366; color: #fff; border: none; }
 .btn-wa:hover { background: #1da851; }
+
+/* League items in Settings */
+.league-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; background: var(--bg3);
+  border: 1px solid var(--border); border-radius: 4px;
+  margin-bottom: 6px;
+}
+.league-item-name { flex: 1; font-weight: 600; font-size: 13px; }
 
 /* Price slider wrap */
 .price-slider-wrap {
