@@ -1178,11 +1178,11 @@ const H = {
     const cur = Store.currentGW || 0;
     if (gw <= cur) {
       return `<div class="info-box" style="background:rgba(255,145,0,.08);border-color:rgba(255,145,0,.3);color:var(--orange);margin-bottom:14px">
-        🔍 <b>Backtest Mode — GW${gw}</b> · Melihat data fixture GW${gw} (sudah berlalu). Skor berdasarkan jadwal GW tersebut.
+        🔍 <b>Backtest Mode — GW${gw}</b> · Fixture dan poin aktual GW${gw}. Rekomendasi formasi dihitung ulang berdasarkan data GW ini untuk menguji model pembobotan.
       </div>`;
     }
     return `<div class="info-box" style="background:rgba(206,147,216,.08);border-color:rgba(206,147,216,.3);color:var(--purple);margin-bottom:14px">
-      🔮 <b>Preview Mode — GW${gw}</b> · Melihat fixture GW${gw} (belum dimainkan). Gunakan untuk perencanaan transfer jangka menengah.
+      🔮 <b>Preview Mode — GW${gw}</b> · Fixture GW${gw} (belum dimainkan). Gunakan untuk perencanaan transfer.
     </div>`;
   },
   ptsClass:   p => p==null?'dim':+p>=8?'pts-great':+p>=5?'pts-good':+p>=2?'pts-ok':'pts-bad',
@@ -1488,6 +1488,37 @@ const Render = {
 
     // Summary strip
     const bestPtsForm = hasLive ? byPts[0] : null;
+
+    // Percentile calculation (when live data available)
+    let percentileHtml = '';
+    if (hasLive && f.totalWithCap) {
+      const targetGW = Store.targetGW || Store.currentGW;
+      const gwEvent = Store.bootstrap?.events?.find(e => e.id === targetGW);
+      const avgScore = gwEvent?.average_entry_score || 0;
+      const highestScore = gwEvent?.highest_score || 100;
+      if (avgScore > 0) {
+        // Estimate percentile using normal distribution approximation
+        // FPL GW scores: mean=avgScore, std≈0.45*avgScore (empirical)
+        const std = Math.max(avgScore * 0.45, 10);
+        const z = (f.totalWithCap - avgScore) / std;
+        // Approximate CDF: Φ(z) using logistic approximation
+        const pctile = Math.min(99.9, Math.max(0.1, 100 / (1 + Math.exp(-1.7 * z))));
+        const pctColor = pctile >= 90 ? 'var(--gold)' : pctile >= 70 ? 'var(--green)' : pctile >= 50 ? 'var(--text)' : 'var(--red)';
+        percentileHtml = `
+        <div class="eval-stat">
+          <div class="eval-stat-label">GW Average</div>
+          <div class="eval-stat-val dim">${avgScore}</div>
+        </div>
+        <div class="eval-stat">
+          <div class="eval-stat-label">GW Highest</div>
+          <div class="eval-stat-val dim">${highestScore}</div>
+        </div>
+        <div class="eval-stat highlight">
+          <div class="eval-stat-label">Percentile</div>
+          <div class="eval-stat-val" style="color:${pctColor};font-size:20px">Top ${(100-pctile).toFixed(1)}%</div>
+        </div>`;
+      }
+    }
     const summaryStrip = `
       <div class="eval-summary-strip">
         <div class="eval-stat">
@@ -1511,6 +1542,7 @@ const Render = {
           <div class="eval-stat-label">Total Poin</div>
           <div class="eval-stat-val" style="color:var(--green);font-size:24px">${f.totalWithCap}</div>
         </div>
+        ${percentileHtml}
         ` : `
         <div class="eval-stat">
           <div class="eval-stat-label">Poin Aktual</div>
@@ -1520,6 +1552,7 @@ const Render = {
       </div>`;
 
     return `
+      ${H.gwTargetBanner()}
       <div class="rank-grid">${cards}</div>
       ${summaryStrip}
       <div class="lineup-container">
@@ -5100,32 +5133,48 @@ const UI = {
     sel.innerHTML = html;
   },
 
-  changeTargetGW(gw) {
+  async changeTargetGW(gw) {
     Store.targetGW = gw; // 0 = auto
     const label = gw === 0 ? 'Auto' : `GW${gw}`;
     console.log(`[UI] Target GW changed → ${label}`);
 
-    // Re-process players with new fixture target
-    if (Store.bootstrap && Store.fixtures) {
-      const { players, targetGW } = Process.fromBootstrap(Store.bootstrap, Store.fixtures, Store.liveEvent);
-      Store.players = players;
-      Process.applyScores(players);
-      // Update GW badge to show target
-      const badge = document.getElementById('gw-badge');
-      if (badge) {
-        if (gw === 0) {
-          badge.textContent = `GW ${Store.currentGW}`;
-          badge.style.color = '';
-        } else if (gw <= Store.currentGW) {
-          badge.textContent = `GW ${Store.currentGW} → 🔍${gw}`;
-          badge.style.color = 'var(--orange)';
-        } else {
-          badge.textContent = `GW ${Store.currentGW} → 🔮${gw}`;
-          badge.style.color = 'var(--purple)';
-        }
+    if (!Store.bootstrap || !Store.fixtures) return;
+
+    // For past GWs: fetch that GW's live data to get actual points
+    let liveData = Store.liveEvent; // default: current GW live
+    const isPast = gw > 0 && gw <= Store.currentGW;
+    if (isPast) {
+      this.setProgress(`Fetching GW${gw} live…`);
+      const pastLive = await Fetch.liveEvent(gw);
+      if (pastLive) {
+        liveData = pastLive;
+        console.log(`[UI] ✓ Loaded GW${gw} live data: ${pastLive.elements?.length} players`);
       }
-      Nav.goTab(Nav.current);
+    } else if (gw === 0) {
+      liveData = Store.liveEvent; // reset to current
     }
+
+    // Re-process players with new fixture target + correct live data
+    const { players, targetGW } = Process.fromBootstrap(Store.bootstrap, Store.fixtures, liveData);
+    Store.players = players;
+    Process.applyScores(players);
+
+    // Update GW badge
+    const badge = document.getElementById('gw-badge');
+    if (badge) {
+      if (gw === 0) {
+        badge.textContent = `GW ${Store.currentGW}`;
+        badge.style.color = '';
+      } else if (isPast) {
+        badge.textContent = `GW ${Store.currentGW} → 🔍${gw}`;
+        badge.style.color = 'var(--orange)';
+      } else {
+        badge.textContent = `GW ${Store.currentGW} → 🔮${gw}`;
+        badge.style.color = 'var(--purple)';
+      }
+    }
+    this.setSrc(isPast ? 'fpl' : (Store.dataSource || 'fpl'));
+    Nav.goTab(Nav.current);
   },
 
   leagueSelectHTML() {
