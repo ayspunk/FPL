@@ -1201,6 +1201,20 @@ const H = {
       🔮 <b>Preview Mode — GW${gw}</b> · Fixture GW${gw} (belum dimainkan). Gunakan untuk perencanaan transfer.
     </div>`;
   },
+
+  _pctLabel(pctile) {
+    const top = (100 - pctile).toFixed(1);
+    const beat = pctile.toFixed(1);
+    let emoji, label, color;
+    if (pctile >= 95) { emoji='🏆'; label='Luar Biasa'; color='var(--gold)'; }
+    else if (pctile >= 85) { emoji='🥇'; label='Sangat Bagus'; color='var(--green)'; }
+    else if (pctile >= 70) { emoji='🥈'; label='Bagus'; color='var(--green)'; }
+    else if (pctile >= 50) { emoji='🥉'; label='Di Atas Rata-rata'; color='var(--text)'; }
+    else if (pctile >= 30) { emoji='📊'; label='Di Bawah Rata-rata'; color='var(--orange)'; }
+    else { emoji='⚠'; label='Rendah'; color='var(--red)'; }
+    return { top, beat, emoji, label, color };
+  },
+
   ptsClass:   p => p==null?'dim':+p>=8?'pts-great':+p>=5?'pts-good':+p>=2?'pts-ok':'pts-bad',
 
   fdrClass(v) {
@@ -1519,7 +1533,7 @@ const Render = {
         const z = (f.totalWithCap - avgScore) / std;
         // Approximate CDF: Φ(z) using logistic approximation
         const pctile = Math.min(99.9, Math.max(0.1, 100 / (1 + Math.exp(-1.7 * z))));
-        const pctColor = pctile >= 90 ? 'var(--gold)' : pctile >= 70 ? 'var(--green)' : pctile >= 50 ? 'var(--text)' : 'var(--red)';
+        const pct = H._pctLabel(pctile);
         percentileHtml = `
         <div class="eval-stat">
           <div class="eval-stat-label">GW Average</div>
@@ -1530,8 +1544,9 @@ const Render = {
           <div class="eval-stat-val dim">${highestScore}</div>
         </div>
         <div class="eval-stat highlight">
-          <div class="eval-stat-label">Percentile</div>
-          <div class="eval-stat-val" style="color:${pctColor};font-size:20px">Top ${(100-pctile).toFixed(1)}%</div>
+          <div class="eval-stat-label">Ranking</div>
+          <div class="eval-stat-val" style="color:${pct.color};font-size:16px">${pct.emoji} Top ${pct.top}%</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px">Lebih baik dari ${pct.beat}% manajer</div>
         </div>`;
       }
     }
@@ -1744,15 +1759,16 @@ const Render = {
         const z = (bestForm.totalWithCap - avgScore) / std;
         const pctile = Math.min(99.9, Math.max(0.1, 100 / (1 + Math.exp(-1.7 * z))));
         const top = (100 - pctile).toFixed(1);
-        const pctColor = pctile >= 90 ? 'var(--gold)' : pctile >= 70 ? 'var(--green)' : pctile >= 50 ? 'var(--text)' : 'var(--red)';
+        const pct = H._pctLabel(pctile);
         evalPercentile = `
         <div class="eval-stat">
           <div class="eval-stat-label">GW Avg</div>
           <div class="eval-stat-val dim">${avgScore}</div>
         </div>
         <div class="eval-stat highlight">
-          <div class="eval-stat-label">Percentile</div>
-          <div class="eval-stat-val" style="color:${pctColor}">Top ${top}%</div>
+          <div class="eval-stat-label">Ranking</div>
+          <div class="eval-stat-val" style="color:${pct.color}">${pct.emoji} Top ${pct.top}%</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px">${pct.label}</div>
         </div>`;
       }
     }
