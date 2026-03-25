@@ -1,536 +1,236 @@
 #!/usr/bin/env node
 // ============================================================
-// FPL DATA FETCHER — Node.js (untuk GitHub Actions)
-// Fetch FPL API → hitung EPL/FDR/League → simpan JSON ke data/
-// Tidak perlu CORS proxy — berjalan di server GitHub!
+// FPL DATA FETCHER v2 — parallel + retry + incremental
+// Credit: ays
 // ============================================================
+const fs=require('fs'),path=require('path'),https=require('https');
+const CFG={LEAGUE_IDS:[24873,611927,2150310],MY_ENTRY_ID:2414649,FPL:'https://fantasy.premierleague.com/api',DIR:path.join(__dirname,'..','data'),C:10,RETRY:3,RETRY_MS:1000};
+const delay=ms=>new Promise(r=>setTimeout(r,ms));
+const log=m=>console.log(`[${new Date().toISOString().slice(11,19)}] ${m}`);
+function save(f,d){const p=path.join(CFG.DIR,f);fs.writeFileSync(p,JSON.stringify(d));log(`  💾 ${f} (${(fs.statSync(p).size/1024).toFixed(1)}KB)`);}
+function load(f){const p=path.join(CFG.DIR,f);if(!fs.existsSync(p))return null;try{return JSON.parse(fs.readFileSync(p,'utf8'))}catch{return null}}
 
-const fs   = require('fs');
-const path = require('path');
-const https = require('https');
-
-// ============================================================
-// CONFIG
-// ============================================================
-const CONFIG = {
-  LEAGUE_IDS:  [24873, 611927, 2150310],
-  MY_ENTRY_ID: 2414649,
-  FPL_BASE:    'https://fantasy.premierleague.com/api',
-  DATA_DIR:    path.join(__dirname, '..', 'data'),
-  DELAY_MS:    400,
-};
-
-// ============================================================
-// HTTP FETCH
-// ============================================================
-function fetchJSON(url) {
-  return new Promise((resolve, reject) => {
-    https.get(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json',
-      }
-    }, (res) => {
-      if (res.statusCode !== 200) {
-        reject(new Error(`HTTP ${res.statusCode} from ${url.split('/').slice(-3).join('/')}`));
-        res.resume();
-        return;
-      }
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch(e) { reject(new Error(`JSON parse: ${e.message}`)); }
+async function get(url,retries=CFG.RETRY){
+  for(let a=1;a<=retries;a++){
+    try{
+      const d=await new Promise((res,rej)=>{
+        https.get(url,{headers:{'User-Agent':'Mozilla/5.0','Accept':'application/json'}},r=>{
+          if(r.statusCode===429){rej(new Error('RATE'));r.resume();return}
+          if(r.statusCode!==200){rej(new Error(`HTTP${r.statusCode}`));r.resume();return}
+          let b='';r.on('data',c=>b+=c);r.on('end',()=>{try{res(JSON.parse(b))}catch(e){rej(e)}});
+        }).on('error',rej);
       });
-    }).on('error', reject);
-  });
+      return d;
+    }catch(e){
+      if(a<retries){const w=CFG.RETRY_MS*Math.pow(2,a-1)*(e.message==='RATE'?3:1);await delay(w);}
+      else throw e;
+    }
+  }
 }
 
-function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
-function log(msg) { console.log(`[${new Date().toISOString().slice(11,19)}] ${msg}`); }
-function saveJSON(filename, data) {
-  const fp = path.join(CONFIG.DATA_DIR, filename);
-  fs.writeFileSync(fp, JSON.stringify(data));
-  const kb = (fs.statSync(fp).size / 1024).toFixed(1);
-  log(`  💾 ${filename} (${kb} KB)`);
+async function parallel(tasks,c=CFG.C){
+  const R=new Array(tasks.length).fill(null);let i=0,done=0,err=0;const t=tasks.length,s=Date.now();
+  const w=async()=>{while(i<tasks.length){const j=i++;try{R[j]=await tasks[j]();done++}catch{err++;done++}
+    if(done%50===0||done===t)log(`  ...${done}/${t} (${err}err ${((Date.now()-s)/1000).toFixed(1)}s)`);}};
+  await Promise.all(Array.from({length:Math.min(c,t)},w));return R;
 }
 
-// ============================================================
-// MAIN
-// ============================================================
-async function main() {
-  log('▶ FPL Data Fetch START');
-  fs.mkdirSync(CONFIG.DATA_DIR, { recursive: true });
+async function main(){
+  const T=Date.now();log('▶ FPL Fetch v2');fs.mkdirSync(CFG.DIR,{recursive:true});
+  const res={meta:null,players:[],scoutScoring:[],eplTable:[],fdr:{},league:{},_updated:new Date().toISOString()};
+  try{
+    // 1. BOOTSTRAP + FIXTURES
+    log('Fetching bootstrap+fixtures...');
+    const[bs,fx]=await Promise.all([get(CFG.FPL+'/bootstrap-static/'),get(CFG.FPL+'/fixtures/')]);
+    const gw=(bs.events.find(e=>e.is_current)||bs.events.find(e=>e.is_next))?.id||1;
+    res.meta={gw,updated:new Date().toISOString()};
+    log(`✅ bootstrap:${bs.elements.length} players GW${gw}`);
+    save('bootstrap.json',bs);save('fixtures.json',fx);
 
-  const result = {
-    meta: null, players: [], scoutScoring: [], eplTable: [],
-    fdr: {}, league: {}, scoutRec: [], chipRec: [],
-    _updated: new Date().toISOString(),
-  };
+    // 2. LIVE
+    let live=null;
+    try{live=await get(CFG.FPL+`/event/${gw}/live/`);save('live.json',live);log(`✅ live:${live.elements.length}`);}catch(e){log(`⚠ live:${e.message}`);}
 
-  try {
-    // ═══ 1. BOOTSTRAP ═══
-    log('Fetching bootstrap-static...');
-    const bootstrap = await fetchJSON(CONFIG.FPL_BASE + '/bootstrap-static/');
-    const curEv = bootstrap.events.find(e => e.is_current) || bootstrap.events.find(e => e.is_next);
-    const gw = curEv ? curEv.id : 1;
-    log(`✅ ${bootstrap.elements.length} pemain, ${bootstrap.teams.length} tim, GW${gw}`);
-    result.meta = { gw };
-    saveJSON('bootstrap.json', bootstrap);
-
-    // ═══ 2. FIXTURES ═══
-    log('Fetching fixtures...');
-    const fixtures = await fetchJSON(CONFIG.FPL_BASE + '/fixtures/');
-    log(`✅ ${fixtures.length} fixtures`);
-    saveJSON('fixtures.json', fixtures);
-
-    // ═══ 3. LIVE EVENT (current + all past GWs for backtest) ═══
-    log(`Fetching event/${gw}/live...`);
-    let liveData = null;
-    try {
-      liveData = await fetchJSON(CONFIG.FPL_BASE + `/event/${gw}/live/`);
-      log(`✅ live: ${liveData.elements.length} pemain`);
-      saveJSON('live.json', liveData);
-    } catch(e) { log(`⚠ live gagal: ${e.message}`); }
-
-    // ═══ 3b. PLAYER SNAPSHOTS PER GW (for backtest) ═══
-    // Each GW: save compact player stats as they were at that point in the season
-    log('▸ Building per-GW player snapshots...');
-    const finishedGWs = bootstrap.events.filter(e => e.finished).map(e => e.id).sort((a,b)=>a-b);
-    const liveAll = {};
-    const snapshots = {};
-
-    // Fetch all element-summaries for snapshot building
-    // element-summary gives per-round history: [{round, total_points, minutes, value, ...}]
-    const allPlayerIds = bootstrap.elements.filter(e => e.minutes > 0).map(e => e.id);
-    log(`▸ Fetching element-summary for ${allPlayerIds.length} active players...`);
-    const playerHistMap = {}; // {playerId: [{round, total_points, minutes, ...}]}
-
-    // Batch in groups to avoid timeout
-    for (let batch = 0; batch < allPlayerIds.length; batch += 50) {
-      const batchIds = allPlayerIds.slice(batch, batch + 50);
-      for (const pid of batchIds) {
-        await delay(CONFIG.DELAY_MS);
-        try {
-          const summary = await fetchJSON(CONFIG.FPL_BASE + `/element-summary/${pid}/`);
-          if (summary?.history) {
-            playerHistMap[pid] = summary.history;
-          }
-        } catch {}
-      }
-      log(`  ... ${Math.min(batch+50, allPlayerIds.length)}/${allPlayerIds.length} players`);
+    // 3. ELEMENT SUMMARIES — INCREMENTAL
+    const pids=bs.elements.filter(e=>e.minutes>0).map(e=>e.id);
+    const meta=load('elem-meta.json')||{};
+    const cached=load('elem-hist.json')||{};
+    const fresh=meta.gw<gw||Object.keys(cached).length<100;
+    let hist={};
+    if(!fresh){log(`⚡ Incremental: cached GW${meta.gw}, skip refetch`);hist=cached;}
+    else{
+      log(`🔄 Fetching ${pids.length} element-summaries (×${CFG.C} parallel)...`);
+      const tasks=pids.map(id=>async()=>{const s=await get(CFG.FPL+`/element-summary/${id}/`);return{id,h:s?.history||[]};});
+      const r=await parallel(tasks);
+      r.forEach(x=>{if(x?.h?.length)hist[x.id]=x.h;});
+      save('elem-hist.json',hist);save('elem-meta.json',{gw,at:new Date().toISOString()});
     }
-    log(`✅ Element summaries: ${Object.keys(playerHistMap).length} players`);
+    log(`✅ Histories:${Object.keys(hist).length} players`);
 
-    // Build snapshots & liveAll from element-summary data
-    const teamMap = {};
-    bootstrap.teams.forEach(t => { teamMap[t.id] = t; });
-    const posMap = {1:'GK',2:'DEF',3:'MID',4:'FWD'};
-
-    for (const gwNum of finishedGWs) {
-      const gwPlayers = {};
-      const gwLive = [];
-
-      bootstrap.elements.forEach(el => {
-        const hist = playerHistMap[el.id];
-        if (!hist) return;
-
-        // All rounds up to gwNum
-        const pastRounds = hist.filter(h => h.round <= gwNum);
-        const thisRound = hist.find(h => h.round === gwNum);
-
-        if (!pastRounds.length) return;
-
-        // Compute cumulative stats as of gwNum
-        const totalPts = pastRounds.reduce((s,h) => s + (h.total_points||0), 0);
-        const totalMins = pastRounds.reduce((s,h) => s + (h.minutes||0), 0);
-        const gamesPlayed = pastRounds.filter(h => h.minutes > 0).length;
-        const ppg = gamesPlayed > 0 ? +(totalPts / gamesPlayed).toFixed(1) : 0;
-
-        // Form: average of last 5 rounds with minutes
-        const withMins = pastRounds.filter(h => h.minutes > 0);
-        const last5 = withMins.slice(-5);
-        const form = last5.length > 0 ? +(last5.reduce((s,h) => s + (h.total_points||0), 0) / last5.length).toFixed(1) : 0;
-
-        // xGI, xGC cumulative
-        const xgi = pastRounds.reduce((s,h) => s + (+(h.expected_goal_involvements||0)), 0);
-        const xgc = pastRounds.reduce((s,h) => s + (+(h.expected_goals_conceded||0)), 0);
-        const saves = pastRounds.reduce((s,h) => s + (h.saves||0), 0);
-        const bonus = pastRounds.reduce((s,h) => s + (h.bonus||0), 0);
-        const ict = pastRounds.reduce((s,h) => s + (+(h.ict_index||0)), 0);
-        const goals = pastRounds.reduce((s,h) => s + (h.goals_scored||0), 0);
-        const assists = pastRounds.reduce((s,h) => s + (h.assists||0), 0);
-        const cs = pastRounds.reduce((s,h) => s + (h.clean_sheets||0), 0);
-        const yc = pastRounds.reduce((s,h) => s + (h.yellow_cards||0), 0);
-        const price = thisRound?.value || el.now_cost;
-
-        gwPlayers[el.id] = {
-          ppg, form, tp: totalPts, mn: totalMins, gp: gamesPlayed,
-          xgi: +xgi.toFixed(2), xgc: +xgc.toFixed(2),
-          sv: saves, bn: bonus, ict: +ict.toFixed(1),
-          gl: goals, as: assists, cs, yc,
-          pr: price, // price at that GW
-          pos: el.element_type, tm: el.team,
-        };
-
-        // Live data for this GW
-        if (thisRound) {
-          gwLive.push({ id:el.id, tp:thisRound.total_points, bn:thisRound.bonus, mn:thisRound.minutes });
-        }
+    // 4. SNAPSHOTS + LIVE-ALL
+    log('Building snapshots...');
+    const fin=bs.events.filter(e=>e.finished).map(e=>e.id).sort((a,b)=>a-b);
+    const tm={};bs.teams.forEach(t=>{tm[t.id]=t;});const pm={1:'GK',2:'DEF',3:'MID',4:'FWD'};
+    const snaps={},liveAll={};
+    for(const g of fin){
+      const gp={},gl=[];
+      bs.elements.forEach(el=>{
+        const h=hist[el.id];if(!h)return;
+        const past=h.filter(r=>r.round<=g),cur=h.find(r=>r.round===g);
+        if(!past.length)return;
+        const tp=past.reduce((s,r)=>s+(r.total_points||0),0),mn=past.reduce((s,r)=>s+(r.minutes||0),0);
+        const played=past.filter(r=>r.minutes>0),gms=played.length,ppg=gms?+(tp/gms).toFixed(1):0;
+        const l5=played.slice(-5),form=l5.length?+(l5.reduce((s,r)=>s+(r.total_points||0),0)/l5.length).toFixed(1):0;
+        const sum=(f)=>past.reduce((s,r)=>s+(+(r[f]||0)),0);
+        gp[el.id]={ppg,form,tp,mn,gp:gms,xgi:+sum('expected_goal_involvements').toFixed(2),xgc:+sum('expected_goals_conceded').toFixed(2),
+          sv:sum('saves'),bn:sum('bonus'),ict:+sum('ict_index').toFixed(1),gl:sum('goals_scored'),as:sum('assists'),cs:sum('clean_sheets'),yc:sum('yellow_cards'),
+          pr:cur?.value||el.now_cost,pos:el.element_type,tm:el.team};
+        if(cur)gl.push({id:el.id,tp:cur.total_points,bn:cur.bonus,mn:cur.minutes});
       });
-
-      snapshots[gwNum] = gwPlayers;
-      liveAll[gwNum] = gwLive;
+      snaps[g]=gp;liveAll[g]=gl;
     }
+    save('snapshots.json',snaps);save('live-all.json',liveAll);
+    log(`✅ Snapshots:${Object.keys(snaps).length} GWs`);
 
-    saveJSON('snapshots.json', snapshots);
-    saveJSON('live-all.json', liveAll);
-    log(`✅ Snapshots: ${Object.keys(snapshots).length} GWs, live-all: ${Object.keys(liveAll).length} GWs`);
-
-    // ═══ 3c. ADAPTIVE WEIGHTS — compute optimal weights per GW ═══
-    log('▸ Computing adaptive weights per GW...');
-    const weightsHistory = {};
-    const criteriaKeys = ['ppg','form','xgi','xgc','saves','ict','bonus','goals_scored','assists','clean_sheets','yellow_cards'];
-    const posTypes = ['GK','DEF','MID','FWD'];
-    const posMapW = {1:'GK',2:'DEF',3:'MID',4:'FWD'};
-
-    for (const gwNum of finishedGWs) {
-      if (gwNum <= 1) continue; // Need at least 1 prior GW for stats
-      const prevSnap = snapshots[gwNum - 1]; // Stats available before this GW
-      const gwLive = liveAll[gwNum];          // Actual points this GW
-      if (!prevSnap || !gwLive?.length) continue;
-
-      // Build player map: {id: {scores, actualPts, pos}}
-      const liveMapW = {};
-      gwLive.forEach(e => { liveMapW[e.id] = e.tp; });
-
-      // For each position, compute correlation of each criterion vs actual pts
-      const gwWeights = {};
-      posTypes.forEach(pos => {
-        const posCode = {GK:1,DEF:2,MID:3,FWD:4}[pos];
-        const eligible = Object.entries(prevSnap)
-          .filter(([id, s]) => s.pos === posCode && s.mn >= 90 && liveMapW[+id] != null)
-          .map(([id, s]) => ({...s, actualPts: liveMapW[+id]}));
-
-        if (eligible.length < 5) return;
-
-        const meanPts = eligible.reduce((s,e) => s + e.actualPts, 0) / eligible.length;
-        const corrs = {};
-
-        criteriaKeys.forEach(key => {
-          let vals;
-          if (key === 'ppg') vals = eligible.map(e => e.ppg || 0);
-          else if (key === 'form') vals = eligible.map(e => e.form || 0);
-          else if (key === 'xgi') vals = eligible.map(e => e.mn > 0 ? (e.xgi||0)/(e.mn/90) : 0);
-          else if (key === 'xgc') vals = eligible.map(e => e.mn > 0 ? 10 - (e.xgc||0)/(e.mn/90)*2 : 5);
-          else if (key === 'saves') vals = eligible.map(e => e.mn > 0 ? (e.sv||0)/(e.mn/90) : 0);
-          else if (key === 'ict') vals = eligible.map(e => e.ict || 0);
-          else if (key === 'bonus') vals = eligible.map(e => e.mn > 0 ? (e.bn||0)/(e.mn/90) : 0);
-          else if (key === 'goals_scored') vals = eligible.map(e => e.mn > 0 ? (e.gl||0)/(e.mn/90) : 0);
-          else if (key === 'assists') vals = eligible.map(e => e.mn > 0 ? (e.as||0)/(e.mn/90) : 0);
-          else if (key === 'clean_sheets') vals = eligible.map(e => e.mn > 0 ? (e.cs||0)/(e.mn/90) : 0);
-          else if (key === 'yellow_cards') vals = eligible.map(e => e.mn > 0 ? 10 - (e.yc||0)/(e.mn/90)*5 : 5);
-          else vals = eligible.map(() => 0);
-
-          const meanV = vals.reduce((s,v) => s+v, 0) / vals.length;
-          let num=0, dA=0, dB=0;
-          for (let i=0; i<eligible.length; i++) {
-            const ds=vals[i]-meanV, dp=eligible[i].actualPts-meanPts;
-            num+=ds*dp; dA+=ds*ds; dB+=dp*dp;
-          }
-          corrs[key] = (dA>0&&dB>0) ? Math.max(0, num/Math.sqrt(dA*dB)) : 0;
-        });
-
-        // Normalize to sum=1
-        const total = Object.values(corrs).reduce((s,v) => s+v, 0);
-        if (total > 0) {
-          const weights = {};
-          criteriaKeys.forEach(k => { weights[k] = +(corrs[k]/total).toFixed(4); });
-          gwWeights[pos] = weights;
-        }
-      });
-
-      if (Object.keys(gwWeights).length > 0) {
-        weightsHistory[gwNum] = gwWeights;
-      }
-    }
-
-    saveJSON('weights-history.json', weightsHistory);
-    log(`✅ Adaptive weights: ${Object.keys(weightsHistory).length} GWs computed`);
-
-    // ═══ 4. PLAYERS ═══
-    const players = bootstrap.elements
-      .filter(p => p.status === 'a' || (p.status === 'd' && (p.chance_of_playing_next_round||0) >= 75))
-      .map(p => {
-        const team = teamMap[p.team] || {};
-        return {
-          id: p.id, Player: p.web_name, Team: team.short_name||'?',
-          TeamFull: team.name||'?', Position: posMap[p.element_type]||'FWD',
-          Price: (p.now_cost||0)/10, status: p.status, minutes: p.minutes||0,
-          PPG: +p.points_per_game||0, Form: +p.form||0, TP: +p.total_points||0,
-          EP: +p.ep_next||0, TSB: +p.selected_by_percent||0,
-          xGI: +p.expected_goal_involvements||0, xGC: +p.expected_goals_conceded||0,
-          Saves: +p.saves||0, ICT: +p.ict_index||0, YC: +p.yellow_cards||0,
-          TIn: +p.transfers_in_event||0, TOut: +p.transfers_out_event||0,
-        };
-      });
-    result.players = players;
-    result.scoutScoring = players;
-    log(`✅ ${players.length} players computed`);
-
-    // ═══ 5. EPL TABLE ═══
-    result.eplTable = buildEPLTable(fixtures, bootstrap.teams);
-    log(`✅ eplTable: ${result.eplTable.length} tim`);
-
-    // ═══ 6. FDR MATRIX ═══
-    result.fdr = buildFDR(fixtures, bootstrap.teams);
-    log(`✅ fdr: ${result.fdr.gwLabels.length} GW`);
-
-    // ═══ 7. LEAGUE DATA (standings + history + transfers + picks) ═══
-    const leagueData = await fetchLeagueData(gw);
-    result.league = leagueData;
-
-    // ═══ 8. MY PICKS & INFO ═══
-    try {
-      const picks = await fetchJSON(`${CONFIG.FPL_BASE}/entry/${CONFIG.MY_ENTRY_ID}/event/${gw}/picks/`);
-      saveJSON('picks.json', picks);
-      log('✅ my picks');
-    } catch(e) { log(`⚠ my picks: ${e.message}`); }
-
-    try {
-      const info = await fetchJSON(`${CONFIG.FPL_BASE}/entry/${CONFIG.MY_ENTRY_ID}/`);
-      saveJSON('manager.json', info);
-      log('✅ my manager info');
-    } catch(e) { log(`⚠ manager info: ${e.message}`); }
-
-    // ═══ SET & FORGET — GW1 squad tracking ═══
-    // ═══ TRANSFER IMPACT — per-GW comparison of transferred players ═══
-    try {
-      log('▸ Fetching transfers for impact analysis…');
-      const transfers = await fetchJSON(`${CONFIG.FPL_BASE}/entry/${CONFIG.MY_ENTRY_ID}/transfers/`);
-      
-      if (transfers?.length) {
-        // Collect all unique player IDs involved in transfers
-        const playerIds = new Set();
-        transfers.forEach(t => { playerIds.add(t.element_in); playerIds.add(t.element_out); });
-        
-        log(`▸ Fetching element-summary for ${playerIds.size} transferred players…`);
-        const playerGWPts = {}; // {playerId: {gwNum: points}}
-        
-        for (const pid of playerIds) {
-          await delay(CONFIG.DELAY_MS);
-          try {
-            const summary = await fetchJSON(`${CONFIG.FPL_BASE}/element-summary/${pid}/`);
-            if (summary?.history) {
-              playerGWPts[pid] = {};
-              summary.history.forEach(h => { playerGWPts[pid][h.round] = h.total_points || 0; });
-            }
-          } catch(e) { log(`⚠ element-summary/${pid}: ${e.message}`); }
-        }
-        
-        // Build per-GW transfer impact
-        const finishedGWs = bootstrap.events.filter(e => e.finished).map(e => e.id).sort((a,b)=>a-b);
-        
-        // Player name map
-        const nameMap = {};
-        bootstrap.elements.forEach(p => { nameMap[p.id] = p.web_name; });
-        
-        const impactData = finishedGWs.map(gwNum => {
-          const gwTransfers = transfers.filter(t => t.event === gwNum);
-          if (!gwTransfers.length) return { gw: gwNum, impact: 0, transfers: [] };
-          
-          let totalImpact = 0;
-          const details = gwTransfers.map(t => {
-            const inPts  = playerGWPts[t.element_in]?.[gwNum] ?? 0;
-            const outPts = playerGWPts[t.element_out]?.[gwNum] ?? 0;
-            const impact = inPts - outPts;
-            totalImpact += impact;
-            return {
-              playerIn: nameMap[t.element_in] || `#${t.element_in}`,
-              playerOut: nameMap[t.element_out] || `#${t.element_out}`,
-              inId: t.element_in, outId: t.element_out,
-              inPts, outPts, impact,
-            };
+    // 5. ADAPTIVE WEIGHTS
+    log('Computing adaptive weights...');
+    const wh={},ck=['ppg','form','xgi','xgc','saves','ict','bonus','goals_scored','assists','clean_sheets','yellow_cards'];
+    for(const g of fin){
+      if(g<=1)continue;const ps=snaps[g-1],gl=liveAll[g];if(!ps||!gl?.length)continue;
+      const lm={};gl.forEach(e=>{lm[e.id]=e.tp;});
+      const gw2={};
+      ['GK','DEF','MID','FWD'].forEach(pos=>{
+        const pc={GK:1,DEF:2,MID:3,FWD:4}[pos];
+        const el=Object.entries(ps).filter(([id,s])=>s.pos===pc&&s.mn>=90&&lm[+id]!=null).map(([id,s])=>({...s,ap:lm[+id]}));
+        if(el.length<5)return;
+        const mp=el.reduce((s,e)=>s+e.ap,0)/el.length,co={};
+        ck.forEach(k=>{
+          const v=el.map(e=>{
+            if(k==='ppg')return e.ppg;if(k==='form')return e.form;
+            if(k==='xgi')return e.mn>0?(e.xgi||0)/(e.mn/90):0;
+            if(k==='xgc')return e.mn>0?10-(e.xgc||0)/(e.mn/90)*2:5;
+            if(k==='saves')return e.mn>0?(e.sv||0)/(e.mn/90):0;
+            if(k==='ict')return e.ict||0;if(k==='bonus')return e.mn>0?(e.bn||0)/(e.mn/90):0;
+            if(k==='goals_scored')return e.mn>0?(e.gl||0)/(e.mn/90):0;
+            if(k==='assists')return e.mn>0?(e.as||0)/(e.mn/90):0;
+            if(k==='clean_sheets')return e.mn>0?(e.cs||0)/(e.mn/90):0;
+            if(k==='yellow_cards')return e.mn>0?10-(e.yc||0)/(e.mn/90)*5:5;
+            return 0;
           });
-          
-          return { gw: gwNum, impact: totalImpact, transfers: details };
+          const mv=v.reduce((s,x)=>s+x,0)/v.length;let n=0,da=0,db=0;
+          for(let i=0;i<el.length;i++){const ds=v[i]-mv,dp=el[i].ap-mp;n+=ds*dp;da+=ds*ds;db+=dp*dp;}
+          co[k]=(da>0&&db>0)?Math.max(0,n/Math.sqrt(da*db)):0;
         });
-        
-        const totalImpact = impactData.reduce((s,d) => s + d.impact, 0);
-        const result = { impactData, totalImpact, generated: new Date().toISOString() };
-        saveJSON('transfer-impact.json', result);
-        log(`✅ Transfer Impact: ${impactData.filter(d=>d.transfers.length).length} GWs with transfers, net impact: ${totalImpact>0?'+':''}${totalImpact}`);
-      } else {
-        log('⚠ No transfers found');
-      }
-    } catch(e) { log(`⚠ Transfer Impact: ${e.message}`); }
-
-    // ═══ SAVE ALL ═══
-    saveJSON('all.json', result);
-    log(`■ SELESAI — ${players.length} pemain, GW${gw}`);
-
-  } catch(e) {
-    log(`❌ FATAL: ${e.message}`);
-    console.error(e);
-    process.exit(1);
-  }
-}
-
-// ============================================================
-// EPL TABLE
-// ============================================================
-function buildEPLTable(fixtures, teams) {
-  const teamMap = {};
-  teams.forEach(t => { teamMap[t.id] = t; });
-  const stats = {};
-  teams.forEach(t => {
-    stats[t.id] = { w:0, d:0, l:0, gf:0, ga:0, pts:0, form:[], strength: t.strength||0 };
-  });
-  fixtures.filter(f => f.finished && f.team_h_score != null).sort((a,b) => a.event-b.event)
-    .forEach(f => {
-      const hId=f.team_h, aId=f.team_a, hg=f.team_h_score||0, ag=f.team_a_score||0;
-      if (!stats[hId]||!stats[aId]) return;
-      stats[hId].gf+=hg; stats[hId].ga+=ag; stats[aId].gf+=ag; stats[aId].ga+=hg;
-      if (hg>ag) { stats[hId].w++; stats[hId].pts+=3; stats[hId].form.push('W'); stats[aId].l++; stats[aId].form.push('L'); }
-      else if (hg<ag) { stats[aId].w++; stats[aId].pts+=3; stats[aId].form.push('W'); stats[hId].l++; stats[hId].form.push('L'); }
-      else { stats[hId].d++; stats[hId].pts+=1; stats[hId].form.push('D'); stats[aId].d++; stats[aId].pts+=1; stats[aId].form.push('D'); }
-    });
-  return Object.keys(stats).map(tid => {
-    const s=stats[tid], t=teamMap[+tid]||{};
-    return { club:t.name||'?', short:t.short_name||'?', p:s.w+s.d+s.l, w:s.w, d:s.d, l:s.l,
-      gf:s.gf, ga:s.ga, gd:s.gf-s.ga, pts:s.pts, form:s.form.slice(-5).join(''), strength:s.strength };
-  }).sort((a,b) => b.pts-a.pts||b.gd-a.gd||b.gf-a.gf);
-}
-
-// ============================================================
-// FDR MATRIX
-// ============================================================
-function buildFDR(fixtures, teams) {
-  const teamMap = {};
-  teams.forEach(t => { teamMap[t.id] = t; });
-  const strDef=teams.flatMap(t=>[t.strength_defence_home,t.strength_defence_away]);
-  const strAtk=teams.flatMap(t=>[t.strength_attack_home,t.strength_attack_away]);
-  const [mnD,mxD]=[Math.min(...strDef),Math.max(...strDef)];
-  const [mnA,mxA]=[Math.min(...strAtk),Math.max(...strAtk)];
-  const nFDR=(v,mn,mx)=>mn===mx?3:Math.round((1+(v-mn)/(mx-mn)*4)*10)/10;
-  const upcoming=fixtures.filter(f=>!f.finished_provisional).sort((a,b)=>a.event-b.event);
-  const gwRange=[...new Set(upcoming.map(f=>f.event))].sort((a,b)=>a-b).slice(0,8);
-  function matrix(type) {
-    return teams.map(t => {
-      const fixes=gwRange.map(gw=>{
-        const gwF=upcoming.filter(f=>f.event===gw&&(f.team_h===t.id||f.team_a===t.id));
-        if(!gwF.length)return null;
-        return gwF.map(f=>{
-          const isH=f.team_h===t.id,opp=teamMap[isH?f.team_a:f.team_h];
-          if(!opp)return null;
-          const fdrD=nFDR(isH?opp.strength_attack_away:opp.strength_attack_home,mnD,mxD);
-          const fdrA=nFDR(isH?opp.strength_defence_away:opp.strength_defence_home,mnA,mxA);
-          const val=type==='def'?fdrD:type==='atk'?fdrA:Math.round((fdrD+fdrA)/2*10)/10;
-          return {opp:opp.short_name,isHome:isH,val};
-        }).filter(Boolean);
+        const tot=Object.values(co).reduce((s,v)=>s+v,0);
+        if(tot>0){const w={};ck.forEach(k=>{w[k]=+(co[k]/tot).toFixed(4);});gw2[pos]=w;}
       });
-      let tot=0,cnt=0;
-      fixes.forEach(a=>{if(a)a.forEach(f=>{tot+=f.val;cnt++;});});
-      return {team:t.short_name,avg:cnt?Math.round(tot/cnt*10)/10:3,fixes};
-    }).sort((a,b)=>a.avg-b.avg);
-  }
-  return {def:matrix('def'),atk:matrix('atk'),ovr:matrix('ovr'),gwLabels:gwRange.map(g=>`GW${g}`)};
-}
-
-// ============================================================
-// LEAGUE DATA — All manager data in one pass
-// ============================================================
-async function fetchLeagueData(gw) {
-  const allEntryIDs = new Set();
-  const standings = {};
-
-  // Fetch standings per league
-  for (const lid of CONFIG.LEAGUE_IDS) {
-    try {
-      await delay(CONFIG.DELAY_MS);
-      const data = await fetchJSON(`${CONFIG.FPL_BASE}/leagues-classic/${lid}/standings/`);
-      standings[lid] = data.standings.results.map(r => ({
-        entry:r.entry, entry_name:r.entry_name, player_name:r.player_name,
-        rank:r.rank, last_rank:r.last_rank, total:r.total, event_total:r.event_total,
-      }));
-      data.standings.results.forEach(r => allEntryIDs.add(r.entry));
-      log(`  standings ${lid}: ${data.standings.results.length} peserta`);
-    } catch(e) { log(`  ⚠ standings ${lid}: ${e.message}`); }
-  }
-
-  const managerNames = {};
-  Object.values(standings).forEach(arr => arr.forEach(s => { managerNames[s.entry] = s.entry_name; }));
-  const managers = Object.values(managerNames);
-  const entryList = [...allEntryIDs];
-
-  // Fetch history + transfers + picks for ALL managers
-  log(`  Fetching history+transfers+picks for ${entryList.length} entries...`);
-  const allHistory = [], allChips = [], allTransfers = [];
-  const allPicks = {};  // {entryId: picks}
-
-  for (let i = 0; i < entryList.length; i++) {
-    const id = entryList[i];
-
-    // History
-    await delay(CONFIG.DELAY_MS);
-    try {
-      const h = await fetchJSON(`${CONFIG.FPL_BASE}/entry/${id}/history/`);
-      h.current.forEach(row => allHistory.push({ ...row, entry_id: id }));
-      if (h.chips) h.chips.forEach(row => allChips.push({ ...row, entry_id: id }));
-    } catch(e) {}
-
-    // Transfers
-    await delay(CONFIG.DELAY_MS);
-    try {
-      const t = await fetchJSON(`${CONFIG.FPL_BASE}/entry/${id}/transfers/`);
-      t.forEach(row => allTransfers.push({ ...row, entry_id: id }));
-    } catch(e) {}
-
-    // Picks for current GW
-    await delay(CONFIG.DELAY_MS);
-    try {
-      const p = await fetchJSON(`${CONFIG.FPL_BASE}/entry/${id}/event/${gw}/picks/`);
-      if (p?.picks) allPicks[id] = p;
-    } catch(e) {}
-
-    if ((i+1)%5===0 || i===entryList.length-1) {
-      log(`  entries [${i+1}/${entryList.length}]`);
+      if(Object.keys(gw2).length)wh[g]=gw2;
     }
-  }
+    save('weights-history.json',wh);log(`✅ Weights:${Object.keys(wh).length} GWs`);
 
-  // Build transfer heatmap
-  const gwSet = new Set();
-  allHistory.forEach(h => gwSet.add(h.event));
-  const gwLabels = [...gwSet].sort((a,b) => a-b);
-  const transferData = gwLabels.map(gwNum => {
-    const row = [gwNum];
-    entryList.forEach(entryId => {
-      const trs = allTransfers.filter(t => t.entry_id===entryId && t.event===gwNum);
-      const chip = allChips.find(c => c.entry_id===entryId && c.event===gwNum);
-      if (chip) {
-        const cn = (chip.name||'').toLowerCase();
-        if (cn.includes('wildcard')) row.push('🃏 WC');
-        else if (cn.includes('freehit')||cn.includes('free_hit')) row.push('🎯 FH');
-        else if (cn.includes('bboost')||cn.includes('bench_boost')) row.push('💺 BB');
-        else if (cn.includes('3xc')||cn.includes('triple_captain')) row.push('👑 TC');
-        else row.push(chip.name);
-      } else {
-        row.push(trs.length);
+    // 6. PLAYERS
+    const players=bs.elements.filter(p=>p.status==='a'||(p.status==='d'&&(p.chance_of_playing_next_round||0)>=75))
+      .map(p=>({id:p.id,Player:p.web_name,Team:(tm[p.team]||{}).short_name||'?',TeamFull:(tm[p.team]||{}).name||'?',
+        Position:pm[p.element_type]||'FWD',Price:(p.now_cost||0)/10,status:p.status,minutes:p.minutes||0,
+        PPG:+p.points_per_game||0,Form:+p.form||0,TP:+p.total_points||0,EP:+p.ep_next||0,TSB:+p.selected_by_percent||0,
+        xGI:+p.expected_goal_involvements||0,xGC:+p.expected_goals_conceded||0,Saves:+p.saves||0,ICT:+p.ict_index||0,YC:+p.yellow_cards||0,
+        TIn:+p.transfers_in_event||0,TOut:+p.transfers_out_event||0}));
+    res.players=players;res.scoutScoring=players;log(`✅ ${players.length} players`);
+
+    // 7. EPL + FDR
+    res.eplTable=buildEPL(fx,bs.teams);res.fdr=buildFDR(fx,bs.teams);
+
+    // 8. LEAGUE
+    log('Fetching league data...');
+    const mgrs=[];
+    for(const lid of CFG.LEAGUE_IDS){
+      try{const d=await get(CFG.FPL+`/leagues-classic/${lid}/standings/`);
+        (d?.standings?.results||[]).forEach(e=>{if(!mgrs.some(m=>m.entry===e.entry))mgrs.push(e);});}catch(e){log(`⚠ league ${lid}:${e.message}`);}
+    }
+    log(`▸ ${mgrs.length} managers — fetching history+transfers+picks (parallel)...`);
+    const mTasks=mgrs.flatMap(m=>[
+      async()=>{const h=await get(CFG.FPL+`/entry/${m.entry}/history/`);return{t:'h',id:m.entry,d:h};},
+      async()=>{const t=await get(CFG.FPL+`/entry/${m.entry}/transfers/`);return{t:'t',id:m.entry,d:t};}
+    ]);
+    const mR=await parallel(mTasks);
+    const hMap={},tMap={},chips=[];
+    mR.forEach(r=>{if(!r)return;if(r.t==='h'&&r.d){hMap[r.id]=r.d;(r.d.chips||[]).forEach(c=>chips.push({...c,entry_id:r.id}));}
+      if(r.t==='t'&&r.d)tMap[r.id]=r.d;});
+    const pTasks=mgrs.map(m=>async()=>{const p=await get(CFG.FPL+`/entry/${m.entry}/event/${gw}/picks/`);return{id:m.entry,d:p};});
+    const pR=await parallel(pTasks);const pMap={};pR.forEach(r=>{if(r?.d)pMap[r.id]=r.d;});
+    const fH=[],fT=[];
+    Object.entries(hMap).forEach(([id,h])=>(h.current||[]).forEach(ev=>fH.push({...ev,entry_id:+id})));
+    Object.entries(tMap).forEach(([id,a])=>(a||[]).forEach(t=>fT.push({...t,entry_id:+id})));
+    save('history.json',fH);save('transfers.json',fT);save('chips.json',chips);save('league-picks.json',pMap);
+    res.league={managers:mgrs.map(m=>m.entry_name),standings:mgrs};
+
+    // 9. MY DATA
+    try{const[pk,nf]=await Promise.all([get(CFG.FPL+`/entry/${CFG.MY_ENTRY_ID}/event/${gw}/picks/`).catch(()=>null),
+      get(CFG.FPL+`/entry/${CFG.MY_ENTRY_ID}/`).catch(()=>null)]);
+      if(pk)save('picks.json',pk);if(nf)save('manager.json',nf);}catch{}
+
+    // 10. TRANSFER IMPACT
+    try{
+      const tr=await get(CFG.FPL+`/entry/${CFG.MY_ENTRY_ID}/transfers/`);
+      if(tr?.length){
+        const nm={};bs.elements.forEach(p=>{nm[p.id]=p.web_name;});
+        const gpMap={};
+        [...new Set(tr.flatMap(t=>[t.element_in,t.element_out]))].forEach(id=>{
+          if(hist[id]){gpMap[id]={};hist[id].forEach(h=>{gpMap[id][h.round]=h.total_points||0;});}
+        });
+        const imp=fin.map(g=>{
+          const gt=tr.filter(t=>t.event===g);if(!gt.length)return{gw:g,impact:0,transfers:[]};
+          let ti=0;const det=gt.map(t=>{
+            const ip=gpMap[t.element_in]?.[g]??0,op=gpMap[t.element_out]?.[g]??0,d=ip-op;ti+=d;
+            return{playerIn:nm[t.element_in]||'?',playerOut:nm[t.element_out]||'?',inPts:ip,outPts:op,impact:d};
+          });
+          return{gw:g,impact:ti,transfers:det};
+        });
+        save('transfer-impact.json',{impactData:imp,totalImpact:imp.reduce((s,d)=>s+d.impact,0),generated:new Date().toISOString()});
       }
-    });
-    return row;
-  });
+    }catch(e){log(`⚠ transfer-impact:${e.message}`);}
 
-  // Save individual data files
-  saveJSON('history.json', allHistory);
-  saveJSON('transfers.json', allTransfers);
-  saveJSON('league-picks.json', allPicks);
-  saveJSON('chips.json', allChips);
-  log(`  ✅ league-picks: ${Object.keys(allPicks).length} managers`);
-  log(`  ✅ chips: ${allChips.length} chip usages`);
-
-  return { managers, rekap: standings, transfer: transferData, standings };
+    save('all.json',res);
+    log(`■ DONE ${players.length} players GW${gw} ${((Date.now()-T)/1000).toFixed(1)}s`);
+  }catch(e){log(`❌ FATAL:${e.message}`);console.error(e);process.exit(1);}
 }
 
-// ════════════════════════════════════════════════
+function buildEPL(fx,teams){
+  const tm={},st={};teams.forEach(t=>{tm[t.id]=t;st[t.id]={p:0,w:0,d:0,l:0,gf:0,ga:0,pts:0,form:''};});
+  fx.filter(f=>f.finished).sort((a,b)=>a.event-b.event).forEach(f=>{
+    const h=st[f.team_h],a=st[f.team_a];if(!h||!a)return;h.p++;a.p++;
+    h.gf+=f.team_h_score||0;h.ga+=f.team_a_score||0;a.gf+=f.team_a_score||0;a.ga+=f.team_h_score||0;
+    if(f.team_h_score>f.team_a_score){h.w++;h.pts+=3;a.l++;h.form+='W';a.form+='L';}
+    else if(f.team_h_score<f.team_a_score){a.w++;a.pts+=3;h.l++;h.form+='L';a.form+='W';}
+    else{h.d++;a.d++;h.pts++;a.pts++;h.form+='D';a.form+='D';}
+  });
+  return Object.entries(st).map(([id,s])=>{const t=tm[+id]||{};return{...s,gd:s.gf-s.ga,form:s.form.slice(-5),club:t.name,short:t.short_name,strength:t.strength};})
+    .sort((a,b)=>b.pts-a.pts||b.gd-a.gd||b.gf-a.gf);
+}
+
+function buildFDR(fx,teams){
+  const tm={};teams.forEach(t=>{tm[t.id]=t;});
+  const up=fx.filter(f=>!f.finished_provisional).sort((a,b)=>a.event-b.event);
+  const gws=[...new Set(up.map(f=>f.event))].slice(0,8);
+  const sD=teams.flatMap(t=>[t.strength_defence_home,t.strength_defence_away]),sA=teams.flatMap(t=>[t.strength_attack_home,t.strength_attack_away]);
+  const[nD,xD,nA,xA]=[Math.min(...sD),Math.max(...sD),Math.min(...sA),Math.max(...sA)];
+  const fdr=(v,n,x)=>n===x?3:+(1+(v-n)/(x-n)*4).toFixed(1);
+  const rows={def:[],atk:[],ovr:[]};
+  teams.forEach(t=>{
+    const fixes=gws.map(g=>{
+      const fs=up.filter(f=>f.event===g&&(f.team_h===t.id||f.team_a===t.id));
+      return fs.map(f=>{const h=f.team_h===t.id,o=tm[h?f.team_a:f.team_h];if(!o)return null;
+        return{opp:o.short_name,isHome:h,def:fdr(h?o.strength_attack_away:o.strength_attack_home,nD,xD),
+          atk:fdr(h?o.strength_defence_away:o.strength_defence_home,nA,xA)};}).filter(Boolean);
+    });
+    ['def','atk','ovr'].forEach(type=>{
+      const v=fixes.flat().map(f=>type==='def'?f.def:type==='atk'?f.atk:+((f.def+f.atk)/2).toFixed(1));
+      const avg=v.length?+(v.reduce((s,x)=>s+x,0)/v.length).toFixed(1):3;
+      rows[type].push({team:t.short_name,avg,fixes:fixes.map(a=>a.length?a.map(f=>({opp:f.opp,isHome:f.isHome,val:type==='def'?f.def:type==='atk'?f.atk:+((f.def+f.atk)/2).toFixed(1)})):null)});
+    });
+  });
+  Object.keys(rows).forEach(k=>rows[k].sort((a,b)=>a.avg-b.avg));
+  return{...rows,gwLabels:gws.map(g=>`GW${g}`)};
+}
+
 main();
