@@ -93,32 +93,172 @@ async function main() {
       saveJSON('live.json', liveData);
     } catch(e) { log(`⚠ live gagal: ${e.message}`); }
 
-    // Save all past GW live data for backtest mode
-    const finishedGWs = bootstrap.events.filter(e => e.finished).map(e => e.id);
-    log(`▸ Saving live data for ${finishedGWs.length} finished GWs...`);
+    // ═══ 3b. PLAYER SNAPSHOTS PER GW (for backtest) ═══
+    // Each GW: save compact player stats as they were at that point in the season
+    log('▸ Building per-GW player snapshots...');
+    const finishedGWs = bootstrap.events.filter(e => e.finished).map(e => e.id).sort((a,b)=>a-b);
     const liveAll = {};
-    for (const pastGW of finishedGWs) {
-      await delay(CONFIG.DELAY_MS);
-      try {
-        const pastLive = await fetchJSON(CONFIG.FPL_BASE + `/event/${pastGW}/live/`);
-        if (pastLive?.elements) {
-          // Save compact: only id + total_points + bonus + minutes
-          liveAll[pastGW] = pastLive.elements.map(e => ({
-            id: e.id,
-            tp: e.stats.total_points,
-            bn: e.stats.bonus,
-            mn: e.stats.minutes,
-          }));
-        }
-      } catch(e) { log(`⚠ live GW${pastGW}: ${e.message}`); }
-    }
-    saveJSON('live-all.json', liveAll);
-    log(`✅ live-all: ${Object.keys(liveAll).length} GWs saved`);
+    const snapshots = {};
 
-    // ═══ 4. PLAYERS ═══
+    // Fetch all element-summaries for snapshot building
+    // element-summary gives per-round history: [{round, total_points, minutes, value, ...}]
+    const allPlayerIds = bootstrap.elements.filter(e => e.minutes > 0).map(e => e.id);
+    log(`▸ Fetching element-summary for ${allPlayerIds.length} active players...`);
+    const playerHistMap = {}; // {playerId: [{round, total_points, minutes, ...}]}
+
+    // Batch in groups to avoid timeout
+    for (let batch = 0; batch < allPlayerIds.length; batch += 50) {
+      const batchIds = allPlayerIds.slice(batch, batch + 50);
+      for (const pid of batchIds) {
+        await delay(CONFIG.DELAY_MS);
+        try {
+          const summary = await fetchJSON(CONFIG.FPL_BASE + `/element-summary/${pid}/`);
+          if (summary?.history) {
+            playerHistMap[pid] = summary.history;
+          }
+        } catch {}
+      }
+      log(`  ... ${Math.min(batch+50, allPlayerIds.length)}/${allPlayerIds.length} players`);
+    }
+    log(`✅ Element summaries: ${Object.keys(playerHistMap).length} players`);
+
+    // Build snapshots & liveAll from element-summary data
     const teamMap = {};
     bootstrap.teams.forEach(t => { teamMap[t.id] = t; });
-    const posMap = { 1:'GK', 2:'DEF', 3:'MID', 4:'FWD' };
+    const posMap = {1:'GK',2:'DEF',3:'MID',4:'FWD'};
+
+    for (const gwNum of finishedGWs) {
+      const gwPlayers = {};
+      const gwLive = [];
+
+      bootstrap.elements.forEach(el => {
+        const hist = playerHistMap[el.id];
+        if (!hist) return;
+
+        // All rounds up to gwNum
+        const pastRounds = hist.filter(h => h.round <= gwNum);
+        const thisRound = hist.find(h => h.round === gwNum);
+
+        if (!pastRounds.length) return;
+
+        // Compute cumulative stats as of gwNum
+        const totalPts = pastRounds.reduce((s,h) => s + (h.total_points||0), 0);
+        const totalMins = pastRounds.reduce((s,h) => s + (h.minutes||0), 0);
+        const gamesPlayed = pastRounds.filter(h => h.minutes > 0).length;
+        const ppg = gamesPlayed > 0 ? +(totalPts / gamesPlayed).toFixed(1) : 0;
+
+        // Form: average of last 5 rounds with minutes
+        const withMins = pastRounds.filter(h => h.minutes > 0);
+        const last5 = withMins.slice(-5);
+        const form = last5.length > 0 ? +(last5.reduce((s,h) => s + (h.total_points||0), 0) / last5.length).toFixed(1) : 0;
+
+        // xGI, xGC cumulative
+        const xgi = pastRounds.reduce((s,h) => s + (+(h.expected_goal_involvements||0)), 0);
+        const xgc = pastRounds.reduce((s,h) => s + (+(h.expected_goals_conceded||0)), 0);
+        const saves = pastRounds.reduce((s,h) => s + (h.saves||0), 0);
+        const bonus = pastRounds.reduce((s,h) => s + (h.bonus||0), 0);
+        const ict = pastRounds.reduce((s,h) => s + (+(h.ict_index||0)), 0);
+        const goals = pastRounds.reduce((s,h) => s + (h.goals_scored||0), 0);
+        const assists = pastRounds.reduce((s,h) => s + (h.assists||0), 0);
+        const cs = pastRounds.reduce((s,h) => s + (h.clean_sheets||0), 0);
+        const yc = pastRounds.reduce((s,h) => s + (h.yellow_cards||0), 0);
+        const price = thisRound?.value || el.now_cost;
+
+        gwPlayers[el.id] = {
+          ppg, form, tp: totalPts, mn: totalMins, gp: gamesPlayed,
+          xgi: +xgi.toFixed(2), xgc: +xgc.toFixed(2),
+          sv: saves, bn: bonus, ict: +ict.toFixed(1),
+          gl: goals, as: assists, cs, yc,
+          pr: price, // price at that GW
+          pos: el.element_type, tm: el.team,
+        };
+
+        // Live data for this GW
+        if (thisRound) {
+          gwLive.push({ id:el.id, tp:thisRound.total_points, bn:thisRound.bonus, mn:thisRound.minutes });
+        }
+      });
+
+      snapshots[gwNum] = gwPlayers;
+      liveAll[gwNum] = gwLive;
+    }
+
+    saveJSON('snapshots.json', snapshots);
+    saveJSON('live-all.json', liveAll);
+    log(`✅ Snapshots: ${Object.keys(snapshots).length} GWs, live-all: ${Object.keys(liveAll).length} GWs`);
+
+    // ═══ 3c. ADAPTIVE WEIGHTS — compute optimal weights per GW ═══
+    log('▸ Computing adaptive weights per GW...');
+    const weightsHistory = {};
+    const criteriaKeys = ['ppg','form','xgi','xgc','saves','ict','bonus','goals_scored','assists','clean_sheets','yellow_cards'];
+    const posTypes = ['GK','DEF','MID','FWD'];
+    const posMapW = {1:'GK',2:'DEF',3:'MID',4:'FWD'};
+
+    for (const gwNum of finishedGWs) {
+      if (gwNum <= 1) continue; // Need at least 1 prior GW for stats
+      const prevSnap = snapshots[gwNum - 1]; // Stats available before this GW
+      const gwLive = liveAll[gwNum];          // Actual points this GW
+      if (!prevSnap || !gwLive?.length) continue;
+
+      // Build player map: {id: {scores, actualPts, pos}}
+      const liveMapW = {};
+      gwLive.forEach(e => { liveMapW[e.id] = e.tp; });
+
+      // For each position, compute correlation of each criterion vs actual pts
+      const gwWeights = {};
+      posTypes.forEach(pos => {
+        const posCode = {GK:1,DEF:2,MID:3,FWD:4}[pos];
+        const eligible = Object.entries(prevSnap)
+          .filter(([id, s]) => s.pos === posCode && s.mn >= 90 && liveMapW[+id] != null)
+          .map(([id, s]) => ({...s, actualPts: liveMapW[+id]}));
+
+        if (eligible.length < 5) return;
+
+        const meanPts = eligible.reduce((s,e) => s + e.actualPts, 0) / eligible.length;
+        const corrs = {};
+
+        criteriaKeys.forEach(key => {
+          let vals;
+          if (key === 'ppg') vals = eligible.map(e => e.ppg || 0);
+          else if (key === 'form') vals = eligible.map(e => e.form || 0);
+          else if (key === 'xgi') vals = eligible.map(e => e.mn > 0 ? (e.xgi||0)/(e.mn/90) : 0);
+          else if (key === 'xgc') vals = eligible.map(e => e.mn > 0 ? 10 - (e.xgc||0)/(e.mn/90)*2 : 5);
+          else if (key === 'saves') vals = eligible.map(e => e.mn > 0 ? (e.sv||0)/(e.mn/90) : 0);
+          else if (key === 'ict') vals = eligible.map(e => e.ict || 0);
+          else if (key === 'bonus') vals = eligible.map(e => e.mn > 0 ? (e.bn||0)/(e.mn/90) : 0);
+          else if (key === 'goals_scored') vals = eligible.map(e => e.mn > 0 ? (e.gl||0)/(e.mn/90) : 0);
+          else if (key === 'assists') vals = eligible.map(e => e.mn > 0 ? (e.as||0)/(e.mn/90) : 0);
+          else if (key === 'clean_sheets') vals = eligible.map(e => e.mn > 0 ? (e.cs||0)/(e.mn/90) : 0);
+          else if (key === 'yellow_cards') vals = eligible.map(e => e.mn > 0 ? 10 - (e.yc||0)/(e.mn/90)*5 : 5);
+          else vals = eligible.map(() => 0);
+
+          const meanV = vals.reduce((s,v) => s+v, 0) / vals.length;
+          let num=0, dA=0, dB=0;
+          for (let i=0; i<eligible.length; i++) {
+            const ds=vals[i]-meanV, dp=eligible[i].actualPts-meanPts;
+            num+=ds*dp; dA+=ds*ds; dB+=dp*dp;
+          }
+          corrs[key] = (dA>0&&dB>0) ? Math.max(0, num/Math.sqrt(dA*dB)) : 0;
+        });
+
+        // Normalize to sum=1
+        const total = Object.values(corrs).reduce((s,v) => s+v, 0);
+        if (total > 0) {
+          const weights = {};
+          criteriaKeys.forEach(k => { weights[k] = +(corrs[k]/total).toFixed(4); });
+          gwWeights[pos] = weights;
+        }
+      });
+
+      if (Object.keys(gwWeights).length > 0) {
+        weightsHistory[gwNum] = gwWeights;
+      }
+    }
+
+    saveJSON('weights-history.json', weightsHistory);
+    log(`✅ Adaptive weights: ${Object.keys(weightsHistory).length} GWs computed`);
+
+    // ═══ 4. PLAYERS ═══
     const players = bootstrap.elements
       .filter(p => p.status === 'a' || (p.status === 'd' && (p.chance_of_playing_next_round||0) >= 75))
       .map(p => {
