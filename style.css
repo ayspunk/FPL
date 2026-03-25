@@ -562,6 +562,11 @@ td.dim  { color: var(--text3); font-size: 12px; }
 .rc-name  { font-size: 17px; font-weight: 700; letter-spacing: 1px; color: var(--text); margin-bottom: 4px; }
 .rc-score { font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 700; color: var(--green); margin-bottom: 1px; }
 .rc-label { font-size: 9px; color: var(--text3); letter-spacing: 1px; text-transform: uppercase; }
+.rc-budget {
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text3);
+  margin-top: 2px; letter-spacing: 0.5px;
+}
+.rc-budget-over { color: var(--red); font-weight: 700; }
 .rank-1 .rc-rank { color: var(--gold); }
 .rank-2 .rc-rank { color: #90caf9; }
 .rank-3 .rc-rank { color: var(--purple); }
@@ -937,9 +942,12 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 .epl-short { color: var(--text3); font-size: 11px; margin-left: 6px; }
 .epl-pts   { font-family: 'JetBrains Mono', monospace; font-size: 16px; font-weight: 700; color: var(--green); text-align: center; }
 .epl-form  { display: flex; gap: 3px; }
-.form-w { width: 14px; height: 14px; border-radius: 2px; background: var(--green); cursor: default; }
-.form-d { width: 14px; height: 14px; border-radius: 2px; background: var(--gold); cursor: default; }
-.form-l { width: 14px; height: 14px; border-radius: 2px; background: var(--red); cursor: default; }
+.form-w { width: 14px; height: 14px; border-radius: 2px; background: var(--green); cursor: pointer; transition: transform .12s; }
+.form-w:hover { transform: scale(1.5); box-shadow: 0 0 6px var(--green); }
+.form-d { width: 14px; height: 14px; border-radius: 2px; background: var(--gold); cursor: pointer; transition: transform .12s; }
+.form-d:hover { transform: scale(1.5); box-shadow: 0 0 6px var(--gold); }
+.form-l { width: 14px; height: 14px; border-radius: 2px; background: var(--red); cursor: pointer; transition: transform .12s; }
+.form-l:hover { transform: scale(1.5); box-shadow: 0 0 6px var(--red); }
 .epl-str { color: var(--text2); text-align: center; }
 .zone-cl   { border-left: 3px solid var(--blue); }
 .zone-el   { border-left: 3px solid #ff9100; }

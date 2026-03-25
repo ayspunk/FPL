@@ -796,7 +796,9 @@ const Process = {
   eplFromFixtures(bs, fixtures) {
     if (!bs || !fixtures) return [];
     const teamMap = {};
-    bs.teams.forEach(t => { teamMap[t.id] = { id:t.id, club:t.name, short:t.short_name, strength:t.strength, p:0,w:0,d:0,l:0,gf:0,ga:0,gd:0,pts:0,results:[] }; });
+    const playerMap = {};
+    bs.teams.forEach(t => { teamMap[t.id] = { id:t.id, club:t.name, short:t.short_name, strength:t.strength, p:0,w:0,d:0,l:0,gf:0,ga:0,gd:0,pts:0,results:[],matchDetails:[] }; });
+    bs.elements.forEach(p => { playerMap[p.id] = p.web_name; });
     const finished = fixtures.filter(f => f.finished && f.team_h_score != null);
     finished.sort((a,b) => a.event - b.event);
     finished.forEach(f => {
@@ -804,13 +806,43 @@ const Process = {
       if (!h || !a) return;
       const hg = f.team_h_score, ag = f.team_a_score;
       h.p++; a.p++; h.gf += hg; h.ga += ag; a.gf += ag; a.ga += hg;
+
+      // Extract goals/assists from fixture stats
+      let hGoals=[], aGoals=[], hAssists=[], aAssists=[];
+      if (f.stats) {
+        const gs = f.stats.find(s => s.identifier === 'goals_scored');
+        const as = f.stats.find(s => s.identifier === 'assists');
+        if (gs) {
+          hGoals = (gs.h||[]).map(g => playerMap[g.element]||'?');
+          aGoals = (gs.a||[]).map(g => playerMap[g.element]||'?');
+        }
+        if (as) {
+          hAssists = (as.h||[]).map(g => playerMap[g.element]||'?');
+          aAssists = (as.a||[]).map(g => playerMap[g.element]||'?');
+        }
+      }
+
+      const matchInfo = {
+        gw: f.event, hScore: hg, aScore: ag,
+        hTeam: h.short, aTeam: a.short,
+        hGoals, aGoals, hAssists, aAssists,
+      };
+
       if (hg > ag)      { h.w++; a.l++; h.pts+=3; h.results.push('W'); a.results.push('L'); }
       else if (hg < ag) { a.w++; h.l++; a.pts+=3; h.results.push('L'); a.results.push('W'); }
       else              { h.d++; a.d++; h.pts+=1; a.pts+=1; h.results.push('D'); a.results.push('D'); }
+
+      // Store match details for tooltip
+      const hIsHome = true;
+      h.matchDetails.push({ ...matchInfo, isHome: true, opp: a.short, result: h.results[h.results.length-1],
+        myGoals: hGoals, myAssists: hAssists, oppGoals: aGoals, oppAssists: aAssists });
+      a.matchDetails.push({ ...matchInfo, isHome: false, opp: h.short, result: a.results[a.results.length-1],
+        myGoals: aGoals, myAssists: aAssists, oppGoals: hGoals, oppAssists: hAssists });
     });
     return Object.values(teamMap).map(t => {
       t.gd = t.gf - t.ga;
       t.form = t.results.slice(-5).join('');
+      t.formDetails = t.matchDetails.slice(-5); // Last 5 matches with full details
       return t;
     }).sort((a,b) => b.pts - a.pts || b.gd - a.gd || b.gf - a.gf);
   },
@@ -1133,8 +1165,11 @@ const Process = {
     const capBonus    = cap && cap.livePoints != null ? cap.livePoints : 0;
     const totalWithCap= totalActual + capBonus;
 
+    // Budget calculation
+    const totalPrice = +all.reduce((s,p) => s + (p.Price||0), 0).toFixed(1);
+
     return { gk:gkP[0]||null, def:defP, mid:midP, fwd:fwdP,
-             cap, vc, total, all,
+             cap, vc, total, all, totalPrice,
              hasLive, totalActual, totalWithCap, capBonus };
   },
 
@@ -1147,13 +1182,162 @@ const Process = {
     const sorted = [...fms].sort((a,b)=>b.total-a.total);
     return fms.map(f => ({ ...f, rank: sorted.findIndex(s=>s.name===f.name)+1 }));
   },
+
+  // ── Knapsack Squad Optimizer — 15 players within budget ──
+  knapsackSquad(players, budget, maxPerTeam = 3) {
+    // Requirements: 2 GK, 5 DEF, 5 MID, 3 FWD = 15 total
+    const SLOTS = {GK:2, DEF:5, MID:5, FWD:3};
+    const eligible = players.filter(p => !p.isBlank && p.Price > 0 && p.minutes >= 90);
+
+    // Sort by value ratio (GWScore / Price) for each position
+    const byPos = {};
+    ['GK','DEF','MID','FWD'].forEach(pos => {
+      byPos[pos] = eligible.filter(p => p.Position === pos)
+        .sort((a,b) => (b.GWScore/b.Price) - (a.GWScore/a.Price));
+    });
+
+    // Greedy fill: pick best value players per position
+    const squad = [];
+    const teamCount = {};
+
+    const canAdd = (p) => {
+      const tc = teamCount[p.TeamKey] || 0;
+      return tc < maxPerTeam && !squad.some(s => s.id === p.id);
+    };
+
+    // Phase 1: Fill minimum requirements with best value
+    ['GK','DEF','MID','FWD'].forEach(pos => {
+      const n = SLOTS[pos];
+      const candidates = byPos[pos];
+      let picked = 0;
+      for (const p of candidates) {
+        if (picked >= n) break;
+        if (!canAdd(p)) continue;
+        squad.push(p);
+        teamCount[p.TeamKey] = (teamCount[p.TeamKey]||0) + 1;
+        picked++;
+      }
+    });
+
+    if (squad.length < 15) return null; // Not enough players
+
+    // Phase 2: Check budget and swap expensive → cheaper if over
+    let totalCost = squad.reduce((s,p) => s + p.Price, 0);
+    let iterations = 0;
+    while (totalCost > budget && iterations < 50) {
+      iterations++;
+      // Find most expensive player with lowest GWScore/Price ratio
+      const worstVal = [...squad].sort((a,b) => (a.GWScore/a.Price) - (b.GWScore/b.Price));
+      let swapped = false;
+      for (const worst of worstVal) {
+        const pos = worst.Position;
+        // Find cheaper replacement
+        const cheaper = byPos[pos].filter(p =>
+          !squad.some(s => s.id === p.id) &&
+          p.Price < worst.Price &&
+          ((teamCount[p.TeamKey]||0) < maxPerTeam || p.TeamKey === worst.TeamKey)
+        );
+        if (cheaper.length) {
+          const repl = cheaper[0];
+          const idx = squad.findIndex(s => s.id === worst.id);
+          squad[idx] = repl;
+          teamCount[worst.TeamKey]--;
+          teamCount[repl.TeamKey] = (teamCount[repl.TeamKey]||0) + 1;
+          totalCost = squad.reduce((s,p) => s + p.Price, 0);
+          swapped = true;
+          break;
+        }
+      }
+      if (!swapped) break; // No more swaps possible
+    }
+
+    // Phase 3: Try to improve score within remaining budget
+    const remaining = budget - totalCost;
+    if (remaining > 0) {
+      for (let i = 0; i < squad.length; i++) {
+        const cur = squad[i];
+        const upgrades = byPos[cur.Position].filter(p =>
+          !squad.some(s => s.id === p.id) &&
+          p.GWScore > cur.GWScore &&
+          p.Price <= cur.Price + remaining &&
+          ((teamCount[p.TeamKey]||0) < maxPerTeam || p.TeamKey === cur.TeamKey)
+        );
+        if (upgrades.length) {
+          const best = upgrades[0]; // Already sorted by value
+          teamCount[cur.TeamKey]--;
+          teamCount[best.TeamKey] = (teamCount[best.TeamKey]||0) + 1;
+          squad[i] = best;
+          totalCost = squad.reduce((s,p) => s + p.Price, 0);
+        }
+      }
+    }
+
+    // Phase 4: Find best formation from the 15 players
+    const starters = this._bestXIFromSquad(squad);
+    totalCost = squad.reduce((s,p) => s + p.Price, 0);
+    const totalScore = squad.reduce((s,p) => s + p.GWScore, 0);
+
+    return {
+      squad,
+      starters: starters.xi,
+      bench: starters.bench,
+      formation: starters.formation,
+      cap: starters.cap,
+      vc: starters.vc,
+      totalPrice: +totalCost.toFixed(1),
+      totalScore: +totalScore.toFixed(2),
+      xiScore: +starters.xiScore.toFixed(2),
+      budget,
+      remaining: +(budget - totalCost).toFixed(1),
+    };
+  },
+
+  _bestXIFromSquad(squad) {
+    // Try all valid formations and pick best
+    const formations = [[3,4,3],[3,5,2],[4,3,3],[4,4,2],[4,5,1],[5,2,3],[5,3,2],[5,4,1]];
+    const byPos = {};
+    ['GK','DEF','MID','FWD'].forEach(pos => {
+      byPos[pos] = squad.filter(p => p.Position === pos).sort((a,b) => b.GWScore - a.GWScore);
+    });
+
+    let bestXI = null, bestScore = -1, bestForm = '';
+
+    for (const [nD,nM,nF] of formations) {
+      if (byPos.DEF.length < nD || byPos.MID.length < nM || byPos.FWD.length < nF) continue;
+      const xi = [
+        byPos.GK[0],
+        ...byPos.DEF.slice(0, nD),
+        ...byPos.MID.slice(0, nM),
+        ...byPos.FWD.slice(0, nF),
+      ];
+      const score = xi.reduce((s,p) => s + p.GWScore, 0);
+      if (score > bestScore) {
+        bestScore = score;
+        bestXI = xi;
+        bestForm = `${nD}-${nM}-${nF}`;
+      }
+    }
+
+    if (!bestXI) bestXI = squad.slice(0, 11);
+    const bench = squad.filter(p => !bestXI.includes(p)).sort((a,b) => b.GWScore - a.GWScore);
+    const field = bestXI.filter(p => p.Position !== 'GK').sort((a,b) => b.GWScore - a.GWScore);
+
+    return {
+      xi: bestXI,
+      bench,
+      formation: bestForm,
+      cap: field[0] || null,
+      vc: field[1] || null,
+      xiScore: bestScore,
+    };
+  },
 };
 
 // ═══════════════════════════════════════════════════════
 // 5. NAVIGATION
 // ═══════════════════════════════════════════════════════
 const SUBTABS = {
-  lineup:  [{k:'gwrec',l:'GW Recommendation'},{k:'gweval',l:'Evaluasi Poin'},{k:'gwscoring',l:'GW Scoring'},{k:'wlineup',l:'WLineUp'},{k:'optimize',l:'⚡ Optimize'},{k:'backtest',l:'📊 Backtest Report'}],
+  lineup:  [{k:'gwrec',l:'GW Recommendation'},{k:'gweval',l:'Evaluasi Poin'},{k:'gwscoring',l:'GW Scoring'},{k:'wlineup',l:'WLineUp'},{k:'optimize',l:'⚡ Optimize'},{k:'knapsack',l:'🎒 Best XV'},{k:'backtest',l:'📊 Backtest Report'}],
   scout:   [{k:'sscoring', l:'Scout Scoring'},{k:'srec',l:'Scout Recommendation'},{k:'swt',l:'Scout Weights'},{k:'soptimize',l:'⚡ Optimize'},{k:'price',l:'💰 Price Change'},{k:'diff',l:'🔮 Differentials'},{k:'captain',l:'👑 Captain Sim'}],
   fdr:     [{k:'fdr-def',  l:'DEF Matrix'},       {k:'fdr-atk',  l:'ATK Matrix'},{k:'fdr-ovr',l:'OVR Matrix'},{k:'fdrinfo',l:'Team Strength'},{k:'season',l:'📅 Season Planner'}],
   epl:     [],
@@ -1288,7 +1472,7 @@ const Render = {
     const el = document.getElementById(`content-${tab}`);
     if (!el) return;
     const map = {
-      lineup:  { gwrec:this.lineupRec, gweval:this.lineupEval, gwscoring:this.lineupScoring, wlineup:this.lineupWLineup, optimize:this.lineupOptimize, backtest:this.backtestReport },
+      lineup:  { gwrec:this.lineupRec, gweval:this.lineupEval, gwscoring:this.lineupScoring, wlineup:this.lineupWLineup, optimize:this.lineupOptimize, knapsack:this.lineupKnapsack, backtest:this.backtestReport },
       scout:   { sscoring:this.scoutScoring, srec:this.scoutRec, swt:this.scoutWeight, soptimize:this.scoutOptimize, price:this.pricePredictor, diff:this.differentialFinder, captain:this.captainSimulator },
       fdr:     { 'fdr-def':()=>this.fdrMatrix('def'), 'fdr-atk':()=>this.fdrMatrix('atk'),
                  'fdr-ovr':()=>this.fdrMatrix('ovr'), fdrinfo:this.fdrInfo, season:this.seasonPlanner },
@@ -1379,6 +1563,133 @@ const Render = {
   },
 
   // ── Backtest Weight Optimizer ──────────────────────────
+  // ── Knapsack Best XV ───────────────────────────────────
+  lineupKnapsack() {
+    if (!Store.scoredPlayers?.length) return H.error('Data belum siap.');
+
+    // Get budget from manager info or default £100
+    const mi = Store.myManagerInfo;
+    const bank = mi?.last_deadline_bank ? mi.last_deadline_bank / 10 : 0;
+    const teamValue = mi?.last_deadline_total_value ? mi.last_deadline_total_value / 10 : 100;
+    const totalBudget = teamValue + bank;
+    const maxPT = +document.getElementById('max-per-team')?.value || CFG.maxPerTeam;
+
+    // Run optimizer
+    const result = Process.knapsackSquad(Store.scoredPlayers, totalBudget, maxPT);
+    if (!result) return H.error('Tidak dapat menemukan squad optimal. Pastikan cukup pemain eligible.');
+
+    const {squad, starters, bench, formation, cap, vc, totalPrice, totalScore, xiScore, remaining} = result;
+
+    // Starters table
+    const xiRows = starters.map((p,i) => {
+      const isCap = cap && p.id === cap.id;
+      const isVC = vc && p.id === vc.id;
+      const badge = isCap ? ' <span class="cap-tag">⭐ C</span>' : isVC ? ' <span class="cap-tag" style="color:var(--blue)">🌟 V</span>' : '';
+      return `<tr class="${isCap?'row-cap':''}">
+        <td class="dim">${i+1}</td>
+        <td>${H.posPill(p.Position)}</td>
+        <td style="font-weight:${isCap?800:600}">${p.Player}${badge}${p.doubt?' <span class="doubt-tag">⚠</span>':''}</td>
+        <td>${H.teamTag(p.Team)}</td>
+        <td class="mono r ${H.scoreClass(p.GWScore)}">${p.GWScore.toFixed(2)}</td>
+        <td class="mono dim r">${p.isHome?'🏠':'✈'} ${p.opponent||'?'}</td>
+        <td class="mono dim r">£${p.Price.toFixed(1)}</td>
+        <td class="mono dim r">${H.numFmt(p.PPG,1)}</td>
+      </tr>`;
+    }).join('');
+
+    const benchRows = bench.map((p,i) => `<tr style="opacity:0.6">
+        <td class="dim">B${i+1}</td>
+        <td>${H.posPill(p.Position)}</td>
+        <td>${p.Player}</td>
+        <td>${H.teamTag(p.Team)}</td>
+        <td class="mono r dim">${p.GWScore.toFixed(2)}</td>
+        <td class="mono dim r">${p.isHome?'🏠':'✈'} ${p.opponent||'?'}</td>
+        <td class="mono dim r">£${p.Price.toFixed(1)}</td>
+        <td class="mono dim r">${H.numFmt(p.PPG,1)}</td>
+      </tr>`).join('');
+
+    // Team distribution
+    const teamDist = {};
+    squad.forEach(p => { teamDist[p.Team] = (teamDist[p.Team]||0) + 1; });
+    const teamTags = Object.entries(teamDist).sort((a,b) => b[1]-a[1])
+      .map(([t,n]) => `<span class="team-tag" style="${n>=3?'border-color:var(--orange)':''}">${t} ×${n}</span>`).join(' ');
+
+    // Position distribution
+    const posDist = {};
+    squad.forEach(p => { posDist[p.Position] = (posDist[p.Position]||0) + 1; });
+
+    // Compare with current squad if available
+    let compHtml = '';
+    if (Store.mySquadData?.length) {
+      const myIds = new Set(Store.mySquadData.map(p => p.id));
+      const optIds = new Set(squad.map(p => p.id));
+      const kept = [...myIds].filter(id => optIds.has(id)).length;
+      const transfersOut = Store.mySquadData.filter(p => !optIds.has(p.id));
+      const transfersIn = squad.filter(p => !myIds.has(p.id));
+      compHtml = `
+        <div class="section-title" style="margin-top:20px">🔄 Transfer yang Diperlukan (dari skuad Anda saat ini)</div>
+        <div class="stat-strip">
+          <div class="stat-box"><div class="stat-label">Pemain Tetap</div><div class="stat-val">${kept}/15</div></div>
+          <div class="stat-box"><div class="stat-label">Transfer Out</div><div class="stat-val" style="color:var(--red)">${transfersOut.length}</div></div>
+          <div class="stat-box"><div class="stat-label">Transfer In</div><div class="stat-val" style="color:var(--green)">${transfersIn.length}</div></div>
+        </div>
+        ${transfersIn.length ? `<div class="table-wrap" style="margin-top:8px"><table>
+          <thead><tr><th>In</th><th>Pos</th><th>Tim</th><th class="r">Score</th><th class="r">£</th>
+            <th style="padding:0 4px">←</th>
+            <th>Out</th><th>Pos</th><th>Tim</th><th class="r">Score</th><th class="r">£</th></tr></thead>
+          <tbody>${transfersIn.map((pIn,i) => {
+            const pOut = transfersOut[i] || {};
+            return `<tr>
+              <td style="color:var(--green);font-weight:600">${pIn.Player}</td><td>${H.posPill(pIn.Position)}</td><td>${H.teamTag(pIn.Team)}</td>
+              <td class="mono r">${pIn.GWScore.toFixed(2)}</td><td class="mono dim r">£${pIn.Price.toFixed(1)}</td>
+              <td class="c dim">↔</td>
+              <td style="color:var(--red)">${pOut.Player||'–'}</td><td>${pOut.Position?H.posPill(pOut.Position):''}</td><td>${pOut.Team?H.teamTag(pOut.Team):''}</td>
+              <td class="mono dim r">${pOut.ScoutScore?pOut.ScoutScore.toFixed(2):'–'}</td><td class="mono dim r">${pOut.Price?'£'+pOut.Price.toFixed(1):'–'}</td>
+            </tr>`;
+          }).join('')}</tbody></table></div>` : ''}`;
+    }
+
+    return `
+      ${H.gwTargetBanner()}
+      <div class="section-title">🎒 Best XV — Budget-Constrained Squad Optimizer</div>
+      ${H.info(`Menemukan 15 pemain terbaik (2 GK, 5 DEF, 5 MID, 3 FWD) dengan total harga ≤ budget Anda.
+        Budget: <b>£${totalBudget.toFixed(1)}</b> (Team Value £${teamValue.toFixed(1)} + Bank £${bank.toFixed(1)}).
+        Max ${maxPT} pemain per tim.`)}
+
+      <div class="stat-strip">
+        <div class="stat-box"><div class="stat-label">Formasi</div><div class="stat-val">${formation}</div></div>
+        <div class="stat-box"><div class="stat-label">XI Score</div><div class="stat-val" style="color:var(--blue)">${xiScore.toFixed(2)}</div></div>
+        <div class="stat-box"><div class="stat-label">15-Man Score</div><div class="stat-val" style="color:var(--green)">${totalScore.toFixed(2)}</div></div>
+        <div class="stat-box"><div class="stat-label">Total Harga</div><div class="stat-val" style="color:${totalPrice>totalBudget?'var(--red)':'var(--text)'}">£${totalPrice.toFixed(1)}</div></div>
+        <div class="stat-box"><div class="stat-label">Sisa Budget</div><div class="stat-val" style="color:${remaining>=0?'var(--green)':'var(--red)'}">£${remaining.toFixed(1)}</div></div>
+        <div class="stat-box"><div class="stat-label">Captain</div><div class="stat-val" style="font-size:13px;color:var(--gold)">${cap?.Player||'–'}</div></div>
+      </div>
+
+      <div style="margin-bottom:12px">${teamTags}</div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th>Pos</th><th>Pemain</th><th>Tim</th>
+            <th class="r">GWScore</th><th>Lawan</th><th class="r">£</th><th class="r">PPG</th>
+          </tr></thead>
+          <tbody>
+            ${xiRows}
+            <tr class="row-sep"><td colspan="8" style="font-size:10px;letter-spacing:2px;color:var(--text3);text-transform:uppercase;padding:8px 12px;background:var(--bg3)">Bench</td></tr>
+            ${benchRows}
+            <tr class="row-total">
+              <td colspan="4" style="font-size:11px;color:var(--text3)">TOTAL (15 pemain)</td>
+              <td class="mono r" style="font-weight:700;color:var(--green)">${totalScore.toFixed(2)}</td>
+              <td></td>
+              <td class="mono r" style="font-weight:700">£${totalPrice.toFixed(1)}</td>
+              <td></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      ${compHtml}`;
+  },
+
   lineupOptimize() {
     return this._optimizePanel('gw');
   },
@@ -1758,6 +2069,7 @@ const Render = {
         ? `<div class="rc-pts">${fm.totalWithCap} <span>pts</span></div>
            <div class="rc-pts-rank">#${ptsRank} pts</div>`
         : '';
+      const budgetCls = (fm.totalPrice||0) > 105 ? 'rc-budget-over' : '';
       return `
       <div class="rank-card rank-${fm.rank} ${i===sel?'selected':''}"
            style="--rc:${rankColors[fm.rank]||'var(--border2)'}"
@@ -1766,6 +2078,7 @@ const Render = {
         <div class="rc-name">${fm.name}</div>
         <div class="rc-score">${fm.total.toFixed(2)}</div>
         <div class="rc-label">GW Score</div>
+        <div class="rc-budget ${budgetCls}">£${(fm.totalPrice||0).toFixed(1)}</div>
         ${ptsLabel}
       </div>`;
     }).join('');
@@ -1804,6 +2117,17 @@ const Render = {
         </div>`;
       }
     }
+    // Budget assessment
+    const budget = f.totalPrice || 0;
+    const BUDGET_LIMIT = 100;
+    const budgetPct = ((budget / BUDGET_LIMIT) * 100).toFixed(0);
+    const budgetOver = budget > BUDGET_LIMIT * 1.05;
+    const budgetOk = budget <= BUDGET_LIMIT * 1.05 && budget >= BUDGET_LIMIT * 0.5;
+    const budgetColor = budgetOver ? 'var(--red)' : budget > BUDGET_LIMIT ? 'var(--orange)' : 'var(--green)';
+    const budgetWarn = budgetOver
+      ? `<div style="font-size:10px;color:var(--red);margin-top:2px">⚠ Melebihi £${BUDGET_LIMIT} (+${(budget-BUDGET_LIMIT).toFixed(1)})</div>`
+      : '';
+
     const summaryStrip = `
       <div class="eval-summary-strip">
         <div class="eval-stat">
@@ -1813,6 +2137,11 @@ const Render = {
         <div class="eval-stat">
           <div class="eval-stat-label">GW Score</div>
           <div class="eval-stat-val" style="color:var(--blue)">${f.total.toFixed(2)}</div>
+        </div>
+        <div class="eval-stat${budgetOver?' highlight':''}">
+          <div class="eval-stat-label">Budget (11)</div>
+          <div class="eval-stat-val" style="color:${budgetColor};font-size:18px">£${budget.toFixed(1)}</div>
+          ${budgetWarn}
         </div>
         ${hasLive ? `
         <div class="eval-stat">
@@ -3432,9 +3761,28 @@ const Render = {
 
   _eplRow(t,pos) {
     const zcls=pos<=4?'zone-cl':pos<=6?'zone-el':pos>=18?'zone-rel':'';
-    const dots=String(t.form||'').split('').map(c=>
-      c==='W'?'<div class="form-w" title="Win"></div>':c==='D'?'<div class="form-d" title="Draw"></div>':
-      c==='L'?'<div class="form-l" title="Loss"></div>':'').join('');
+    const formDetails = t.formDetails || [];
+    const formChars = String(t.form||'').split('');
+
+    const dots = formChars.map((c, i) => {
+      const d = formDetails[i];
+      let tipText = c==='W'?'Win':c==='D'?'Draw':'Loss';
+      if (d) {
+        const score = d.isHome ? `${d.hScore}-${d.aScore}` : `${d.aScore}-${d.hScore}`;
+        const ha = d.isHome ? '(H)' : '(A)';
+        const goalsStr = d.myGoals?.length ? `⚽ ${d.myGoals.join(', ')}` : '';
+        const assistStr = d.myAssists?.length ? `🅰 ${d.myAssists.join(', ')}` : '';
+        const oppGoalsStr = d.oppGoals?.length ? `⚽ ${d.oppGoals.join(', ')}` : '';
+        tipText = `GW${d.gw} · ${c} · vs ${d.opp} ${ha}&#10;`
+          + `Skor: ${score}&#10;`
+          + (goalsStr ? `${t.short}: ${goalsStr}&#10;` : '')
+          + (assistStr ? `${t.short}: ${assistStr}&#10;` : '')
+          + (oppGoalsStr ? `${d.opp}: ${oppGoalsStr}` : '');
+      }
+      const cls = c==='W'?'form-w':c==='D'?'form-d':c==='L'?'form-l':'';
+      return `<div class="${cls} form-dot-tip" data-tip="${tipText.replace(/"/g,'&quot;')}" onmouseenter="UI.showFormTip(this,event)" onmouseleave="UI.hideFormTip()"></div>`;
+    }).join('');
+
     return `<tr class="${zcls}">
       <td class="epl-pos ${pos===1?'s-hi':pos<=4?'s-mid':''}">${pos}</td>
       <td class="epl-team">${t.club||t.name||'?'} <span class="epl-short">${t.short||t.short_name||''}</span></td>
@@ -3444,7 +3792,7 @@ const Render = {
       <td class="c mono" style="color:var(--red)">${t.ga||0}</td>
       <td class="c mono ${(t.gd||0)>0?'s-hi':(t.gd||0)<0?'s-lo':''}">${(t.gd||0)>0?'+':''}${t.gd||0}</td>
       <td class="epl-pts">${t.pts||0}</td>
-      <td><div class="epl-form" title="5 pertandingan terakhir (kanan = terbaru)">${dots}</div></td>
+      <td><div class="epl-form">${dots}</div></td>
       <td class="epl-str c">${t.strength||t.Strength||'–'}</td>
     </tr>`;
   },
@@ -4998,6 +5346,22 @@ const UI = {
       + `Miss: <span style="color:var(--text3)">${Store.cacheMisses||0}</span>`;
   },
 
+  showFormTip(el, e) {
+    const tip = document.getElementById('tooltip');
+    if (!tip) return;
+    const text = (el.dataset.tip || '').replace(/&#10;/g, '<br>');
+    tip.innerHTML = text;
+    tip.classList.add('show');
+    const rect = el.getBoundingClientRect();
+    tip.style.left = Math.min(rect.left, window.innerWidth - 240) + 'px';
+    tip.style.top = (rect.bottom + 6) + 'px';
+  },
+
+  hideFormTip() {
+    const tip = document.getElementById('tooltip');
+    if (tip) tip.classList.remove('show');
+  },
+
   setFilter(pos) { Store.posFilter=pos; Nav.goSubtab('lineup','gwscoring'); },
   setSearch(q)   { Store.searchQuery=q; Nav.goSubtab('lineup','gwscoring'); },
   selectForm(i)  { Store.selectedForm=i; Nav.goSubtab('lineup','gwrec'); },
@@ -5287,6 +5651,11 @@ const UI = {
 
   // ── Deadline Countdown ──
   startDeadlineTimer() {
+    let notified1h = false, notified15m = false;
+    // Request notification permission early
+    if ('Notification' in window && Notification.permission === 'default') {
+      // Will ask on first interaction
+    }
     const update = () => {
       const el = document.getElementById('deadline-timer');
       if (!el || !Store.bootstrap) return;
@@ -5303,9 +5672,37 @@ const UI = {
       const isUrgent = diff < 3600000; // < 1 hour
       const text = d > 0 ? `${d}d ${h}h ${m}m` : `${h}h ${m}m ${s}s`;
       el.innerHTML = `<span class="deadline-timer${isUrgent?' urgent':''}">⏱ GW${nextEv.id} ${text}</span><button class="btn-ics" onclick="UI.exportDeadlineICS()" title="Tambah ke Kalender">📅</button>`;
+
+      // Browser notifications
+      if ('Notification' in window && Notification.permission === 'granted') {
+        if (diff <= 3600000 && diff > 3599000 && !notified1h) {
+          notified1h = true;
+          new Notification('⚽ FPL Deadline 1 Jam Lagi!', {
+            body: `GW${nextEv.id} deadline dalam 1 jam. Pastikan transfer dan lineup sudah diatur.`,
+            icon: 'icons/icon-192.svg',
+            tag: 'fpl-deadline-1h',
+          });
+        }
+        if (diff <= 900000 && diff > 899000 && !notified15m) {
+          notified15m = true;
+          new Notification('⚠ FPL Deadline 15 Menit!', {
+            body: `GW${nextEv.id} deadline dalam 15 menit! Segera finalisasi tim Anda.`,
+            icon: 'icons/icon-192.svg',
+            tag: 'fpl-deadline-15m',
+          });
+        }
+      }
     };
     update();
     setInterval(update, 1000);
+
+    // Request permission on first click
+    document.addEventListener('click', function reqNotif() {
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
+      document.removeEventListener('click', reqNotif);
+    }, { once: true });
   },
 
   // ── Export Data to CSV ──
