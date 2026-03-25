@@ -84,7 +84,7 @@ async function main() {
     log(`✅ ${fixtures.length} fixtures`);
     saveJSON('fixtures.json', fixtures);
 
-    // ═══ 3. LIVE EVENT ═══
+    // ═══ 3. LIVE EVENT (current + all past GWs for backtest) ═══
     log(`Fetching event/${gw}/live...`);
     let liveData = null;
     try {
@@ -92,6 +92,28 @@ async function main() {
       log(`✅ live: ${liveData.elements.length} pemain`);
       saveJSON('live.json', liveData);
     } catch(e) { log(`⚠ live gagal: ${e.message}`); }
+
+    // Save all past GW live data for backtest mode
+    const finishedGWs = bootstrap.events.filter(e => e.finished).map(e => e.id);
+    log(`▸ Saving live data for ${finishedGWs.length} finished GWs...`);
+    const liveAll = {};
+    for (const pastGW of finishedGWs) {
+      await delay(CONFIG.DELAY_MS);
+      try {
+        const pastLive = await fetchJSON(CONFIG.FPL_BASE + `/event/${pastGW}/live/`);
+        if (pastLive?.elements) {
+          // Save compact: only id + total_points + bonus + minutes
+          liveAll[pastGW] = pastLive.elements.map(e => ({
+            id: e.id,
+            tp: e.stats.total_points,
+            bn: e.stats.bonus,
+            mn: e.stats.minutes,
+          }));
+        }
+      } catch(e) { log(`⚠ live GW${pastGW}: ${e.message}`); }
+    }
+    saveJSON('live-all.json', liveAll);
+    log(`✅ live-all: ${Object.keys(liveAll).length} GWs saved`);
 
     // ═══ 4. PLAYERS ═══
     const teamMap = {};
