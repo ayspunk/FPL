@@ -5412,44 +5412,108 @@ const UI = {
     </div>`;
   },
 
-  async _captureDesktop(el, minWidth = 1100) {
+  async _captureDesktop(el, minWidth = 1600) {
     // Force desktop-width rendering for clean capture
-    const origStyle = el.getAttribute('style') || '';
-    const origWidth = el.style.width;
-    const origMaxW = el.style.maxWidth;
-    const origOverflow = el.style.overflow;
     const isMobile = window.innerWidth < 600;
-
-    if (isMobile) {
-      el.style.width = minWidth + 'px';
-      el.style.maxWidth = minWidth + 'px';
-      el.style.overflow = 'visible';
-      // Also temporarily disable mobile CSS effects on children
-      el.classList.add('capture-mode');
-    }
-
     const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#080d14';
-    const canvas = await html2canvas(el, {
-      backgroundColor: bgColor,
-      scale: 2,
-      width: isMobile ? minWidth : undefined,
-      windowWidth: isMobile ? minWidth : undefined,
-      scrollX: 0, scrollY: 0,
-      useCORS: true,
-      allowTaint: true,
-    });
 
-    // Restore
     if (isMobile) {
-      el.style.width = origWidth;
-      el.style.maxWidth = origMaxW;
-      el.style.overflow = origOverflow;
-      el.classList.remove('capture-mode');
-      if (!origStyle) el.removeAttribute('style');
-      else el.setAttribute('style', origStyle);
-    }
+      // Clone element for capture to avoid layout thrashing
+      const clone = el.cloneNode(true);
+      clone.style.width = minWidth + 'px';
+      clone.style.maxWidth = minWidth + 'px';
+      clone.style.overflow = 'visible';
+      clone.style.position = 'absolute';
+      clone.style.left = '-9999px';
+      clone.style.top = '0';
 
-    return canvas;
+      // Override mobile styles on clone
+      clone.querySelectorAll('.highlights-list').forEach(hl => {
+        hl.style.gridTemplateColumns = '1fr 1fr';
+        hl.style.gridAutoFlow = 'column';
+        hl.style.gap = '0 12px';
+        hl.style.overflow = 'visible';
+        hl.style.maxHeight = 'none';
+      });
+      clone.querySelectorAll('.highlight-item, .hl-item').forEach(hi => {
+        hi.style.padding = '14px 20px';
+      });
+      // Ensure chart-card doesn't clip content
+      clone.querySelectorAll('.chart-card').forEach(cc => {
+        cc.style.overflow = 'visible';
+        cc.style.maxHeight = 'none';
+      });
+
+      // Fix SVG viewBox for bump chart - ensure full width including labels
+      clone.querySelectorAll('.bump-svg-wrap').forEach(bw => {
+        bw.style.overflow = 'visible';
+        bw.style.maxWidth = 'none';
+        bw.style.width = '100%';
+      });
+      clone.querySelectorAll('.bump-svg').forEach(svg => {
+        svg.style.width = '100%';
+        svg.style.minWidth = 'none';
+        svg.style.display = 'block';
+        // Ensure the SVG isn't cropped
+        const vb = svg.getAttribute('viewBox');
+        if (vb) {
+          const [,, vw, vh] = vb.split(' ').map(Number);
+          svg.setAttribute('width', Math.max(vw, minWidth - 40));
+        }
+      });
+
+      // Fix chart canvas containers - give adequate height
+      clone.querySelectorAll('.chart-canvas-wrap').forEach(cw => {
+        const numManagers = Store.leagueManagers?.length || 10;
+        cw.style.height = Math.max(400, numManagers * 34) + 'px';
+        cw.style.minHeight = '400px';
+        cw.style.width = '100%';
+        cw.style.position = 'relative';
+      });
+
+      // Copy canvas pixel data (Chart.js renders to canvas)
+      const origCanvases = el.querySelectorAll('canvas');
+      const cloneCanvases = clone.querySelectorAll('canvas');
+      origCanvases.forEach((orig, i) => {
+        if (cloneCanvases[i] && orig.width > 0) {
+          try {
+            cloneCanvases[i].width = orig.width;
+            cloneCanvases[i].height = orig.height;
+            cloneCanvases[i].style.width = '100%';
+            cloneCanvases[i].style.height = '100%';
+            const ctx = cloneCanvases[i].getContext('2d');
+            ctx.drawImage(orig, 0, 0);
+          } catch {}
+        }
+      });
+
+      document.body.appendChild(clone);
+
+      // Wait for layout
+      await new Promise(r => setTimeout(r, 100));
+
+      const canvas = await html2canvas(clone, {
+        backgroundColor: bgColor,
+        scale: 2,
+        width: minWidth,
+        windowWidth: minWidth,
+        scrollX: 0, scrollY: 0,
+        useCORS: true,
+        allowTaint: true,
+      });
+
+      document.body.removeChild(clone);
+      return canvas;
+
+    } else {
+      // Desktop: capture as-is
+      return await html2canvas(el, {
+        backgroundColor: bgColor,
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+      });
+    }
   },
 
   async saveCard(cardId, title='FPL Dashboard') {
