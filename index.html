@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="FPL Dashboard">
-<link rel="apple-touch-icon" href="icons/icon-192.svg">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
 </head>
 <body>
 
@@ -29,6 +29,7 @@
     <button class="btn btn-sm btn-theme" id="theme-btn" onclick="UI.cycleTheme()" title="Ganti tema">🌙</button>
     <button class="btn btn-sm btn-wa" onclick="UI.sendWhatsAppReminder()" title="Kirim reminder ke WhatsApp">💬</button>
     <button class="btn btn-sm btn-refresh" onclick="App.refresh()">↻ Refresh</button>
+    <button class="btn btn-sm btn-pwa" id="pwa-install-btn" onclick="pwaInstall()" title="Install sebagai App" style="display:none">📲</button>
   </div>
 </header>
 
@@ -66,11 +67,79 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="app.js"></script>
 <script>
+// PWA Service Worker
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').then(r => {
     console.log('[SW] Registered:', r.scope);
   }).catch(e => console.log('[SW] Error:', e));
 }
+
+// PWA Install Prompt
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredPrompt = e;
+  const btn = document.getElementById('pwa-install-btn');
+  if (btn) btn.style.display = 'inline-flex';
+  // Show install banner
+  showInstallBanner();
+  console.log('[PWA] Install prompt available');
+});
+window.addEventListener('appinstalled', () => {
+  deferredPrompt = null;
+  const btn = document.getElementById('pwa-install-btn');
+  if (btn) btn.style.display = 'none';
+  hideInstallBanner();
+  console.log('[PWA] Installed!');
+});
+function pwaInstall() {
+  if (!deferredPrompt) {
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const msg = isIOS
+      ? 'Untuk install di iOS:\n\n1. Tap tombol Share (□↑) di Safari\n2. Scroll ke bawah\n3. Tap "Add to Home Screen"'
+      : 'Untuk install:\n\nMenu ⋮ → "Add to Home Screen"\natau "Install App"';
+    alert(msg);
+    return;
+  }
+  deferredPrompt.prompt();
+  deferredPrompt.userChoice.then(r => {
+    console.log('[PWA] Choice:', r.outcome);
+    deferredPrompt = null;
+  });
+}
+
+// Install banner for first-time mobile users
+function showInstallBanner() {
+  if (localStorage.getItem('fpl_pwa_dismissed')) return;
+  if (window.matchMedia('(display-mode: standalone)').matches) return; // Already installed
+  const banner = document.createElement('div');
+  banner.id = 'pwa-banner';
+  banner.innerHTML = `
+    <div style="position:fixed;bottom:0;left:0;right:0;background:linear-gradient(135deg,#0d1f3c,#0a1628);border-top:2px solid var(--green);padding:12px 16px;z-index:999;display:flex;align-items:center;gap:12px;box-shadow:0 -4px 20px rgba(0,0,0,.5)">
+      <div style="font-size:24px">⚽</div>
+      <div style="flex:1">
+        <div style="font-weight:700;font-size:14px;color:var(--green)">Install FPL Dashboard</div>
+        <div style="font-size:12px;color:var(--text2)">Akses cepat dari Home Screen · Offline support</div>
+      </div>
+      <button onclick="pwaInstall()" style="background:var(--green);color:#000;border:none;padding:8px 16px;border-radius:4px;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:1px">INSTALL</button>
+      <button onclick="hideInstallBanner()" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:18px;padding:4px">✕</button>
+    </div>`;
+  document.body.appendChild(banner);
+}
+function hideInstallBanner() {
+  const b = document.getElementById('pwa-banner');
+  if (b) b.remove();
+  localStorage.setItem('fpl_pwa_dismissed', '1');
+}
+
+// iOS: show install hint on first visit
+(function() {
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  if (isIOS && !isStandalone && !localStorage.getItem('fpl_pwa_dismissed')) {
+    setTimeout(() => showInstallBanner(), 3000);
+  }
+})();
 </script>
 </body>
 </html>
