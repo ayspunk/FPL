@@ -1937,3 +1937,16 @@ tr.row-total-pts {
   .tab { font-size: 9px; }
   .subtab { font-size: 7px; }
 }
+
+/* ── Capture mode: override mobile constraints during screenshot ── */
+.capture-mode,
+.capture-mode * {
+  max-width: none !important;
+  overflow: visible !important;
+}
+.capture-mode .table-wrap { overflow: visible !important; max-width: none !important; }
+.capture-mode table td,
+.capture-mode table th { position: static !important; white-space: nowrap; }
+.capture-mode .bump-svg-wrap { overflow: visible !important; max-width: none !important; }
+.capture-mode .heatmap-wrap { overflow: visible !important; max-width: none !important; }
+.capture-mode .chart-card { overflow: visible !important; max-width: none !important; }

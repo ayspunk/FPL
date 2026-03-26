@@ -4008,7 +4008,9 @@ const Render = {
     return `
       ${UI.leagueSelectHTML()}
       ${statusHtml}
-      <div class="section-title">Grafik Liga</div>
+      <div class="section-title">Grafik Liga
+        <button id="share-all-btn" class="btn btn-sm btn-primary" onclick="UI.shareAllLeague()" style="margin-left:auto;font-size:10px">📤 Share All</button>
+      </div>
       <div class="charts-grid">
         <div class="chart-card wide" id="card-bumpchart">
           <div class="chart-header"><div class="chart-title">📈 Ranking per GW — Bump Chart</div>${UI.shareBar('card-bumpchart','Bump_Chart')}</div>
@@ -5402,19 +5404,59 @@ const UI = {
     });
   },
 
-  // ── Save / Share card as image ──
+  // ── Save / Share card as image (desktop-quality) ──
   shareBar(cardId, title='') {
     return `<div class="share-bar">
       <button class="btn-share" onclick="UI.saveCard('${cardId}','${title}')" title="Save as PNG">📥 Save</button>
-      <button class="btn-share" onclick="UI.shareCard('${cardId}','${title}')" title="Share to WhatsApp">💬 Share</button>
+      <button class="btn-share" onclick="UI.shareCard('${cardId}','${title}')" title="Share">💬 Share</button>
     </div>`;
+  },
+
+  async _captureDesktop(el, minWidth = 1100) {
+    // Force desktop-width rendering for clean capture
+    const origStyle = el.getAttribute('style') || '';
+    const origWidth = el.style.width;
+    const origMaxW = el.style.maxWidth;
+    const origOverflow = el.style.overflow;
+    const isMobile = window.innerWidth < 600;
+
+    if (isMobile) {
+      el.style.width = minWidth + 'px';
+      el.style.maxWidth = minWidth + 'px';
+      el.style.overflow = 'visible';
+      // Also temporarily disable mobile CSS effects on children
+      el.classList.add('capture-mode');
+    }
+
+    const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#080d14';
+    const canvas = await html2canvas(el, {
+      backgroundColor: bgColor,
+      scale: 2,
+      width: isMobile ? minWidth : undefined,
+      windowWidth: isMobile ? minWidth : undefined,
+      scrollX: 0, scrollY: 0,
+      useCORS: true,
+      allowTaint: true,
+    });
+
+    // Restore
+    if (isMobile) {
+      el.style.width = origWidth;
+      el.style.maxWidth = origMaxW;
+      el.style.overflow = origOverflow;
+      el.classList.remove('capture-mode');
+      if (!origStyle) el.removeAttribute('style');
+      else el.setAttribute('style', origStyle);
+    }
+
+    return canvas;
   },
 
   async saveCard(cardId, title='FPL Dashboard') {
     const el = document.getElementById(cardId);
     if (!el) return;
     try {
-      const canvas = await html2canvas(el, { backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#080d14', scale: 2 });
+      const canvas = await this._captureDesktop(el);
       const link = document.createElement('a');
       link.download = `${title.replace(/[^a-zA-Z0-9]/g,'_')}_GW${Store.currentGW||''}.png`;
       link.href = canvas.toDataURL('image/png');
@@ -5426,27 +5468,66 @@ const UI = {
     const el = document.getElementById(cardId);
     if (!el) return;
     try {
-      const canvas = await html2canvas(el, { backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#080d14', scale: 2 });
+      const canvas = await this._captureDesktop(el);
       const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
       const file = new File([blob], `${title}_GW${Store.currentGW||''}.png`, { type:'image/png' });
 
-      // Try native share first (mobile)
       if (navigator.share && navigator.canShare?.({files:[file]})) {
-        await navigator.share({ title, files:[file] });
+        await navigator.share({ title: `${title} — GW${Store.currentGW||''}`, files:[file] });
       } else {
-        // Fallback: open WhatsApp with image URL (desktop)
-        // Save to temp and open WhatsApp Web
-        const url = canvas.toDataURL('image/png');
         const link = document.createElement('a');
         link.download = file.name;
-        link.href = url;
+        link.href = canvas.toDataURL('image/png');
         link.click();
-        // Open WhatsApp with text
         setTimeout(() => {
           window.open(`https://wa.me/?text=${encodeURIComponent(`${title} — GW${Store.currentGW||''}\n${window.location.href}`)}`, '_blank');
         }, 500);
       }
     } catch(e) { console.error('Share failed:', e); }
+  },
+
+  async shareAllLeague() {
+    const cardIds = ['card-bumpchart','card-highlights','card-standings','card-transfers'];
+    const cardTitles = ['Bump_Chart','Manager_Highlights','Standings','Transfer_Chips'];
+    const files = [];
+
+    // Show progress
+    const btn = document.getElementById('share-all-btn');
+    if (btn) { btn.textContent = '⏳ Capturing...'; btn.disabled = true; }
+
+    for (let i = 0; i < cardIds.length; i++) {
+      const el = document.getElementById(cardIds[i]);
+      if (!el) continue;
+      try {
+        const canvas = await this._captureDesktop(el);
+        const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+        files.push(new File([blob], `${cardTitles[i]}_GW${Store.currentGW||''}.png`, { type:'image/png' }));
+      } catch {}
+      if (btn) btn.textContent = `⏳ ${i+1}/${cardIds.length}`;
+    }
+
+    if (btn) { btn.textContent = '📤 Share All'; btn.disabled = false; }
+
+    if (!files.length) return;
+
+    // Try native share with multiple files
+    if (navigator.share && navigator.canShare?.({files})) {
+      const leagueName = Store.leagueData?.league?.name || CFG.leagues[CFG.selectedLeagueIdx]?.name || 'FPL';
+      await navigator.share({
+        title: `${leagueName} — GW${Store.currentGW||''}`,
+        text: `FPL Dashboard League Report — GW${Store.currentGW||''}\n${window.location.href}`,
+        files
+      });
+    } else {
+      // Fallback: download all
+      files.forEach(f => {
+        const link = document.createElement('a');
+        link.download = f.name;
+        link.href = URL.createObjectURL(f);
+        link.click();
+        URL.revokeObjectURL(link.href);
+      });
+    }
   },
 
   cycleTheme() {
