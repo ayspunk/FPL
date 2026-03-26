@@ -1655,3 +1655,182 @@ tr.row-total-pts {
   background: rgba(255,82,82,.15);
   color: #ff5252;
 }
+/* ══════════════════════════════════════════
+   MOBILE PORTRAIT — max-width 520px
+   ══════════════════════════════════════════ */
+@media (max-width: 520px) {
+  /* ── HEADER ── */
+  #app-header {
+    height: auto;
+    min-height: 48px;
+    padding: 6px 10px;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .logo { font-size: 14px; }
+  .logo-fpl { font-size: 16px; letter-spacing: 1px; }
+  .logo-dash { display: none; }
+  .header-right {
+    gap: 4px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .header-right .badge { font-size: 9px; padding: 2px 6px; }
+  .header-right .btn-sm { padding: 3px 8px; font-size: 10px; }
+  .deadline-timer { font-size: 10px !important; }
+  .gw-select { font-size: 11px; padding: 2px 4px; max-width: 110px; }
+
+  /* ── NAV TABS ── */
+  #main-nav {
+    padding: 0 6px;
+    gap: 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tab {
+    padding: 9px 10px;
+    font-size: 10px;
+    letter-spacing: 0.8px;
+    min-width: max-content;
+  }
+  .tab-icon { padding: 9px 8px; font-size: 14px; }
+
+  /* ── SUBTAB BAR ── */
+  .subtab-bar {
+    padding: 0 6px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    min-height: 34px;
+  }
+  .subtab {
+    padding: 6px 10px;
+    font-size: 9px;
+    letter-spacing: 1px;
+    min-width: max-content;
+  }
+
+  /* ── PANELS ── */
+  .panel-inner { padding: 10px 8px; }
+
+  /* ── FORMATION CARDS ── */
+  .rank-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+  }
+  .rank-card { padding: 10px 6px; }
+  .rc-rank { font-size: 22px; }
+  .rc-name { font-size: 14px; }
+  .rc-score { font-size: 15px; }
+  .rc-label { font-size: 8px; }
+  .rc-budget { font-size: 10px; }
+  .rc-pts { font-size: 12px; }
+  .rc-pts-rank { font-size: 9px; }
+
+  /* ── SUMMARY STRIP ── */
+  .eval-summary-strip {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .eval-stat {
+    min-width: 70px;
+    padding: 6px 8px;
+    flex: 1 1 30%;
+  }
+  .eval-stat-label { font-size: 8px; }
+  .eval-stat-val { font-size: 14px; }
+
+  /* ── STAT STRIP ── */
+  .stat-strip { gap: 6px; }
+  .stat-box { padding: 8px 10px; min-width: 70px; flex: 1 1 28%; }
+  .stat-label { font-size: 8px; }
+  .stat-val { font-size: 15px; }
+
+  /* ── TABLES ── */
+  table { font-size: 12px; }
+  thead th {
+    padding: 6px 6px;
+    font-size: 8px;
+    letter-spacing: 1px;
+  }
+  td { padding: 6px 6px; font-size: 12px; }
+  td.mono { font-size: 11px; }
+
+  /* ── PITCH ── */
+  .lineup-container { grid-template-columns: 1fr; }
+  .pitch-wrap { position: static; margin-top: 12px; }
+  .p-chip-name { font-size: 7px; max-width: 40px; }
+  .p-chip-score { font-size: 7px; }
+  .p-shirt-img-wrap { width: 28px; height: 28px; }
+  .p-opp-vs { font-size: 7px; }
+
+  /* ── FILTERS ── */
+  .filters { gap: 4px; }
+  .filter-btn { padding: 4px 8px; font-size: 10px; }
+  .search-input { width: 120px; font-size: 12px; padding: 4px 8px; }
+
+  /* ── SECTION TITLE ── */
+  .section-title { font-size: 10px; letter-spacing: 1.5px; margin-bottom: 10px; }
+
+  /* ── INFO BOX ── */
+  .info-box { padding: 8px 10px; font-size: 11px; }
+
+  /* ── SCORE BAR ── */
+  .score-bar-wrap { min-width: 80px; gap: 4px; }
+
+  /* ── CHIPS ── */
+  .chip-grid { grid-template-columns: 1fr; gap: 8px; }
+  .chip-card { padding: 12px; }
+  .chip-best { font-size: 16px; }
+  .chip-scores { grid-template-columns: repeat(4, 1fr); gap: 4px; }
+
+  /* ── SQUAD CARDS ── */
+  .squad-grid { grid-template-columns: repeat(2, 1fr); gap: 6px; }
+  .squad-card { padding: 8px 10px; }
+  .sc-name { font-size: 14px; }
+  .sc-score { font-size: 18px; }
+
+  /* ── SETTINGS ── */
+  .settings-grid { grid-template-columns: 1fr; gap: 10px; }
+  .settings-card { padding: 12px; }
+
+  /* ── WEIGHT TABLE ── */
+  .weight-input { width: 48px; font-size: 11px; padding: 2px 4px; }
+  .weight-table td { padding: 4px 6px; font-size: 12px; }
+
+  /* ── HEATMAP ── */
+  .heatmap-table td { min-width: 32px; padding: 4px 3px; font-size: 10px; }
+
+  /* ── TOOLTIP ── */
+  .tooltip { max-width: 220px; font-size: 11px; }
+
+  /* ── BUMP CHART ── */
+  .bump-svg-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* ── LEAGUE ITEMS ── */
+  .league-item { padding: 6px 8px; font-size: 12px; }
+
+  /* ── BUTTONS ── */
+  .btn { padding: 6px 12px; font-size: 11px; }
+  .btn-row { gap: 6px; }
+
+  /* ── MISC MOBILE ── */
+  .two-col { grid-template-columns: 1fr; }
+  .charts-grid { grid-template-columns: 1fr; gap: 10px; }
+  .chart-card { padding: 10px; }
+  .chart-canvas-wrap { height: 220px; }
+
+  /* ── CREDIT FOOTER ── */
+  #app-footer { font-size: 10px; padding: 8px; gap: 8px; flex-wrap: wrap; }
+}
+
+/* Ultra-small phones (< 380px) */
+@media (max-width: 380px) {
+  .rank-grid { grid-template-columns: 1fr 1fr; gap: 4px; }
+  .rank-card { padding: 8px 4px; }
+  .rc-rank { font-size: 18px; }
+  .rc-name { font-size: 12px; }
+  .rc-score { font-size: 13px; }
+  .eval-stat { flex: 1 1 45%; }
+  .tab { padding: 8px 6px; font-size: 9px; }
+  .subtab { padding: 5px 6px; font-size: 8px; }
+}
