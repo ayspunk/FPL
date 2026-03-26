@@ -1159,17 +1159,41 @@ const Process = {
     const cap  = field[0]||null;
     const vc   = field[1]||null;
 
+    // Bench: 1 GK + 3 best outfield not in starting XI
+    const xiIds = new Set(all.map(p=>p.id));
+    const maxPT = +document.getElementById('max-per-team')?.value || CFG.maxPerTeam;
+    const teamCount = {};
+    all.forEach(p => { teamCount[p.TeamKey] = (teamCount[p.TeamKey]||0) + 1; });
+
+    const benchGK = GK.filter(p => !xiIds.has(p.id))[0] || null;
+    if (benchGK) teamCount[benchGK.TeamKey] = (teamCount[benchGK.TeamKey]||0) + 1;
+
+    const outfieldPool = [...DEF,...MID,...FWD]
+      .filter(p => !xiIds.has(p.id) && p.id !== benchGK?.id)
+      .sort((a,b) => b.GWScore - a.GWScore);
+    const benchOut = [];
+    for (const p of outfieldPool) {
+      if (benchOut.length >= 3) break;
+      const tc = teamCount[p.TeamKey] || 0;
+      if (tc >= maxPT) continue;
+      benchOut.push(p);
+      teamCount[p.TeamKey] = tc + 1;
+    }
+    const bench = [benchGK, ...benchOut].filter(Boolean);
+
     // Actual points calculation
     const hasLive     = all.some(p => p.livePoints != null);
     const totalActual = all.reduce((s,p) => s + (p.livePoints ?? 0), 0);
     const capBonus    = cap && cap.livePoints != null ? cap.livePoints : 0;
     const totalWithCap= totalActual + capBonus;
 
-    // Budget calculation
-    const totalPrice = +all.reduce((s,p) => s + (p.Price||0), 0).toFixed(1);
+    // Budget calculation (XI + bench)
+    const xiPrice    = +all.reduce((s,p) => s + (p.Price||0), 0).toFixed(1);
+    const benchPrice = +bench.reduce((s,p) => s + (p.Price||0), 0).toFixed(1);
+    const totalPrice = +(xiPrice + benchPrice).toFixed(1);
 
     return { gk:gkP[0]||null, def:defP, mid:midP, fwd:fwdP,
-             cap, vc, total, all, totalPrice,
+             cap, vc, total, all, bench, totalPrice, xiPrice, benchPrice,
              hasLive, totalActual, totalWithCap, capBonus };
   },
 
@@ -2117,15 +2141,15 @@ const Render = {
         </div>`;
       }
     }
-    // Budget assessment
+    // Budget assessment (full 15-man squad)
     const budget = f.totalPrice || 0;
+    const xiPrice = f.xiPrice || 0;
+    const benchPrice = f.benchPrice || 0;
     const BUDGET_LIMIT = 100;
-    const budgetPct = ((budget / BUDGET_LIMIT) * 100).toFixed(0);
     const budgetOver = budget > BUDGET_LIMIT * 1.05;
-    const budgetOk = budget <= BUDGET_LIMIT * 1.05 && budget >= BUDGET_LIMIT * 0.5;
     const budgetColor = budgetOver ? 'var(--red)' : budget > BUDGET_LIMIT ? 'var(--orange)' : 'var(--green)';
     const budgetWarn = budgetOver
-      ? `<div style="font-size:10px;color:var(--red);margin-top:2px">⚠ Melebihi £${BUDGET_LIMIT} (+${(budget-BUDGET_LIMIT).toFixed(1)})</div>`
+      ? `<div style="font-size:10px;color:var(--red);margin-top:2px">⚠ Over £${BUDGET_LIMIT} (+${(budget-BUDGET_LIMIT).toFixed(1)})</div>`
       : '';
 
     const summaryStrip = `
@@ -2135,12 +2159,13 @@ const Render = {
           <div class="eval-stat-val">${f.name}</div>
         </div>
         <div class="eval-stat">
-          <div class="eval-stat-label">GW Score</div>
+          <div class="eval-stat-label">GW Score (XI)</div>
           <div class="eval-stat-val" style="color:var(--blue)">${f.total.toFixed(2)}</div>
         </div>
         <div class="eval-stat${budgetOver?' highlight':''}">
-          <div class="eval-stat-label">Budget (11)</div>
+          <div class="eval-stat-label">Budget (15)</div>
           <div class="eval-stat-val" style="color:${budgetColor};font-size:18px">£${budget.toFixed(1)}</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:1px">XI £${xiPrice.toFixed(1)} + Bench £${benchPrice.toFixed(1)}</div>
           ${budgetWarn}
         </div>
         ${hasLive ? `
@@ -2232,6 +2257,30 @@ const Render = {
     pad(f.mid,5).forEach((p,i)=>rows.push(R(`MID ${i+1}`,p,i===0?'row-sep':'')));
     pad(f.fwd,3).forEach((p,i)=>rows.push(R(`FWD ${i+1}`,p,i===0?'row-sep':'')));
 
+    // Bench rows
+    if (f.bench?.length) {
+      rows.push(`<tr class="row-sep"><td colspan="${ptsCol?9:8}" style="font-size:10px;letter-spacing:2px;color:var(--text3);text-transform:uppercase;padding:6px 12px;background:var(--bg3)">Bench</td></tr>`);
+      f.bench.forEach((p,i) => {
+        if (!p) return;
+        const sc = p.GWScore;
+        const d = p.doubt ? '<span class="doubt-tag">⚠</span>' : '';
+        const ptsCell = ptsCol
+          ? `<td class="mono r dim">${p.livePoints!=null?p.livePoints:'–'}</td>`
+          : '';
+        rows.push(`<tr style="opacity:0.6">
+          <td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text4)">B${i+1}</td>
+          <td style="font-size:14px;color:var(--text3)">${p.Player}${d}</td>
+          <td>${H.teamTag(p.Team)}</td>
+          <td class="dim" style="font-size:12px">${p.isHome?'🏠':'✈'} ${p.opponent||'?'}</td>
+          <td class="mono r dim">${sc.toFixed(2)}</td>
+          ${ptsCell}
+          <td class="mono dim r">${H.numFmt(p.FDR_next,1)}</td>
+          <td class="mono dim r">${H.numFmt(p.PPG,1)}</td>
+          <td class="mono dim r">£${p.Price.toFixed(1)}</td>
+        </tr>`);
+      });
+    }
+
     // Total & Rank rows
     if (ptsCol) {
       rows.push(`<tr class="row-total">
@@ -2249,9 +2298,9 @@ const Render = {
     } else {
       rows.push(`<tr class="row-total">
         <td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text3)">Total</td>
-        <td colspan="3" class="dim" style="font-size:12px">GK + 10 outfield</td>
+        <td colspan="3" class="dim" style="font-size:12px">XI + Bench (${11 + (f.bench?.length||0)} pemain)</td>
         <td class="mono r" style="font-size:18px;font-weight:700;color:var(--green)">${f.total.toFixed(2)}</td>
-        <td></td><td></td><td></td></tr>`);
+        <td></td><td></td><td class="mono r dim" style="font-size:13px">£${(f.totalPrice||0).toFixed(1)}</td></tr>`);
     }
     rows.push(`<tr class="row-rank">
       <td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text3)">Rank</td>
@@ -3766,21 +3815,37 @@ const Render = {
 
     const dots = formChars.map((c, i) => {
       const d = formDetails[i];
-      let tipText = c==='W'?'Win':c==='D'?'Draw':'Loss';
+      let tipHtml = c==='W'?'Win':c==='D'?'Draw':'Loss';
       if (d) {
         const score = d.isHome ? `${d.hScore}-${d.aScore}` : `${d.aScore}-${d.hScore}`;
-        const ha = d.isHome ? '(H)' : '(A)';
-        const goalsStr = d.myGoals?.length ? `⚽ ${d.myGoals.join(', ')}` : '';
-        const assistStr = d.myAssists?.length ? `🅰 ${d.myAssists.join(', ')}` : '';
-        const oppGoalsStr = d.oppGoals?.length ? `⚽ ${d.oppGoals.join(', ')}` : '';
-        tipText = `GW${d.gw} · ${c} · vs ${d.opp} ${ha}&#10;`
-          + `Skor: ${score}&#10;`
-          + (goalsStr ? `${t.short}: ${goalsStr}&#10;` : '')
-          + (assistStr ? `${t.short}: ${assistStr}&#10;` : '')
-          + (oppGoalsStr ? `${d.opp}: ${oppGoalsStr}` : '');
+        const ha = d.isHome ? 'Home' : 'Away';
+        const resultColor = c==='W'?'var(--green)':c==='D'?'var(--gold)':'var(--red)';
+        const resultLabel = c==='W'?'WIN':c==='D'?'DRAW':'LOSS';
+        // Build structured tooltip
+        let lines = [];
+        lines.push(`<div style="font-weight:700;font-size:13px;color:${resultColor};margin-bottom:4px">GW${d.gw} — ${resultLabel}</div>`);
+        lines.push(`<div style="margin-bottom:3px">${d.isHome?'🏠':'✈'} <b>vs ${d.opp}</b> (${ha})</div>`);
+        lines.push(`<div style="font-size:15px;font-weight:800;margin-bottom:6px">${score}</div>`);
+
+        if (d.myGoals?.length) {
+          lines.push(`<div style="border-top:1px solid var(--border);padding-top:4px;margin-top:2px"><span style="color:var(--green)">⚽ ${t.short}:</span> ${d.myGoals.join(', ')}</div>`);
+        }
+        if (d.myAssists?.length) {
+          lines.push(`<div><span style="color:var(--blue)">🅰 ${t.short}:</span> ${d.myAssists.join(', ')}</div>`);
+        }
+        if (d.oppGoals?.length) {
+          lines.push(`<div style="margin-top:3px"><span style="color:var(--red)">⚽ ${d.opp}:</span> ${d.oppGoals.join(', ')}</div>`);
+        }
+        if (d.oppAssists?.length) {
+          lines.push(`<div><span style="color:var(--orange)">🅰 ${d.opp}:</span> ${d.oppAssists.join(', ')}</div>`);
+        }
+        if (!d.myGoals?.length && !d.oppGoals?.length) {
+          lines.push(`<div style="color:var(--text3);font-size:11px;margin-top:3px">Detail gol tidak tersedia</div>`);
+        }
+        tipHtml = lines.join('');
       }
       const cls = c==='W'?'form-w':c==='D'?'form-d':c==='L'?'form-l':'';
-      return `<div class="${cls} form-dot-tip" data-tip="${tipText.replace(/"/g,'&quot;')}" onmouseenter="UI.showFormTip(this,event)" onmouseleave="UI.hideFormTip()"></div>`;
+      return `<div class="${cls} form-dot-tip" data-tip="${tipHtml.replace(/"/g,'&quot;')}" onmouseenter="UI.showFormTip(this,event)" onmouseleave="UI.hideFormTip()"></div>`;
     }).join('');
 
     return `<tr class="${zcls}">
@@ -4772,37 +4837,102 @@ const Render = {
 
     // Score each chip per GW (raw scores)
     const scoreMatrix = {}; // {chipKey: {gwNum: score}}
+    const remainingGWs = totalGW - gw; // GWs left in season
+    const isLateseason = remainingGWs <= 6;
+    const isMidseason = remainingGWs > 6 && remainingGWs <= 15;
+
     remaining.forEach(chip => {
       scoreMatrix[chip.key] = {};
       gwAnalysis.forEach(ga => {
-        let score = 1; // base (never 0 — all chips must be used)
+        let score = 0;
+
         if (chip.key === 'freehit') {
-          if (ga.matches < 8) score += 6;
-          if (ga.matches < 6) score += 3;
+          // FH best for BGW (few matches) or many blanks in squad
+          if (ga.matches < 8) score += 5;
+          if (ga.matches < 6) score += 4;
           if (ga.myBlanks >= 4) score += 4;
           if (ga.myBlanks >= 6) score += 3;
+          // Penalize using FH on normal GWs
+          if (ga.matches >= 9 && ga.myBlanks <= 1) score = Math.max(0, score - 3);
         }
+
         if (chip.key === 'bboost') {
-          if (ga.dgwTeams >= 3) score += 4;
-          if (ga.dgwTeams >= 5) score += 3;
-          if (benchAvg >= 3) score += 2;
-          if (ga.myBlanks === 0) score += 2;
+          // BB ONLY valuable when bench is genuinely strong
+          if (benchAvg >= 5.5) score += 6;
+          else if (benchAvg >= 4.5) score += 4;
+          else if (benchAvg >= 3.5) score += 1;
+          else score -= 6; // HARD PENALIZE: weak bench = absolutely don't use BB
+
+          // DGW bonus (bench players get double fixtures)
+          if (ga.dgwTeams >= 3) score += 3;
+          if (ga.dgwTeams >= 5) score += 2;
+
+          // No blanks in bench
+          if (ga.myBlanks === 0) score += 1;
+          else score -= 3; // Penalize if bench has blanks
+
+          // Require squad to be mostly settled (low upgrade needs)
+          if (lowScorers >= 3) score -= 4; // Focus on upgrading XI first, not BB
+          if (lowScorers >= 5) score -= 3;
+
+          // Late season: only if bench is actually good
+          if (isLateseason && benchAvg >= 4) score += 2;
         }
+
         if (chip.key === '3xc') {
-          if (ga.dgwTeams >= 2) score += 3;
-          if (ga.bestCap && ga.bestCapFDR < 2.0) score += 4;
-          else if (ga.bestCap && ga.bestCapFDR < 2.5) score += 2;
+          // TC best with strong captain on easy fixture
+          if (ga.dgwTeams >= 2) score += 2;
+          if (ga.bestCap && ga.bestCapFDR < 1.8) score += 5;
+          else if (ga.bestCap && ga.bestCapFDR < 2.2) score += 3;
+          else if (ga.bestCap && ga.bestCapFDR < 2.5) score += 1;
           if (ga.bestCap?.isHome) score += 1;
-          if (ga.bestCapScore >= 8) score += 3;
-          else if (ga.bestCapScore >= 6) score += 2;
+          if (ga.bestCapScore >= 9) score += 3;
+          else if (ga.bestCapScore >= 7) score += 2;
+          // DGW captain (double fixture!) is premium
+          const capTeam = Store.bootstrap?.teams?.find(t=>t.short_name===ga.bestCap?.Team);
+          if (capTeam) {
+            const capDGW = upcoming.filter(f=>f.event===ga.gw&&(f.team_h===capTeam.id||f.team_a===capTeam.id)).length > 1;
+            if (capDGW) score += 5; // DGW captain = huge TC opportunity
+          }
+          // Late season: use it or lose it
+          if (isLateseason) score += 1;
         }
+
         if (chip.key === 'wildcard') {
-          if (lowScorers >= 4) score += 5;
-          if (lowScorers >= 6) score += 3;
-          if (ga.dgwTeams >= 4) score += 2;
-          if (ga.gw === gw+1) score += 1;
+          // WC when squad needs major overhaul
+          if (lowScorers >= 5) score += 5;
+          else if (lowScorers >= 3) score += 3;
+          else score -= 2; // Squad is OK, don't rush WC
+
+          // WC before DGW = plan ahead
+          if (ga.dgwTeams >= 4) score += 3;
+
+          // Don't waste WC on last 2 GWs
+          if (ga.gw >= totalGW - 1) score -= 5;
+
+          // Midseason: good time for WC
+          if (isMidseason && ga.gw === gw+1) score += 1;
+
+          // Early GW1-2: never recommend WC immediately
+          if (ga.gw <= gw + 1 && lowScorers <= 3) score -= 3;
         }
-        scoreMatrix[chip.key][ga.gw] = Math.min(10, score);
+
+        // General: strongly penalize using chips too early
+        if (remainingGWs > 15) {
+          score -= 3; // Very early: save everything, future GWs will have DGW/BGW
+        } else if (remainingGWs > 10 && !isLateseason) {
+          score -= 2; // Still plenty of time — wait for better opportunities
+        } else if (remainingGWs > 6) {
+          score -= 1; // Mid-late: slight caution
+        }
+
+        // Strategic league race: save chips for when they matter most
+        if (isLateseason && remaining.length >= 2) {
+          score += 2; // Use chips now to overtake league rivals
+        }
+
+        // Never recommend a chip with score 0 or below
+        scoreMatrix[chip.key][ga.gw] = Math.max(0, Math.min(10, score));
       });
     });
 
@@ -4843,8 +4973,14 @@ const Render = {
       let reason = '';
 
       if (assignedChip) {
-        if (assignedChip.key === 'freehit') reason = `${ga.matches} match (${ga.myBlanks} pemain blank)`;
-        else if (assignedChip.key === 'bboost') reason = `${ga.dgwTeams} DGW, bench avg ${benchAvg}`;
+        if (assignedChip.key === 'freehit') reason = `${ga.matches} match (${ga.myBlanks} pemain blank) — hindari blank GW`;
+        else if (assignedChip.key === 'bboost') {
+          if (benchAvg < 3.5) {
+            reason = `⚠ Bench masih lemah (avg ${benchAvg}) — upgrade bench dulu sebelum BB! ${ga.dgwTeams} tim DGW`;
+          } else {
+            reason = `Bench kuat (avg ${benchAvg}), ${ga.dgwTeams} tim DGW — bench ikut bermain`;
+          }
+        }
         else if (assignedChip.key === '3xc') reason = `Captain: ${ga.bestCap?.Player||'?'} (${ga.bestCap?.Team||''}) vs ${ga.bestCap?.oppName||'?'} ${ga.bestCap?.isHome?'(H)':'(A)'} · FDR ${ga.bestCapFDR.toFixed(1)}`;
         else if (assignedChip.key === 'wildcard') reason = `${lowScorers} pemain skor rendah — restruktur tim`;
       }
@@ -4892,6 +5028,35 @@ const Render = {
     }).join('');
 
     html += `<div class="chip-grid">${cards}</div>`;
+
+    // Strategic advice
+    const advices = [];
+    if (benchAvg < 3.5 && remaining.some(c=>c.key==='bboost')) {
+      advices.push(`⚠ <b>Bench terlalu lemah untuk BB (avg ${benchAvg})</b> — prioritaskan upgrade bench via transfer reguler atau Wildcard sebelum menggunakan Bench Boost. Target bench avg ≥ 4.5 untuk BB yang efektif. Bench saat ini: ${benchPlayers.map(p=>p.Player+' ('+((p.ScoutScore||p.GWScore||0).toFixed(1))+')').join(', ')||'–'}`);
+    }
+    if (lowScorers >= 3 && remaining.some(c=>c.key==='bboost')) {
+      advices.push(`🔄 <b>${lowScorers} pemain XI berkinerja rendah</b> — fokus upgrade starting XI dulu sebelum BB. Bench Boost hanya efektif saat seluruh 15 pemain berkualitas tinggi.`);
+    }
+    if (remaining.length >= 3 && remainingGWs > 10) {
+      advices.push(`📋 <b>${remaining.length} chip tersisa, ${remainingGWs} GW lagi</b> — jangan terburu-buru. Informasi DGW/BGW biasanya diumumkan beberapa GW sebelumnya. Simpan chip untuk timing optimal.`);
+    } else if (remaining.length >= 3 && remainingGWs > 6) {
+      advices.push(`📋 <b>${remaining.length} chip tersisa, ${remainingGWs} GW lagi</b> — mulai rencanakan penggunaan chip. Perhatikan jadwal DGW/BGW yang akan datang.`);
+    }
+    if (remaining.length >= 2 && remainingGWs <= 6) {
+      advices.push(`🏁 <b>Akhir season!</b> ${remaining.length} chip tersisa, ${remainingGWs} GW lagi — gunakan sekarang untuk memaksimalkan poin dan mendahului rival di mini-league.`);
+    }
+    if (lowScorers >= 3 && remaining.some(c=>c.key==='wildcard')) {
+      advices.push(`🃏 <b>${lowScorers} pemain berkinerja rendah</b> — pertimbangkan Wildcard sebelum DGW berikutnya untuk restruktur squad secara menyeluruh.`);
+    }
+    if (remaining.some(c=>c.key==='3xc') && !gwAnalysis.some(ga=>ga.bestCapFDR<2.2)) {
+      advices.push(`👑 <b>Belum ada fixture TC ideal</b> — simpan TC untuk GW dengan DGW + captain premium (Haaland/Salah) melawan tim lemah di kandang.`);
+    }
+
+    if (advices.length) {
+      html += `<div class="section-title" style="margin-top:20px">💡 Saran Strategis</div>`;
+      html += advices.map(a => `<div class="info-box" style="margin-bottom:8px">${a}</div>`).join('');
+    }
+
     return html;
   },
 
@@ -5679,7 +5844,7 @@ const UI = {
           notified1h = true;
           new Notification('⚽ FPL Deadline 1 Jam Lagi!', {
             body: `GW${nextEv.id} deadline dalam 1 jam. Pastikan transfer dan lineup sudah diatur.`,
-            icon: 'icons/icon-192.svg',
+            icon: 'icons/icon-192.png',
             tag: 'fpl-deadline-1h',
           });
         }
@@ -5687,7 +5852,7 @@ const UI = {
           notified15m = true;
           new Notification('⚠ FPL Deadline 15 Menit!', {
             body: `GW${nextEv.id} deadline dalam 15 menit! Segera finalisasi tim Anda.`,
-            icon: 'icons/icon-192.svg',
+            icon: 'icons/icon-192.png',
             tag: 'fpl-deadline-15m',
           });
         }
