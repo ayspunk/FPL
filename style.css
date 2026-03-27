@@ -463,7 +463,12 @@ td.dim  { color: var(--text3); font-size: 12px; }
 .btn-sm        { padding: 4px 12px; font-size: 11px; }
 .btn-refresh   { background: var(--bg3); color: var(--text2); border: 1px solid var(--border2); }
 .btn-refresh:hover { border-color: var(--green2); color: var(--green); }
-.btn-pwa { background: var(--green); color: #000; border: none; font-size: 14px; animation: pwa-pulse 2s infinite; }
+.btn-pwa {
+  background: var(--green); color: #000; border: none;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+  animation: pwa-pulse 2s infinite;
+  white-space: nowrap; flex-shrink: 0;
+}
 .btn-pwa:hover { background: var(--green2); }
 @keyframes pwa-pulse { 0%,100% { opacity:1; } 50% { opacity:.7; } }
 .btn-theme     { background: var(--bg3); color: var(--text2); border: 1px solid var(--border2); font-size: 14px !important; }

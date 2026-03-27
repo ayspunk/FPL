@@ -19,6 +19,7 @@
 <header id="app-header">
   <div class="logo">⚽ <span class="logo-fpl">FPL</span><span class="logo-dash">Dashboard</span></div>
   <div class="header-right">
+    <button class="btn btn-sm btn-pwa" id="pwa-install-btn" onclick="pwaInstall()" title="Install sebagai App" style="display:none">📲 Install</button>
     <div class="deadline-wrap" id="deadline-wrap" title="Countdown ke deadline GW berikutnya"></div>
     <span id="deadline-timer"></span>
     <div class="badge badge-gw" id="gw-badge" title="GW aktif">GW –</div>
@@ -29,7 +30,6 @@
     <button class="btn btn-sm btn-theme" id="theme-btn" onclick="UI.cycleTheme()" title="Ganti tema">🌙</button>
     <button class="btn btn-sm btn-wa" onclick="UI.sendWhatsAppReminder()" title="Kirim reminder ke WhatsApp">💬</button>
     <button class="btn btn-sm btn-refresh" onclick="App.refresh()">↻ Refresh</button>
-    <button class="btn btn-sm btn-pwa" id="pwa-install-btn" onclick="pwaInstall()" title="Install sebagai App" style="display:none">📲</button>
   </div>
 </header>
 
@@ -115,14 +115,14 @@ function showInstallBanner() {
   const banner = document.createElement('div');
   banner.id = 'pwa-banner';
   banner.innerHTML = `
-    <div style="position:fixed;bottom:0;left:0;right:0;background:linear-gradient(135deg,#0d1f3c,#0a1628);border-top:2px solid var(--green);padding:12px 16px;z-index:999;display:flex;align-items:center;gap:12px;box-shadow:0 -4px 20px rgba(0,0,0,.5)">
-      <div style="font-size:24px">⚽</div>
-      <div style="flex:1">
-        <div style="font-weight:700;font-size:14px;color:var(--green)">Install FPL Dashboard</div>
-        <div style="font-size:12px;color:var(--text2)">Akses cepat dari Home Screen · Offline support</div>
+    <div style="position:fixed;bottom:0;left:0;right:0;background:linear-gradient(135deg,#0d1f3c,#0a1628);border-top:2px solid var(--green);padding:10px 12px;z-index:999;display:flex;align-items:center;gap:8px;box-shadow:0 -4px 20px rgba(0,0,0,.5);box-sizing:border-box;max-width:100vw">
+      <div style="font-size:20px;flex-shrink:0">⚽</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:13px;color:var(--green)">Install FPL Dashboard</div>
+        <div style="font-size:11px;color:#7a9ab8">Akses cepat · Offline support</div>
       </div>
-      <button onclick="pwaInstall()" style="background:var(--green);color:#000;border:none;padding:8px 16px;border-radius:4px;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:1px">INSTALL</button>
-      <button onclick="hideInstallBanner()" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:18px;padding:4px">✕</button>
+      <button onclick="pwaInstall()" style="background:#00e676;color:#000;border:none;padding:7px 14px;border-radius:4px;font-weight:700;font-size:11px;cursor:pointer;letter-spacing:1px;flex-shrink:0;font-family:inherit">INSTALL</button>
+      <button onclick="hideInstallBanner()" style="background:none;border:none;color:#4a6a88;cursor:pointer;font-size:16px;padding:4px;flex-shrink:0">✕</button>
     </div>`;
   document.body.appendChild(banner);
 }

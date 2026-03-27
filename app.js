@@ -2082,7 +2082,10 @@ const Render = {
     if (!fms.length) return H.error('Data belum siap.');
     const sel=Store.selectedForm, f=fms[sel];
     const rankColors={1:'var(--gold)',2:'#90caf9',3:'var(--purple)'};
-    const hasLive = f.hasLive;
+    // Only show actual points for confirmed past GWs
+    const isPastGW = Store.targetGW > 0 && Store.targetGW < Store.currentGW;
+    const isCurrentFinished = Store.targetGW === Store.currentGW && Store.bootstrap?.events?.find(e=>e.id===Store.currentGW)?.finished;
+    const hasLive = f.hasLive && (isPastGW || isCurrentFinished);
 
     // Sort by actual pts for "pts rank"
     const byPts = [...fms].sort((a,b)=>(b.totalWithCap||0)-(a.totalWithCap||0));
@@ -2191,9 +2194,8 @@ const Render = {
       </div>`;
 
     // Weight source indicator
-    const isPastGW = Store.targetGW > 0 && Store.targetGW <= Store.currentGW;
     const usingAdaptive = !!Store._activeBacktestWeights;
-    const weightBadge = isPastGW && usingAdaptive
+    const weightBadge = (isPastGW || isCurrentFinished) && usingAdaptive
       ? `<div class="info-box" style="background:rgba(0,230,118,.06);border-color:rgba(0,230,118,.2);color:var(--green);margin-bottom:10px;font-size:12px">
           ⚡ Menggunakan <b>Adaptive Weights GW${Store.targetGW}</b> (optimal dari data historis).
           <a href="#" onclick="Nav.goSubtab('lineup','wlineup');return false" style="color:var(--blue);margin-left:8px">Lihat perbandingan →</a>
@@ -2370,12 +2372,14 @@ const Render = {
   lineupEval() {
     const fms = Store.formations;
     if (!fms.length) return H.error('Data belum siap.');
-    const hasLive = fms[0]?.hasLive;
     const targetGW = Store.targetGW || Store.currentGW;
-    const isPast = Store.targetGW > 0 && Store.targetGW <= Store.currentGW;
+    const isPastGW = Store.targetGW > 0 && Store.targetGW < Store.currentGW;
+    const isCurrentFinished = Store.targetGW === Store.currentGW && Store.bootstrap?.events?.find(e=>e.id===Store.currentGW)?.finished;
+    const isPast = isPastGW || isCurrentFinished;
+    const hasLive = fms[0]?.hasLive && isPast;
 
     if (!hasLive) {
-      if (isPast) {
+      if (Store.targetGW > 0 && Store.targetGW < Store.currentGW) {
         return H.gwTargetBanner() + `
           <div class="error-box">
             ⚠ <b>Data poin GW${targetGW} gagal dimuat.</b><br>
@@ -2383,7 +2387,7 @@ const Render = {
             Atau coba klik ulang GW${targetGW} di dropdown — akan mencoba direct fetch + CORS proxy.
           </div>`;
       }
-      return H.info('Data poin aktual belum tersedia. Poin akan muncul setelah pertandingan GW aktif berlangsung.');
+      return H.gwTargetBanner() + H.info('Data poin aktual belum tersedia. Poin akan muncul setelah pertandingan GW selesai.');
     }
 
     // Sort formations by actual pts
