@@ -35,7 +35,7 @@ const CFG = {
     'xgi':             { GK:.00, DEF:.10, MID:.20, FWD:.25 },
     'xgc':             { GK:.00, DEF:.20, MID:.10, FWD:.00 },
     'saves':           { GK:.20, DEF:.00, MID:.00, FWD:.00 },
-    'dgw_blank':       { GK:.15, DEF:.15, MID:.15, FWD:.15 },
+    'dgw_blank':       { GK:.00, DEF:.00, MID:.00, FWD:.00 },
   },
   SCOUT_WEIGHTS: {
     'fdr_short':       {GK:.15,DEF:.15,MID:.15,FWD:.15},
@@ -49,7 +49,7 @@ const CFG = {
     'value_form':      {GK:.02,DEF:.02,MID:.02,FWD:.02},
     'net_transfers':   {GK:.08,DEF:.08,MID:.08,FWD:.08},
     'yellow_cards':    {GK:.05,DEF:.05,MID:.05,FWD:.05},
-    'dgw_blank':       {GK:.10,DEF:.10,MID:.10,FWD:.10},
+    'dgw_blank':       {GK:.00,DEF:.00,MID:.00,FWD:.00},
     'ep_next':         {GK:.10,DEF:.10,MID:.10,FWD:.10},
   },
 };
@@ -796,7 +796,9 @@ const Process = {
   eplFromFixtures(bs, fixtures) {
     if (!bs || !fixtures) return [];
     const teamMap = {};
-    bs.teams.forEach(t => { teamMap[t.id] = { id:t.id, club:t.name, short:t.short_name, strength:t.strength, p:0,w:0,d:0,l:0,gf:0,ga:0,gd:0,pts:0,results:[] }; });
+    const playerMap = {};
+    bs.teams.forEach(t => { teamMap[t.id] = { id:t.id, club:t.name, short:t.short_name, strength:t.strength, p:0,w:0,d:0,l:0,gf:0,ga:0,gd:0,pts:0,results:[],matchDetails:[] }; });
+    bs.elements.forEach(p => { playerMap[p.id] = p.web_name; });
     const finished = fixtures.filter(f => f.finished && f.team_h_score != null);
     finished.sort((a,b) => a.event - b.event);
     finished.forEach(f => {
@@ -804,13 +806,43 @@ const Process = {
       if (!h || !a) return;
       const hg = f.team_h_score, ag = f.team_a_score;
       h.p++; a.p++; h.gf += hg; h.ga += ag; a.gf += ag; a.ga += hg;
+
+      // Extract goals/assists from fixture stats
+      let hGoals=[], aGoals=[], hAssists=[], aAssists=[];
+      if (f.stats) {
+        const gs = f.stats.find(s => s.identifier === 'goals_scored');
+        const as = f.stats.find(s => s.identifier === 'assists');
+        if (gs) {
+          hGoals = (gs.h||[]).map(g => playerMap[g.element]||'?');
+          aGoals = (gs.a||[]).map(g => playerMap[g.element]||'?');
+        }
+        if (as) {
+          hAssists = (as.h||[]).map(g => playerMap[g.element]||'?');
+          aAssists = (as.a||[]).map(g => playerMap[g.element]||'?');
+        }
+      }
+
+      const matchInfo = {
+        gw: f.event, hScore: hg, aScore: ag,
+        hTeam: h.short, aTeam: a.short,
+        hGoals, aGoals, hAssists, aAssists,
+      };
+
       if (hg > ag)      { h.w++; a.l++; h.pts+=3; h.results.push('W'); a.results.push('L'); }
       else if (hg < ag) { a.w++; h.l++; a.pts+=3; h.results.push('L'); a.results.push('W'); }
       else              { h.d++; a.d++; h.pts+=1; a.pts+=1; h.results.push('D'); a.results.push('D'); }
+
+      // Store match details for tooltip
+      const hIsHome = true;
+      h.matchDetails.push({ ...matchInfo, isHome: true, opp: a.short, result: h.results[h.results.length-1],
+        myGoals: hGoals, myAssists: hAssists, oppGoals: aGoals, oppAssists: aAssists });
+      a.matchDetails.push({ ...matchInfo, isHome: false, opp: h.short, result: a.results[a.results.length-1],
+        myGoals: aGoals, myAssists: aAssists, oppGoals: hGoals, oppAssists: hAssists });
     });
     return Object.values(teamMap).map(t => {
       t.gd = t.gf - t.ga;
       t.form = t.results.slice(-5).join('');
+      t.formDetails = t.matchDetails.slice(-5); // Last 5 matches with full details
       return t;
     }).sort((a,b) => b.pts - a.pts || b.gd - a.gd || b.gf - a.gf);
   },
@@ -1068,10 +1100,33 @@ const Process = {
   },
 
   applyScores(players) {
-    players.forEach(p => { p.GWScore = +Process.calcGWScore(p, Store.gwWeights); });
+    // In backtest mode with adaptive weights: use those instead of manual weights
+    let weights = Store.gwWeights;
+    if (Store._backtestAdaptiveWeights && Store.targetGW > 0 && Store.targetGW <= Store.currentGW) {
+      weights = Process._transposeAdaptiveWeights(Store._backtestAdaptiveWeights);
+      Store._activeBacktestWeights = weights; // Store for display
+    } else {
+      Store._activeBacktestWeights = null;
+    }
+    players.forEach(p => { p.GWScore = +Process.calcGWScore(p, weights); });
     const minMin = +document.getElementById('min-minutes')?.value || CFG.minMinutes;
     Store.scoredPlayers = players.filter(p => p.minutes >= minMin);
     Store.formations    = this.rankFormations(this.buildAllFormations(Store.scoredPlayers));
+  },
+
+  // Transpose {GK:{ppg:0.3,...},DEF:{...}} → {ppg:{GK:0.3,...},form:{...}}
+  _transposeAdaptiveWeights(adaptW) {
+    const result = {};
+    const positions = Object.keys(adaptW); // ['GK','DEF','MID','FWD']
+    positions.forEach(pos => {
+      const posWeights = adaptW[pos];
+      if (!posWeights) return;
+      Object.entries(posWeights).forEach(([key, val]) => {
+        if (!result[key]) result[key] = {GK:0,DEF:0,MID:0,FWD:0};
+        result[key][pos] = val;
+      });
+    });
+    return result;
   },
 
   // ── Formation builders ────────────────────────────────
@@ -1104,14 +1159,41 @@ const Process = {
     const cap  = field[0]||null;
     const vc   = field[1]||null;
 
+    // Bench: 1 GK + 3 best outfield not in starting XI
+    const xiIds = new Set(all.map(p=>p.id));
+    const maxPT = +document.getElementById('max-per-team')?.value || CFG.maxPerTeam;
+    const teamCount = {};
+    all.forEach(p => { teamCount[p.TeamKey] = (teamCount[p.TeamKey]||0) + 1; });
+
+    const benchGK = GK.filter(p => !xiIds.has(p.id))[0] || null;
+    if (benchGK) teamCount[benchGK.TeamKey] = (teamCount[benchGK.TeamKey]||0) + 1;
+
+    const outfieldPool = [...DEF,...MID,...FWD]
+      .filter(p => !xiIds.has(p.id) && p.id !== benchGK?.id)
+      .sort((a,b) => b.GWScore - a.GWScore);
+    const benchOut = [];
+    for (const p of outfieldPool) {
+      if (benchOut.length >= 3) break;
+      const tc = teamCount[p.TeamKey] || 0;
+      if (tc >= maxPT) continue;
+      benchOut.push(p);
+      teamCount[p.TeamKey] = tc + 1;
+    }
+    const bench = [benchGK, ...benchOut].filter(Boolean);
+
     // Actual points calculation
     const hasLive     = all.some(p => p.livePoints != null);
     const totalActual = all.reduce((s,p) => s + (p.livePoints ?? 0), 0);
     const capBonus    = cap && cap.livePoints != null ? cap.livePoints : 0;
     const totalWithCap= totalActual + capBonus;
 
+    // Budget calculation (XI + bench)
+    const xiPrice    = +all.reduce((s,p) => s + (p.Price||0), 0).toFixed(1);
+    const benchPrice = +bench.reduce((s,p) => s + (p.Price||0), 0).toFixed(1);
+    const totalPrice = +(xiPrice + benchPrice).toFixed(1);
+
     return { gk:gkP[0]||null, def:defP, mid:midP, fwd:fwdP,
-             cap, vc, total, all,
+             cap, vc, total, all, bench, totalPrice, xiPrice, benchPrice,
              hasLive, totalActual, totalWithCap, capBonus };
   },
 
@@ -1124,15 +1206,164 @@ const Process = {
     const sorted = [...fms].sort((a,b)=>b.total-a.total);
     return fms.map(f => ({ ...f, rank: sorted.findIndex(s=>s.name===f.name)+1 }));
   },
+
+  // ── Knapsack Squad Optimizer — 15 players within budget ──
+  knapsackSquad(players, budget, maxPerTeam = 3) {
+    // Requirements: 2 GK, 5 DEF, 5 MID, 3 FWD = 15 total
+    const SLOTS = {GK:2, DEF:5, MID:5, FWD:3};
+    const eligible = players.filter(p => !p.isBlank && p.Price > 0 && p.minutes >= 90);
+
+    // Sort by value ratio (GWScore / Price) for each position
+    const byPos = {};
+    ['GK','DEF','MID','FWD'].forEach(pos => {
+      byPos[pos] = eligible.filter(p => p.Position === pos)
+        .sort((a,b) => (b.GWScore/b.Price) - (a.GWScore/a.Price));
+    });
+
+    // Greedy fill: pick best value players per position
+    const squad = [];
+    const teamCount = {};
+
+    const canAdd = (p) => {
+      const tc = teamCount[p.TeamKey] || 0;
+      return tc < maxPerTeam && !squad.some(s => s.id === p.id);
+    };
+
+    // Phase 1: Fill minimum requirements with best value
+    ['GK','DEF','MID','FWD'].forEach(pos => {
+      const n = SLOTS[pos];
+      const candidates = byPos[pos];
+      let picked = 0;
+      for (const p of candidates) {
+        if (picked >= n) break;
+        if (!canAdd(p)) continue;
+        squad.push(p);
+        teamCount[p.TeamKey] = (teamCount[p.TeamKey]||0) + 1;
+        picked++;
+      }
+    });
+
+    if (squad.length < 15) return null; // Not enough players
+
+    // Phase 2: Check budget and swap expensive → cheaper if over
+    let totalCost = squad.reduce((s,p) => s + p.Price, 0);
+    let iterations = 0;
+    while (totalCost > budget && iterations < 50) {
+      iterations++;
+      // Find most expensive player with lowest GWScore/Price ratio
+      const worstVal = [...squad].sort((a,b) => (a.GWScore/a.Price) - (b.GWScore/b.Price));
+      let swapped = false;
+      for (const worst of worstVal) {
+        const pos = worst.Position;
+        // Find cheaper replacement
+        const cheaper = byPos[pos].filter(p =>
+          !squad.some(s => s.id === p.id) &&
+          p.Price < worst.Price &&
+          ((teamCount[p.TeamKey]||0) < maxPerTeam || p.TeamKey === worst.TeamKey)
+        );
+        if (cheaper.length) {
+          const repl = cheaper[0];
+          const idx = squad.findIndex(s => s.id === worst.id);
+          squad[idx] = repl;
+          teamCount[worst.TeamKey]--;
+          teamCount[repl.TeamKey] = (teamCount[repl.TeamKey]||0) + 1;
+          totalCost = squad.reduce((s,p) => s + p.Price, 0);
+          swapped = true;
+          break;
+        }
+      }
+      if (!swapped) break; // No more swaps possible
+    }
+
+    // Phase 3: Try to improve score within remaining budget
+    const remaining = budget - totalCost;
+    if (remaining > 0) {
+      for (let i = 0; i < squad.length; i++) {
+        const cur = squad[i];
+        const upgrades = byPos[cur.Position].filter(p =>
+          !squad.some(s => s.id === p.id) &&
+          p.GWScore > cur.GWScore &&
+          p.Price <= cur.Price + remaining &&
+          ((teamCount[p.TeamKey]||0) < maxPerTeam || p.TeamKey === cur.TeamKey)
+        );
+        if (upgrades.length) {
+          const best = upgrades[0]; // Already sorted by value
+          teamCount[cur.TeamKey]--;
+          teamCount[best.TeamKey] = (teamCount[best.TeamKey]||0) + 1;
+          squad[i] = best;
+          totalCost = squad.reduce((s,p) => s + p.Price, 0);
+        }
+      }
+    }
+
+    // Phase 4: Find best formation from the 15 players
+    const starters = this._bestXIFromSquad(squad);
+    totalCost = squad.reduce((s,p) => s + p.Price, 0);
+    const totalScore = squad.reduce((s,p) => s + p.GWScore, 0);
+
+    return {
+      squad,
+      starters: starters.xi,
+      bench: starters.bench,
+      formation: starters.formation,
+      cap: starters.cap,
+      vc: starters.vc,
+      totalPrice: +totalCost.toFixed(1),
+      totalScore: +totalScore.toFixed(2),
+      xiScore: +starters.xiScore.toFixed(2),
+      budget,
+      remaining: +(budget - totalCost).toFixed(1),
+    };
+  },
+
+  _bestXIFromSquad(squad) {
+    // Try all valid formations and pick best
+    const formations = [[3,4,3],[3,5,2],[4,3,3],[4,4,2],[4,5,1],[5,2,3],[5,3,2],[5,4,1]];
+    const byPos = {};
+    ['GK','DEF','MID','FWD'].forEach(pos => {
+      byPos[pos] = squad.filter(p => p.Position === pos).sort((a,b) => b.GWScore - a.GWScore);
+    });
+
+    let bestXI = null, bestScore = -1, bestForm = '';
+
+    for (const [nD,nM,nF] of formations) {
+      if (byPos.DEF.length < nD || byPos.MID.length < nM || byPos.FWD.length < nF) continue;
+      const xi = [
+        byPos.GK[0],
+        ...byPos.DEF.slice(0, nD),
+        ...byPos.MID.slice(0, nM),
+        ...byPos.FWD.slice(0, nF),
+      ];
+      const score = xi.reduce((s,p) => s + p.GWScore, 0);
+      if (score > bestScore) {
+        bestScore = score;
+        bestXI = xi;
+        bestForm = `${nD}-${nM}-${nF}`;
+      }
+    }
+
+    if (!bestXI) bestXI = squad.slice(0, 11);
+    const bench = squad.filter(p => !bestXI.includes(p)).sort((a,b) => b.GWScore - a.GWScore);
+    const field = bestXI.filter(p => p.Position !== 'GK').sort((a,b) => b.GWScore - a.GWScore);
+
+    return {
+      xi: bestXI,
+      bench,
+      formation: bestForm,
+      cap: field[0] || null,
+      vc: field[1] || null,
+      xiScore: bestScore,
+    };
+  },
 };
 
 // ═══════════════════════════════════════════════════════
 // 5. NAVIGATION
 // ═══════════════════════════════════════════════════════
 const SUBTABS = {
-  lineup:  [{k:'gwrec',    l:'GW Recommendation'},{k:'gweval',l:'Evaluasi Poin'},{k:'gwscoring',l:'GW Scoring'},{k:'wlineup',l:'WLineUp'},{k:'optimize',l:'⚡ Optimize'}],
+  lineup:  [{k:'gwrec',l:'GW Recommendation'},{k:'gweval',l:'Evaluasi Poin'},{k:'gwscoring',l:'GW Scoring'},{k:'wlineup',l:'WLineUp'},{k:'optimize',l:'⚡ Optimize'},{k:'knapsack',l:'🎒 Best XV'},{k:'backtest',l:'📊 Backtest Report'}],
   scout:   [{k:'sscoring', l:'Scout Scoring'},{k:'srec',l:'Scout Recommendation'},{k:'swt',l:'Scout Weights'},{k:'soptimize',l:'⚡ Optimize'},{k:'price',l:'💰 Price Change'},{k:'diff',l:'🔮 Differentials'},{k:'captain',l:'👑 Captain Sim'}],
-  fdr:     [{k:'fdr-def',  l:'DEF Matrix'},       {k:'fdr-atk',  l:'ATK Matrix'},{k:'fdr-ovr',l:'OVR Matrix'},{k:'fdrinfo',l:'Team Strength'},{k:'season',l:'📅 Season Planner'}],
+  fdr:     [{k:'fdr-def',  l:'DEF Matrix'},       {k:'fdr-atk',  l:'ATK Matrix'},{k:'fdr-ovr',l:'OVR Matrix'},{k:'fdrinfo',l:'Team Strength'},{k:'season',l:'📅 Season Planner'},{k:'dgwplan',l:'⚡ DGW/BGW'}],
   epl:     [],
   league:  [{k:'rekap',    l:'Rekap'},             {k:'charts',   l:'Grafik'},   {k:'transfer',l:'Transfer & Chips'},{k:'h2h',l:'⚔ Head-to-Head'}],
   other:   [{k:'mysquad',l:'My Squad'},{k:'myformation',l:'My Formation'},{k:'transfersim',l:'🔄 Transfer Sim'},{k:'chiprec',l:'Chip Recommendation'},{k:'setforget',l:'📊 Transfer Impact'}],
@@ -1265,10 +1496,10 @@ const Render = {
     const el = document.getElementById(`content-${tab}`);
     if (!el) return;
     const map = {
-      lineup:  { gwrec:this.lineupRec, gweval:this.lineupEval, gwscoring:this.lineupScoring, wlineup:this.lineupWLineup, optimize:this.lineupOptimize },
+      lineup:  { gwrec:this.lineupRec, gweval:this.lineupEval, gwscoring:this.lineupScoring, wlineup:this.lineupWLineup, optimize:this.lineupOptimize, knapsack:this.lineupKnapsack, backtest:this.backtestReport },
       scout:   { sscoring:this.scoutScoring, srec:this.scoutRec, swt:this.scoutWeight, soptimize:this.scoutOptimize, price:this.pricePredictor, diff:this.differentialFinder, captain:this.captainSimulator },
       fdr:     { 'fdr-def':()=>this.fdrMatrix('def'), 'fdr-atk':()=>this.fdrMatrix('atk'),
-                 'fdr-ovr':()=>this.fdrMatrix('ovr'), fdrinfo:this.fdrInfo, season:this.seasonPlanner },
+                 'fdr-ovr':()=>this.fdrMatrix('ovr'), fdrinfo:this.fdrInfo, season:this.seasonPlanner, dgwplan:this.dgwPlanner },
       epl:     { null:this.epl },
       league:  { rekap:this.leagueRekap, charts:this.leagueCharts, transfer:this.leagueTransfer, h2h:this.headToHead },
       other:   { mysquad:this.otherSquad, myformation:this.myFormation, transfersim:this.transferSim, chiprec:this.otherChip, setforget:this.setAndForget },
@@ -1301,13 +1532,365 @@ const Render = {
 
   // ── WLineUp ────────────────────────────────────────────
   lineupWLineup() {
-    return this._criteriaWeightPanel('gw', Store.gwWeights, 'GW Scoring Weights — WLineUp',
+    let html = this._criteriaWeightPanel('gw', Store.gwWeights, 'GW Scoring Weights — WLineUp',
       'Edit bobot kemudian klik <b>Apply</b>. Tambahkan kriteria dari katalog di bawah.');
+
+    // Show adaptive weights comparison when in backtest mode
+    const gw = Store.targetGW;
+    const isPast = gw > 0 && gw <= Store.currentGW;
+    const adaptW = Store._activeBacktestWeights;
+
+    if (isPast && adaptW) {
+      const pos = ['GK','DEF','MID','FWD'];
+      const adaptKeys = Object.keys(adaptW).filter(k => pos.some(p => (adaptW[k]?.[p]||0) > 0.005));
+
+      const compRows = adaptKeys.map(key => {
+        const cr = CRITERIA_MAP[key];
+        const label = cr?.label || key;
+        const userW = Store.gwWeights[key];
+        const cells = pos.map(p => {
+          const aVal = ((adaptW[key]?.[p]||0)*100).toFixed(0);
+          const uVal = userW ? ((userW[p]||0)*100).toFixed(0) : '–';
+          const diff = userW ? +aVal - +uVal : 0;
+          const cls = diff > 5 ? 's-hi' : diff < -5 ? 's-lo' : '';
+          return `<td class="mono c">${uVal}</td><td class="mono c ${cls}" style="font-weight:700">${aVal}</td>`;
+        }).join('');
+        return `<tr><td>${label}</td>${cells}</tr>`;
+      }).join('');
+
+      const compHead = pos.map(p =>
+        `<th class="c" style="font-size:9px">Anda</th><th class="c" style="font-size:9px;color:var(--green)">${p}</th>`
+      ).join('');
+
+      html += `
+        <div class="section-title" style="margin-top:24px">📊 Perbandingan Bobot — GW${gw} Adaptive vs Manual</div>
+        <div class="info-box">
+          <b>Mode Backtest aktif.</b> Rekomendasi GW${gw} saat ini menggunakan <b style="color:var(--green)">adaptive weights</b> (dihitung dari korelasi data GW1-${gw-1}).
+          <br>Kolom hijau = bobot adaptive yang digunakan. Kolom putih = bobot manual Anda.
+        </div>
+        <div class="table-wrap" style="max-width:800px">
+          <table class="weight-table">
+            <thead>
+              <tr><th rowspan="2">Kriteria</th>${pos.map(p => `<th colspan="2" class="c" style="border-bottom:1px solid var(--border2)">${p}</th>`).join('')}</tr>
+              <tr>${pos.map(() => '<th class="c" style="font-size:9px">Manual</th><th class="c" style="font-size:9px;color:var(--green)">Adapt</th>').join('')}</tr>
+            </thead>
+            <tbody>${compRows}</tbody>
+          </table>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="UI.applyAdaptiveAsManual()">✓ Salin Adaptive → Manual</button>
+          <button class="btn btn-secondary" onclick="Store.targetGW=0;UI.changeTargetGW(0)">↩ Kembali ke GW Aktif</button>
+        </div>`;
+    }
+
+    return html;
   },
 
   // ── Backtest Weight Optimizer ──────────────────────────
+  // ── Knapsack Best XV ───────────────────────────────────
+  lineupKnapsack() {
+    if (!Store.scoredPlayers?.length) return H.error('Data belum siap.');
+
+    // Get budget from manager info or default £100
+    const mi = Store.myManagerInfo;
+    const bank = mi?.last_deadline_bank ? mi.last_deadline_bank / 10 : 0;
+    const teamValue = mi?.last_deadline_total_value ? mi.last_deadline_total_value / 10 : 100;
+    const totalBudget = teamValue + bank;
+    const maxPT = +document.getElementById('max-per-team')?.value || CFG.maxPerTeam;
+
+    // Run optimizer
+    const result = Process.knapsackSquad(Store.scoredPlayers, totalBudget, maxPT);
+    if (!result) return H.error('Tidak dapat menemukan squad optimal. Pastikan cukup pemain eligible.');
+
+    const {squad, starters, bench, formation, cap, vc, totalPrice, totalScore, xiScore, remaining} = result;
+
+    // Starters table
+    const xiRows = starters.map((p,i) => {
+      const isCap = cap && p.id === cap.id;
+      const isVC = vc && p.id === vc.id;
+      const badge = isCap ? ' <span class="cap-tag">⭐ C</span>' : isVC ? ' <span class="cap-tag" style="color:var(--blue)">🌟 V</span>' : '';
+      return `<tr class="${isCap?'row-cap':''}">
+        <td class="dim">${i+1}</td>
+        <td>${H.posPill(p.Position)}</td>
+        <td style="font-weight:${isCap?800:600}">${p.Player}${badge}${p.doubt?' <span class="doubt-tag">⚠</span>':''}</td>
+        <td>${H.teamTag(p.Team)}</td>
+        <td class="mono r ${H.scoreClass(p.GWScore)}">${p.GWScore.toFixed(2)}</td>
+        <td class="mono dim r">${p.isHome?'🏠':'✈'} ${p.opponent||'?'}</td>
+        <td class="mono dim r">£${p.Price.toFixed(1)}</td>
+        <td class="mono dim r">${H.numFmt(p.PPG,1)}</td>
+      </tr>`;
+    }).join('');
+
+    const benchRows = bench.map((p,i) => `<tr style="opacity:0.6">
+        <td class="dim">B${i+1}</td>
+        <td>${H.posPill(p.Position)}</td>
+        <td>${p.Player}</td>
+        <td>${H.teamTag(p.Team)}</td>
+        <td class="mono r dim">${p.GWScore.toFixed(2)}</td>
+        <td class="mono dim r">${p.isHome?'🏠':'✈'} ${p.opponent||'?'}</td>
+        <td class="mono dim r">£${p.Price.toFixed(1)}</td>
+        <td class="mono dim r">${H.numFmt(p.PPG,1)}</td>
+      </tr>`).join('');
+
+    // Team distribution
+    const teamDist = {};
+    squad.forEach(p => { teamDist[p.Team] = (teamDist[p.Team]||0) + 1; });
+    const teamTags = Object.entries(teamDist).sort((a,b) => b[1]-a[1])
+      .map(([t,n]) => `<span class="team-tag" style="${n>=3?'border-color:var(--orange)':''}">${t} ×${n}</span>`).join(' ');
+
+    // Position distribution
+    const posDist = {};
+    squad.forEach(p => { posDist[p.Position] = (posDist[p.Position]||0) + 1; });
+
+    // Compare with current squad if available
+    let compHtml = '';
+    if (Store.mySquadData?.length) {
+      const myIds = new Set(Store.mySquadData.map(p => p.id));
+      const optIds = new Set(squad.map(p => p.id));
+      const kept = [...myIds].filter(id => optIds.has(id)).length;
+      const transfersOut = Store.mySquadData.filter(p => !optIds.has(p.id));
+      const transfersIn = squad.filter(p => !myIds.has(p.id));
+      compHtml = `
+        <div class="section-title" style="margin-top:20px">🔄 Transfer yang Diperlukan (dari skuad Anda saat ini)</div>
+        <div class="stat-strip">
+          <div class="stat-box"><div class="stat-label">Pemain Tetap</div><div class="stat-val">${kept}/15</div></div>
+          <div class="stat-box"><div class="stat-label">Transfer Out</div><div class="stat-val" style="color:var(--red)">${transfersOut.length}</div></div>
+          <div class="stat-box"><div class="stat-label">Transfer In</div><div class="stat-val" style="color:var(--green)">${transfersIn.length}</div></div>
+        </div>
+        ${transfersIn.length ? `<div class="table-wrap" style="margin-top:8px"><table>
+          <thead><tr><th>In</th><th>Pos</th><th>Tim</th><th class="r">Score</th><th class="r">£</th>
+            <th style="padding:0 4px">←</th>
+            <th>Out</th><th>Pos</th><th>Tim</th><th class="r">Score</th><th class="r">£</th></tr></thead>
+          <tbody>${transfersIn.map((pIn,i) => {
+            const pOut = transfersOut[i] || {};
+            return `<tr>
+              <td style="color:var(--green);font-weight:600">${pIn.Player}</td><td>${H.posPill(pIn.Position)}</td><td>${H.teamTag(pIn.Team)}</td>
+              <td class="mono r">${pIn.GWScore.toFixed(2)}</td><td class="mono dim r">£${pIn.Price.toFixed(1)}</td>
+              <td class="c dim">↔</td>
+              <td style="color:var(--red)">${pOut.Player||'–'}</td><td>${pOut.Position?H.posPill(pOut.Position):''}</td><td>${pOut.Team?H.teamTag(pOut.Team):''}</td>
+              <td class="mono dim r">${pOut.ScoutScore?pOut.ScoutScore.toFixed(2):'–'}</td><td class="mono dim r">${pOut.Price?'£'+pOut.Price.toFixed(1):'–'}</td>
+            </tr>`;
+          }).join('')}</tbody></table></div>` : ''}`;
+    }
+
+    return `
+      ${H.gwTargetBanner()}
+      <div class="section-title">🎒 Best XV — Budget-Constrained Squad Optimizer</div>
+      ${H.info(`Menemukan 15 pemain terbaik (2 GK, 5 DEF, 5 MID, 3 FWD) dengan total harga ≤ budget Anda.
+        Budget: <b>£${totalBudget.toFixed(1)}</b> (Team Value £${teamValue.toFixed(1)} + Bank £${bank.toFixed(1)}).
+        Max ${maxPT} pemain per tim.`)}
+
+      <div class="stat-strip">
+        <div class="stat-box"><div class="stat-label">Formasi</div><div class="stat-val">${formation}</div></div>
+        <div class="stat-box"><div class="stat-label">XI Score</div><div class="stat-val" style="color:var(--blue)">${xiScore.toFixed(2)}</div></div>
+        <div class="stat-box"><div class="stat-label">15-Man Score</div><div class="stat-val" style="color:var(--green)">${totalScore.toFixed(2)}</div></div>
+        <div class="stat-box"><div class="stat-label">Total Harga</div><div class="stat-val" style="color:${totalPrice>totalBudget?'var(--red)':'var(--text)'}">£${totalPrice.toFixed(1)}</div></div>
+        <div class="stat-box"><div class="stat-label">Sisa Budget</div><div class="stat-val" style="color:${remaining>=0?'var(--green)':'var(--red)'}">£${remaining.toFixed(1)}</div></div>
+        <div class="stat-box"><div class="stat-label">Captain</div><div class="stat-val" style="font-size:13px;color:var(--gold)">${cap?.Player||'–'}</div></div>
+      </div>
+
+      <div style="margin-bottom:12px">${teamTags}</div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th>Pos</th><th>Pemain</th><th>Tim</th>
+            <th class="r">GWScore</th><th>Lawan</th><th class="r">£</th><th class="r">PPG</th>
+          </tr></thead>
+          <tbody>
+            ${xiRows}
+            <tr class="row-sep"><td colspan="8" style="font-size:10px;letter-spacing:2px;color:var(--text3);text-transform:uppercase;padding:8px 12px;background:var(--bg3)">Bench</td></tr>
+            ${benchRows}
+            <tr class="row-total">
+              <td colspan="4" style="font-size:11px;color:var(--text3)">TOTAL (15 pemain)</td>
+              <td class="mono r" style="font-weight:700;color:var(--green)">${totalScore.toFixed(2)}</td>
+              <td></td>
+              <td class="mono r" style="font-weight:700">£${totalPrice.toFixed(1)}</td>
+              <td></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      ${compHtml}`;
+  },
+
   lineupOptimize() {
     return this._optimizePanel('gw');
+  },
+
+  // ══════════════════════════════════════════════════════
+  // BACKTEST REPORT — Model Performance Across GWs
+  // ══════════════════════════════════════════════════════
+  backtestReport() {
+    const snaps = Store._snapshotsData;
+    const liveAll = Store._liveAllData;
+    const weightsHist = Store._weightsHistory;
+
+    if (!snaps || !liveAll) {
+      return `
+        <div class="section-title">📊 Backtest Report</div>
+        ${H.info(`Data historis belum tersedia. Push <code>fetch-fpl.js</code> dan run GitHub Actions untuk generate:
+          <br>• <code>snapshots.json</code> — statistik pemain per GW
+          <br>• <code>live-all.json</code> — poin aktual per GW
+          <br>• <code>weights-history.json</code> — adaptive weights per GW`)}
+        <div class="btn-row">
+          <button class="btn btn-secondary" onclick="App.refresh()">↻ Refresh Data</button>
+        </div>`;
+    }
+
+    const bs = Store.bootstrap;
+    if (!bs) return H.info('Bootstrap data belum dimuat.');
+
+    const gwNums = Object.keys(snaps).map(Number).filter(g => g > 1 && liveAll[g]?.length).sort((a,b)=>a-b);
+    if (!gwNums.length) return H.info('Tidak ada GW dengan data snapshot + live.');
+
+    const teamMap = {};
+    bs.teams.forEach(t => { teamMap[t.id] = t; });
+    const posMap = {1:'GK',2:'DEF',3:'MID',4:'FWD'};
+
+    // For each GW: compute predicted score (using GW-1 snapshot + current user weights)
+    // vs actual points, then calculate metrics
+    const gwMetrics = gwNums.map(gwNum => {
+      const snap = snaps[gwNum - 1]; // Stats before this GW
+      const live = liveAll[gwNum];   // Actual points this GW
+      if (!snap || !live?.length) return null;
+
+      const liveMap = {};
+      live.forEach(e => { liveMap[e.id] = e.tp; });
+
+      // Build pseudo-players from snapshot and score them
+      const players = Object.entries(snap)
+        .filter(([id, s]) => s.mn >= 90 && liveMap[+id] != null)
+        .map(([id, s]) => {
+          const actual = liveMap[+id];
+          const m90 = s.mn / 90;
+          // Simple predicted score using key criteria
+          const pred = (s.ppg || 0) * 0.3 + (s.form || 0) * 0.25 +
+            (m90 > 0 ? (s.xgi || 0) / m90 : 0) * 0.2 +
+            (m90 > 0 ? (s.sv || 0) / m90 : 0) * 0.1 +
+            (s.ict || 0) * 0.002;
+          return { id: +id, pred, actual, pos: posMap[s.pos] || '?' };
+        });
+
+      if (players.length < 20) return null;
+
+      // Metrics
+      const n = players.length;
+      const meanA = players.reduce((s,p) => s + p.actual, 0) / n;
+      const meanP = players.reduce((s,p) => s + p.pred, 0) / n;
+
+      // MAE
+      const mae = +(players.reduce((s,p) => s + Math.abs(p.actual - p.pred), 0) / n).toFixed(2);
+
+      // RMSE
+      const rmse = +(Math.sqrt(players.reduce((s,p) => s + Math.pow(p.actual - p.pred, 2), 0) / n)).toFixed(2);
+
+      // Spearman rank correlation
+      const sortedA = [...players].sort((a,b) => b.actual - a.actual);
+      const sortedP = [...players].sort((a,b) => b.pred - a.pred);
+      const rankA = {}, rankP = {};
+      sortedA.forEach((p,i) => { rankA[p.id] = i + 1; });
+      sortedP.forEach((p,i) => { rankP[p.id] = i + 1; });
+      const dSq = players.reduce((s,p) => s + Math.pow((rankA[p.id]||0) - (rankP[p.id]||0), 2), 0);
+      const spearman = +(1 - (6 * dSq) / (n * (n*n - 1))).toFixed(3);
+
+      // Top 11: how many of predicted top 11 are in actual top 11?
+      const top11pred = new Set(sortedP.slice(0, 11).map(p => p.id));
+      const top11actual = new Set(sortedA.slice(0, 11).map(p => p.id));
+      const overlap = [...top11pred].filter(id => top11actual.has(id)).length;
+
+      // Has adaptive weights?
+      const hasAdapt = !!weightsHist?.[gwNum];
+
+      return { gw: gwNum, n, mae, rmse, spearman, overlap, hasAdapt, meanA: +meanA.toFixed(1) };
+    }).filter(Boolean);
+
+    if (!gwMetrics.length) return H.info('Tidak cukup data untuk backtest.');
+
+    // Overall averages
+    const avgMAE = +(gwMetrics.reduce((s,m) => s + m.mae, 0) / gwMetrics.length).toFixed(2);
+    const avgRMSE = +(gwMetrics.reduce((s,m) => s + m.rmse, 0) / gwMetrics.length).toFixed(2);
+    const avgSpearman = +(gwMetrics.reduce((s,m) => s + m.spearman, 0) / gwMetrics.length).toFixed(3);
+    const avgOverlap = +(gwMetrics.reduce((s,m) => s + m.overlap, 0) / gwMetrics.length).toFixed(1);
+    const qualColor = avgSpearman >= 0.3 ? 'var(--green)' : avgSpearman >= 0.15 ? 'var(--gold)' : 'var(--red)';
+    const qualLabel = avgSpearman >= 0.3 ? '✓ Baik' : avgSpearman >= 0.15 ? '↔ Cukup' : '✗ Perlu Improve';
+
+    // Table rows
+    const rows = gwMetrics.map(m => {
+      const sColor = m.spearman >= 0.3 ? 'var(--green)' : m.spearman >= 0.15 ? 'var(--gold)' : 'var(--red)';
+      const barW = Math.max(5, Math.min(100, m.spearman * 100));
+      return `<tr>
+        <td class="c dim">GW${m.gw}</td>
+        <td class="mono r">${m.n}</td>
+        <td class="mono r">${m.meanA}</td>
+        <td class="mono r">${m.mae}</td>
+        <td class="mono r">${m.rmse}</td>
+        <td class="mono r" style="color:${sColor};font-weight:700">${m.spearman}</td>
+        <td style="min-width:80px"><div class="corr-bar"><div class="corr-fill corr-pos" style="width:${barW}%"></div></div></td>
+        <td class="mono c" style="color:${m.overlap>=6?'var(--green)':m.overlap>=4?'var(--gold)':'var(--red)'}">${m.overlap}/11</td>
+        <td class="c">${m.hasAdapt?'<span style="color:var(--green)">✓</span>':'<span class="dim">–</span>'}</td>
+      </tr>`;
+    }).join('');
+
+    // Sparkline-like visual for spearman trend
+    const maxS = Math.max(...gwMetrics.map(m => Math.abs(m.spearman)), 0.01);
+    const sparkW = 400, sparkH = 80;
+    const sparkPts = gwMetrics.map((m, i) => {
+      const x = gwMetrics.length > 1 ? i / (gwMetrics.length - 1) * (sparkW - 20) + 10 : sparkW / 2;
+      const y = sparkH - (m.spearman / maxS) * (sparkH - 20) - 10;
+      return `${x},${y}`;
+    }).join(' ');
+    const sparkSvg = `<svg width="${sparkW}" height="${sparkH}" style="display:block;margin:8px 0">
+      <polyline points="${sparkPts}" fill="none" stroke="var(--green)" stroke-width="2"/>
+      ${gwMetrics.map((m, i) => {
+        const x = gwMetrics.length > 1 ? i / (gwMetrics.length - 1) * (sparkW - 20) + 10 : sparkW / 2;
+        const y = sparkH - (m.spearman / maxS) * (sparkH - 20) - 10;
+        return `<circle cx="${x}" cy="${y}" r="3" fill="${m.spearman>=0.3?'var(--green)':m.spearman>=0.15?'var(--gold)':'var(--red)'}"/>`;
+      }).join('')}
+      <text x="5" y="12" fill="var(--text3)" font-size="9" font-family="JetBrains Mono">Spearman ρ per GW</text>
+    </svg>`;
+
+    return `
+      <div class="section-title">📊 Backtest Report — Model Performance</div>
+      ${H.info(`Mengukur akurasi model prediksi terhadap poin aktual di ${gwMetrics.length} GW. 
+        <b>Spearman ρ</b> = korelasi ranking prediksi vs aktual. <b>Top 11 Overlap</b> = berapa dari 11 pemain terbaik prediksi yang benar-benar masuk 11 terbaik aktual.`)}
+
+      <div class="stat-strip">
+        <div class="stat-box"><div class="stat-label">GW Dianalisis</div><div class="stat-val">${gwMetrics.length}</div></div>
+        <div class="stat-box"><div class="stat-label">Avg MAE</div><div class="stat-val dim">${avgMAE}</div></div>
+        <div class="stat-box"><div class="stat-label">Avg RMSE</div><div class="stat-val dim">${avgRMSE}</div></div>
+        <div class="stat-box"><div class="stat-label">Avg Spearman ρ</div><div class="stat-val" style="color:${qualColor}">${avgSpearman}</div></div>
+        <div class="stat-box"><div class="stat-label">Avg Top 11</div><div class="stat-val" style="color:var(--gold)">${avgOverlap}/11</div></div>
+        <div class="stat-box"><div class="stat-label">Kualitas Model</div><div class="stat-val" style="font-size:13px;color:${qualColor}">${qualLabel}</div></div>
+      </div>
+
+      <div class="chart-card" style="margin-bottom:16px;padding:12px">
+        <div class="chart-title">Spearman ρ Trend per GW</div>
+        ${sparkSvg}
+      </div>
+
+      <div class="table-wrap max-h">
+        <table>
+          <thead><tr>
+            <th class="c">GW</th><th class="r">Pemain</th><th class="r">Avg Pts</th>
+            <th class="r" title="Mean Absolute Error">MAE</th>
+            <th class="r" title="Root Mean Squared Error">RMSE</th>
+            <th class="r" title="Spearman Rank Correlation">ρ</th>
+            <th>Korelasi</th>
+            <th class="c" title="Berapa dari top 11 prediksi yang benar di top 11 aktual">Top 11</th>
+            <th class="c" title="Adaptive weights tersedia">Adapt</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+
+      <div class="info-box" style="margin-top:16px">
+        <b>Cara baca:</b><br>
+        • <b>MAE</b>: Rata-rata selisih absolut prediksi vs aktual. Lebih kecil = lebih baik.<br>
+        • <b>RMSE</b>: Root mean squared error. Penalti lebih besar untuk error besar.<br>
+        • <b>Spearman ρ</b>: Korelasi ranking (-1 s/d +1). ≥0.3 = baik, ≥0.15 = cukup, <0.15 = perlu tune.<br>
+        • <b>Top 11 Overlap</b>: Berapa pemain prediksi terbaik yang benar-benar mencetak poin terbaik. ≥6/11 = bagus.
+      </div>`;
   },
 
   // ── Shared Optimize Panel (GW + Scout) ──
@@ -1499,7 +2082,10 @@ const Render = {
     if (!fms.length) return H.error('Data belum siap.');
     const sel=Store.selectedForm, f=fms[sel];
     const rankColors={1:'var(--gold)',2:'#90caf9',3:'var(--purple)'};
-    const hasLive = f.hasLive;
+    // Only show actual points for confirmed past GWs
+    const isPastGW = Store.targetGW > 0 && Store.targetGW < Store.currentGW;
+    const isCurrentFinished = Store.targetGW === Store.currentGW && Store.bootstrap?.events?.find(e=>e.id===Store.currentGW)?.finished;
+    const hasLive = f.hasLive && (isPastGW || isCurrentFinished);
 
     // Sort by actual pts for "pts rank"
     const byPts = [...fms].sort((a,b)=>(b.totalWithCap||0)-(a.totalWithCap||0));
@@ -1510,6 +2096,7 @@ const Render = {
         ? `<div class="rc-pts">${fm.totalWithCap} <span>pts</span></div>
            <div class="rc-pts-rank">#${ptsRank} pts</div>`
         : '';
+      const budgetCls = (fm.totalPrice||0) > 105 ? 'rc-budget-over' : '';
       return `
       <div class="rank-card rank-${fm.rank} ${i===sel?'selected':''}"
            style="--rc:${rankColors[fm.rank]||'var(--border2)'}"
@@ -1518,6 +2105,7 @@ const Render = {
         <div class="rc-name">${fm.name}</div>
         <div class="rc-score">${fm.total.toFixed(2)}</div>
         <div class="rc-label">GW Score</div>
+        <div class="rc-budget ${budgetCls}">£${(fm.totalPrice||0).toFixed(1)}</div>
         ${ptsLabel}
       </div>`;
     }).join('');
@@ -1556,6 +2144,17 @@ const Render = {
         </div>`;
       }
     }
+    // Budget assessment (full 15-man squad)
+    const budget = f.totalPrice || 0;
+    const xiPrice = f.xiPrice || 0;
+    const benchPrice = f.benchPrice || 0;
+    const BUDGET_LIMIT = 100;
+    const budgetOver = budget > BUDGET_LIMIT * 1.05;
+    const budgetColor = budgetOver ? 'var(--red)' : budget > BUDGET_LIMIT ? 'var(--orange)' : 'var(--green)';
+    const budgetWarn = budgetOver
+      ? `<div style="font-size:10px;color:var(--red);margin-top:2px">⚠ Over £${BUDGET_LIMIT} (+${(budget-BUDGET_LIMIT).toFixed(1)})</div>`
+      : '';
+
     const summaryStrip = `
       <div class="eval-summary-strip">
         <div class="eval-stat">
@@ -1563,8 +2162,14 @@ const Render = {
           <div class="eval-stat-val">${f.name}</div>
         </div>
         <div class="eval-stat">
-          <div class="eval-stat-label">GW Score</div>
+          <div class="eval-stat-label">GW Score (XI)</div>
           <div class="eval-stat-val" style="color:var(--blue)">${f.total.toFixed(2)}</div>
+        </div>
+        <div class="eval-stat${budgetOver?' highlight':''}">
+          <div class="eval-stat-label">Budget (15)</div>
+          <div class="eval-stat-val" style="color:${budgetColor};font-size:18px">£${budget.toFixed(1)}</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:1px">XI £${xiPrice.toFixed(1)} + Bench £${benchPrice.toFixed(1)}</div>
+          ${budgetWarn}
         </div>
         ${hasLive ? `
         <div class="eval-stat">
@@ -1588,8 +2193,18 @@ const Render = {
         `}
       </div>`;
 
+    // Weight source indicator
+    const usingAdaptive = !!Store._activeBacktestWeights;
+    const weightBadge = (isPastGW || isCurrentFinished) && usingAdaptive
+      ? `<div class="info-box" style="background:rgba(0,230,118,.06);border-color:rgba(0,230,118,.2);color:var(--green);margin-bottom:10px;font-size:12px">
+          ⚡ Menggunakan <b>Adaptive Weights GW${Store.targetGW}</b> (optimal dari data historis).
+          <a href="#" onclick="Nav.goSubtab('lineup','wlineup');return false" style="color:var(--blue);margin-left:8px">Lihat perbandingan →</a>
+        </div>`
+      : '';
+
     return `
       ${H.gwTargetBanner()}
+      ${weightBadge}
       <div class="rank-grid">${cards}</div>
       ${summaryStrip}
       <div class="lineup-container">
@@ -1644,6 +2259,30 @@ const Render = {
     pad(f.mid,5).forEach((p,i)=>rows.push(R(`MID ${i+1}`,p,i===0?'row-sep':'')));
     pad(f.fwd,3).forEach((p,i)=>rows.push(R(`FWD ${i+1}`,p,i===0?'row-sep':'')));
 
+    // Bench rows
+    if (f.bench?.length) {
+      rows.push(`<tr class="row-sep"><td colspan="${ptsCol?9:8}" style="font-size:10px;letter-spacing:2px;color:var(--text3);text-transform:uppercase;padding:6px 12px;background:var(--bg3)">Bench</td></tr>`);
+      f.bench.forEach((p,i) => {
+        if (!p) return;
+        const sc = p.GWScore;
+        const d = p.doubt ? '<span class="doubt-tag">⚠</span>' : '';
+        const ptsCell = ptsCol
+          ? `<td class="mono r dim">${p.livePoints!=null?p.livePoints:'–'}</td>`
+          : '';
+        rows.push(`<tr style="opacity:0.6">
+          <td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text4)">B${i+1}</td>
+          <td style="font-size:14px;color:var(--text3)">${p.Player}${d}</td>
+          <td>${H.teamTag(p.Team)}</td>
+          <td class="dim" style="font-size:12px">${p.isHome?'🏠':'✈'} ${p.opponent||'?'}</td>
+          <td class="mono r dim">${sc.toFixed(2)}</td>
+          ${ptsCell}
+          <td class="mono dim r">${H.numFmt(p.FDR_next,1)}</td>
+          <td class="mono dim r">${H.numFmt(p.PPG,1)}</td>
+          <td class="mono dim r">£${p.Price.toFixed(1)}</td>
+        </tr>`);
+      });
+    }
+
     // Total & Rank rows
     if (ptsCol) {
       rows.push(`<tr class="row-total">
@@ -1661,9 +2300,9 @@ const Render = {
     } else {
       rows.push(`<tr class="row-total">
         <td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text3)">Total</td>
-        <td colspan="3" class="dim" style="font-size:12px">GK + 10 outfield</td>
+        <td colspan="3" class="dim" style="font-size:12px">XI + Bench (${11 + (f.bench?.length||0)} pemain)</td>
         <td class="mono r" style="font-size:18px;font-weight:700;color:var(--green)">${f.total.toFixed(2)}</td>
-        <td></td><td></td><td></td></tr>`);
+        <td></td><td></td><td class="mono r dim" style="font-size:13px">£${(f.totalPrice||0).toFixed(1)}</td></tr>`);
     }
     rows.push(`<tr class="row-rank">
       <td style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--text3)">Rank</td>
@@ -1733,12 +2372,14 @@ const Render = {
   lineupEval() {
     const fms = Store.formations;
     if (!fms.length) return H.error('Data belum siap.');
-    const hasLive = fms[0]?.hasLive;
     const targetGW = Store.targetGW || Store.currentGW;
-    const isPast = Store.targetGW > 0 && Store.targetGW <= Store.currentGW;
+    const isPastGW = Store.targetGW > 0 && Store.targetGW < Store.currentGW;
+    const isCurrentFinished = Store.targetGW === Store.currentGW && Store.bootstrap?.events?.find(e=>e.id===Store.currentGW)?.finished;
+    const isPast = isPastGW || isCurrentFinished;
+    const hasLive = fms[0]?.hasLive && isPast;
 
     if (!hasLive) {
-      if (isPast) {
+      if (Store.targetGW > 0 && Store.targetGW < Store.currentGW) {
         return H.gwTargetBanner() + `
           <div class="error-box">
             ⚠ <b>Data poin GW${targetGW} gagal dimuat.</b><br>
@@ -1746,7 +2387,7 @@ const Render = {
             Atau coba klik ulang GW${targetGW} di dropdown — akan mencoba direct fetch + CORS proxy.
           </div>`;
       }
-      return H.info('Data poin aktual belum tersedia. Poin akan muncul setelah pertandingan GW aktif berlangsung.');
+      return H.gwTargetBanner() + H.info('Data poin aktual belum tersedia. Poin akan muncul setelah pertandingan GW selesai.');
     }
 
     // Sort formations by actual pts
@@ -2343,14 +2984,7 @@ const Render = {
           if (c.blank) return `<td class="fdr-cell fdr-none">–</td>`;
           return `<td class="fdr-cell ${H.fdrClass(c.fdr)}"><div class="fc-opp">${c.opp}</div><div class="fc-ha">${c.isHome?'(H)':'(A)'}</div></td>`;
         }
-        const dgwInner = c.map(x => {
-          const cls=H.fdrClass(x.fdr);
-          return `<div class="fdr-dgw-fix ${cls}" style="padding:1px 4px;border-radius:3px;margin-bottom:1px">
-            <span class="fc-opp" style="font-size:10px">${x.opp}</span>
-            <span class="fc-ha" style="font-size:8px">${x.isHome?'(H)':'(A)'}</span>
-          </div>`;
-        }).join('');
-        return `<td class="fdr-cell fdr-dgw-cell" style="padding:2px">${dgwInner}</td>`;
+        return c.map(x => `<td class="fdr-cell ${H.fdrClass(x.fdr)}"><div class="fc-opp">${x.opp}</div><div class="fc-ha">${x.isHome?'(H)':'(A)'}</div></td>`).join('');
       }).join('');
       return `<tr><td style="font-weight:700;position:sticky;left:0;background:var(--bg2);z-index:1">${td.team}</td>${cells}<td class="fdr-avg-col ${H.fdrClass(td.avg)}">${td.avg}</td></tr>`;
     }).join('');
@@ -2365,6 +2999,133 @@ const Render = {
       <div class="stat-strip">${pairCards}</div>
       <div class="table-wrap" style="overflow:auto;max-height:calc(100vh - 340px)">
         <table class="fdr-table"><thead><tr><th>Tim</th>${gwHeaders}<th class="c">Avg</th></tr></thead><tbody>${trows}</tbody></table>
+      </div>`;
+  },
+
+  // ══════════════════════════════════════════════════════
+  // DGW/BGW PLANNER
+  // ══════════════════════════════════════════════════════
+  dgwPlanner() {
+    if (!Store.bootstrap || !Store.fixtures) return H.info('Data belum dimuat.');
+    const bs = Store.bootstrap;
+    const teamMap = {};
+    bs.teams.forEach(t => { teamMap[t.id] = t; });
+    const gw = Store.currentGW || 1;
+
+    // All remaining GWs
+    const allFix = Store.fixtures.sort((a,b) => a.event - b.event);
+    const gwRange = [...new Set(allFix.map(f => f.event))].sort((a,b) => a-b);
+
+    // Build match count per team per GW
+    const teamGWData = {}; // {teamId: {gw: {count, opponents:[]}}}
+    bs.teams.forEach(t => { teamGWData[t.id] = {}; });
+
+    gwRange.forEach(gwNum => {
+      const gwFixes = allFix.filter(f => f.event === gwNum);
+      bs.teams.forEach(t => { teamGWData[t.id][gwNum] = { count: 0, opps: [], finished: false }; });
+      gwFixes.forEach(f => {
+        const hTeam = teamMap[f.team_h], aTeam = teamMap[f.team_a];
+        if (hTeam) {
+          teamGWData[f.team_h][gwNum].count++;
+          teamGWData[f.team_h][gwNum].opps.push({ opp: aTeam?.short_name||'?', isHome: true });
+          teamGWData[f.team_h][gwNum].finished = f.finished;
+        }
+        if (aTeam) {
+          teamGWData[f.team_a][gwNum].count++;
+          teamGWData[f.team_a][gwNum].opps.push({ opp: hTeam?.short_name||'?', isHome: false });
+          teamGWData[f.team_a][gwNum].finished = f.finished;
+        }
+      });
+    });
+
+    // Summary stats
+    const dgwGWs = gwRange.filter(g => {
+      return bs.teams.some(t => (teamGWData[t.id]?.[g]?.count||0) > 1);
+    });
+    const bgwGWs = gwRange.filter(g => {
+      return bs.teams.some(t => (teamGWData[t.id]?.[g]?.count||0) === 0);
+    });
+
+    // My squad blank/DGW info
+    const mySquad = Store.mySquadData || [];
+    const myTeamIds = mySquad.map(p => bs.teams.find(t => t.short_name === p.Team)?.id).filter(Boolean);
+
+    // Build grid: rows=teams, cols=GWs (only future)
+    const futureGWs = gwRange.filter(g => g >= gw);
+    const headGWs = futureGWs.map(g => {
+      const isDGW = bs.teams.some(t => (teamGWData[t.id]?.[g]?.count||0) > 1);
+      const isBGW = bs.teams.some(t => (teamGWData[t.id]?.[g]?.count||0) === 0);
+      const cls = isDGW ? 'dgw-col' : isBGW ? 'bgw-col' : '';
+      return `<th class="c ${cls}" style="min-width:44px;font-size:9px">GW${g}${isDGW?'<br><span style="color:var(--blue);font-size:8px">DGW</span>':''}${isBGW?'<br><span style="color:var(--red);font-size:8px">BGW</span>':''}</th>`;
+    }).join('');
+
+    // Sort teams by EPL table position
+    const eplTable = Process.eplFromFixtures ? Process.eplFromFixtures(bs, Store.fixtures) : [];
+    const eplOrder = {};
+    eplTable.forEach((t,i) => { eplOrder[t.short || t.short_name] = i; });
+    const sortedTeams = [...bs.teams].sort((a,b) => (eplOrder[a.short_name]??99) - (eplOrder[b.short_name]??99));
+
+    const rows = sortedTeams.map(t => {
+      const isMyTeam = myTeamIds.includes(t.id);
+      const cells = futureGWs.map(g => {
+        const data = teamGWData[t.id]?.[g] || { count: 0, opps: [] };
+        const n = data.count;
+        let cls = '', content = '–', tip = '';
+        if (n === 0) {
+          cls = 'dgw-blank'; content = '⛔'; tip = 'Blank GW — tidak ada pertandingan';
+        } else if (n === 1) {
+          const o = data.opps[0];
+          cls = o?.isHome ? '' : 'dgw-away';
+          content = `<span class="${o?.isHome?'fc-home':'fc-away'}">${o?.opp||'?'}</span>`;
+          tip = `vs ${o?.opp} (${o?.isHome?'H':'A'})`;
+        } else {
+          cls = 'dgw-double';
+          content = data.opps.map(o => `<span class="${o.isHome?'fc-home':'fc-away'}" style="font-size:9px">${o.opp}</span>`).join('<br>');
+          tip = `DGW: ${data.opps.map(o=>`${o.opp}(${o.isHome?'H':'A'})`).join(', ')}`;
+        }
+        if (data.finished) cls += ' dgw-past';
+        return `<td class="c ${cls}${isMyTeam?' dgw-my':''}" title="${tip}">${content}</td>`;
+      }).join('');
+      return `<tr class="${isMyTeam?'dgw-my-row':''}">
+        <td style="font-weight:700;white-space:nowrap;position:sticky;left:0;background:var(--bg2);z-index:2;border-right:1px solid var(--border)">${t.short_name}</td>
+        ${cells}
+      </tr>`;
+    }).join('');
+
+    // My squad DGW/BGW summary
+    let myDGWInfo = '';
+    if (mySquad.length) {
+      const nextDGW = futureGWs.find(g => myTeamIds.some(tid => (teamGWData[tid]?.[g]?.count||0) > 1));
+      const nextBGW = futureGWs.find(g => myTeamIds.some(tid => (teamGWData[tid]?.[g]?.count||0) === 0));
+      const blanksNextGW = myTeamIds.filter(tid => (teamGWData[tid]?.[futureGWs[0]]?.count||0) === 0).length;
+      const dgwNextGW = myTeamIds.filter(tid => (teamGWData[tid]?.[futureGWs[0]]?.count||0) > 1).length;
+
+      myDGWInfo = `
+      <div class="stat-strip" style="margin-bottom:14px">
+        <div class="stat-box"><div class="stat-label">Next DGW</div><div class="stat-val" style="color:var(--blue)">${nextDGW?'GW'+nextDGW:'–'}</div></div>
+        <div class="stat-box"><div class="stat-label">Next BGW</div><div class="stat-val" style="color:var(--red)">${nextBGW?'GW'+nextBGW:'–'}</div></div>
+        <div class="stat-box"><div class="stat-label">GW${futureGWs[0]} Blank</div><div class="stat-val" style="color:${blanksNextGW?'var(--red)':'var(--green)'}">${blanksNextGW} pemain</div></div>
+        <div class="stat-box"><div class="stat-label">GW${futureGWs[0]} DGW</div><div class="stat-val" style="color:var(--blue)">${dgwNextGW} pemain</div></div>
+      </div>`;
+    }
+
+    return `
+      <div class="section-title">⚡ DGW/Blank GW Planner</div>
+      ${H.info(`Hijau terang = tim Anda punya DGW. Merah = tim Anda blank. Gunakan untuk merencanakan chip (Free Hit untuk BGW, Bench Boost untuk DGW).`)}
+      ${myDGWInfo}
+      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;font-size:11px">
+        <span class="dgw-double" style="padding:3px 8px;border-radius:3px">DGW (2 match)</span>
+        <span class="dgw-blank" style="padding:3px 8px;border-radius:3px">⛔ Blank</span>
+        <span style="padding:3px 8px;border-radius:3px;background:rgba(0,230,118,.1);border:1px solid var(--green3)">Tim Saya</span>
+      </div>
+      <div class="table-wrap max-h" style="max-width:calc(100vw - 12px)">
+        <table class="dgw-table" style="font-size:11px">
+          <thead><tr>
+            <th style="position:sticky;left:0;background:var(--bg3);z-index:4;min-width:50px">Tim</th>
+            ${headGWs}
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
       </div>`;
   },
 
@@ -3012,11 +3773,18 @@ const Render = {
     const [mnA,mxA]=[Math.min(...strAtk),Math.max(...strAtk)];
     const nFDR=(v,mn,mx)=>mn===mx?3:+(1+(v-mn)/(mx-mn)*4).toFixed(1);
 
+    const gw0  = Store.currentGW||1;
     const upcoming = fix.filter(f=>!f.finished_provisional).sort((a,b)=>a.event-b.event);
     // Get next 8 GWs
     const gwRange = [...new Set(upcoming.map(f=>f.event))].slice(0,8);
 
     const rows = bs.teams.map(t => {
+      // Avg FDR
+      const avgDef = nFDR((t.strength_defence_home+t.strength_defence_away)/2,mnD,mxD);
+      const avgAtk = nFDR((t.strength_attack_home +t.strength_attack_away)/2, mnA,mxA);
+      const avgOvr = +((avgDef+avgAtk)/2).toFixed(1);
+      const avg    = type==='def'?avgDef:type==='atk'?avgAtk:avgOvr;
+
       const fixes = gwRange.map(gw => {
         const gwFixes = upcoming.filter(f=>f.event===gw&&(f.team_h===t.id||f.team_a===t.id));
         if (!gwFixes.length) return null;
@@ -3031,11 +3799,6 @@ const Render = {
         }).filter(Boolean);
       });
 
-      // Compute avg from actual fixtures (counts DGW double = beneficial)
-      let tot=0, cnt=0;
-      fixes.forEach(a=>{ if(a) a.forEach(f=>{ tot+=f.val; cnt++; }); });
-      const avg = cnt ? +(tot/cnt).toFixed(1) : 3;
-
       return {team:t.short_name, teamId:t.id, avg, fixes, fixtures:upcoming.filter(f=>f.team_h===t.id||f.team_a===t.id).length};
     });
 
@@ -3048,23 +3811,7 @@ const Render = {
       return pa - pb;
     });
 
-    // Build GW labels with date and DGW/BGW count
-    const gwLabels = gwRange.map(g => {
-      const gwFixes = upcoming.filter(f=>f.event===g);
-      const deadlineStr = gwFixes[0]?.kickoff_time ? new Date(gwFixes[0].kickoff_time).toLocaleDateString('en-GB',{day:'numeric',month:'short'}) : '';
-      // Count teams with DGW or BGW in this GW
-      const teamFixCounts = {};
-      gwFixes.forEach(f => {
-        teamFixCounts[f.team_h] = (teamFixCounts[f.team_h]||0)+1;
-        teamFixCounts[f.team_a] = (teamFixCounts[f.team_a]||0)+1;
-      });
-      const dgwCount = Object.values(teamFixCounts).filter(c=>c>1).length;
-      const blankCount = bs.teams.length - Object.keys(teamFixCounts).length;
-      let badge = '';
-      if (dgwCount > 0) badge += `<div style="font-size:8px;color:var(--blue);font-weight:700">${dgwCount} DGW</div>`;
-      if (blankCount > 0) badge += `<div style="font-size:8px;color:var(--red);font-weight:700">${blankCount} BGW</div>`;
-      return `GW${g}<div style="font-size:8px;opacity:.6">${deadlineStr}</div>${badge}`;
-    });
+    const gwLabels = gwRange.map(g=>`GW${g}`);
     return this._renderFDRTableFlat(rows, gwLabels, type.toUpperCase());
   },
 
@@ -3073,23 +3820,16 @@ const Render = {
     const trows = rows.map(row => {
       const cells = row.fixes.map(fixArr => {
         if (!fixArr||!fixArr.length) return `<td class="fdr-cell fdr-none">–</td>`;
-        if (fixArr.length === 1) {
-          const fix=fixArr[0], cls=H.fdrClass(fix.val), ha=fix.isHome?'fc-home':'fc-away';
+        // DGW: show both
+        return fixArr.map(fix=>{
+          const cls=H.fdrClass(fix.val);
+          const ha =fix.isHome?'fc-home':'fc-away';
           return `<td class="fdr-cell ${cls}">
             <div class="fc-opp ${ha}">${fix.opp}</div>
             <div class="fc-ha">${fix.isHome?'(H)':'(A)'}</div>
             <div class="fc-val">${fix.val.toFixed(1)}</div>
           </td>`;
-        }
-        // DGW: stack both fixtures inside one cell
-        const inner = fixArr.map(fix=>{
-          const cls=H.fdrClass(fix.val), ha=fix.isHome?'fc-home':'fc-away';
-          return `<div class="fdr-dgw-fix ${cls}" style="padding:2px 4px;border-radius:3px;margin-bottom:2px">
-            <span class="fc-opp ${ha}" style="font-size:11px">${fix.opp}</span>
-            <span class="fc-ha" style="font-size:9px">${fix.isHome?'(H)':'(A)'}</span>
-          </div>`;
         }).join('');
-        return `<td class="fdr-cell fdr-dgw-cell" style="padding:3px">${inner}</td>`;
       }).join('');
       return `<tr>
         <td style="font-weight:700">${row.team}</td>
@@ -3201,9 +3941,44 @@ const Render = {
 
   _eplRow(t,pos) {
     const zcls=pos<=4?'zone-cl':pos<=6?'zone-el':pos>=18?'zone-rel':'';
-    const dots=String(t.form||'').split('').map(c=>
-      c==='W'?'<div class="form-w" title="Win"></div>':c==='D'?'<div class="form-d" title="Draw"></div>':
-      c==='L'?'<div class="form-l" title="Loss"></div>':'').join('');
+    const formDetails = t.formDetails || [];
+    const formChars = String(t.form||'').split('');
+
+    const dots = formChars.map((c, i) => {
+      const d = formDetails[i];
+      let tipHtml = c==='W'?'Win':c==='D'?'Draw':'Loss';
+      if (d) {
+        const score = d.isHome ? `${d.hScore}-${d.aScore}` : `${d.aScore}-${d.hScore}`;
+        const ha = d.isHome ? 'Home' : 'Away';
+        const resultColor = c==='W'?'var(--green)':c==='D'?'var(--gold)':'var(--red)';
+        const resultLabel = c==='W'?'WIN':c==='D'?'DRAW':'LOSS';
+        // Build structured tooltip
+        let lines = [];
+        lines.push(`<div style="font-weight:700;font-size:13px;color:${resultColor};margin-bottom:4px">GW${d.gw} — ${resultLabel}</div>`);
+        lines.push(`<div style="margin-bottom:3px">${d.isHome?'🏠':'✈'} <b>vs ${d.opp}</b> (${ha})</div>`);
+        lines.push(`<div style="font-size:15px;font-weight:800;margin-bottom:6px">${score}</div>`);
+
+        if (d.myGoals?.length) {
+          lines.push(`<div style="border-top:1px solid var(--border);padding-top:4px;margin-top:2px"><span style="color:var(--green)">⚽ ${t.short}:</span> ${d.myGoals.join(', ')}</div>`);
+        }
+        if (d.myAssists?.length) {
+          lines.push(`<div><span style="color:var(--blue)">🅰 ${t.short}:</span> ${d.myAssists.join(', ')}</div>`);
+        }
+        if (d.oppGoals?.length) {
+          lines.push(`<div style="margin-top:3px"><span style="color:var(--red)">⚽ ${d.opp}:</span> ${d.oppGoals.join(', ')}</div>`);
+        }
+        if (d.oppAssists?.length) {
+          lines.push(`<div><span style="color:var(--orange)">🅰 ${d.opp}:</span> ${d.oppAssists.join(', ')}</div>`);
+        }
+        if (!d.myGoals?.length && !d.oppGoals?.length) {
+          lines.push(`<div style="color:var(--text3);font-size:11px;margin-top:3px">Detail gol tidak tersedia</div>`);
+        }
+        tipHtml = lines.join('');
+      }
+      const cls = c==='W'?'form-w':c==='D'?'form-d':c==='L'?'form-l':'';
+      return `<div class="${cls} form-dot-tip" data-tip="${tipHtml.replace(/"/g,'&quot;')}" onmouseenter="UI.showFormTip(this,event)" onmouseleave="UI.hideFormTip()"></div>`;
+    }).join('');
+
     return `<tr class="${zcls}">
       <td class="epl-pos ${pos===1?'s-hi':pos<=4?'s-mid':''}">${pos}</td>
       <td class="epl-team">${t.club||t.name||'?'} <span class="epl-short">${t.short||t.short_name||''}</span></td>
@@ -3213,7 +3988,7 @@ const Render = {
       <td class="c mono" style="color:var(--red)">${t.ga||0}</td>
       <td class="c mono ${(t.gd||0)>0?'s-hi':(t.gd||0)<0?'s-lo':''}">${(t.gd||0)>0?'+':''}${t.gd||0}</td>
       <td class="epl-pts">${t.pts||0}</td>
-      <td><div class="epl-form" title="5 pertandingan terakhir (kanan = terbaru)">${dots}</div></td>
+      <td><div class="epl-form">${dots}</div></td>
       <td class="epl-str c">${t.strength||t.Strength||'–'}</td>
     </tr>`;
   },
@@ -3364,7 +4139,9 @@ const Render = {
     return `
       ${UI.leagueSelectHTML()}
       ${statusHtml}
-      <div class="section-title">Grafik Liga</div>
+      <div class="section-title">Grafik Liga
+        <button id="share-all-btn" class="btn btn-sm btn-primary" onclick="UI.shareAllLeague()" style="margin-left:auto;font-size:10px">📤 Share All</button>
+      </div>
       <div class="charts-grid">
         <div class="chart-card wide" id="card-bumpchart">
           <div class="chart-header"><div class="chart-title">📈 Ranking per GW — Bump Chart</div>${UI.shareBar('card-bumpchart','Bump_Chart')}</div>
@@ -4193,37 +4970,102 @@ const Render = {
 
     // Score each chip per GW (raw scores)
     const scoreMatrix = {}; // {chipKey: {gwNum: score}}
+    const remainingGWs = totalGW - gw; // GWs left in season
+    const isLateseason = remainingGWs <= 6;
+    const isMidseason = remainingGWs > 6 && remainingGWs <= 15;
+
     remaining.forEach(chip => {
       scoreMatrix[chip.key] = {};
       gwAnalysis.forEach(ga => {
-        let score = 1; // base (never 0 — all chips must be used)
+        let score = 0;
+
         if (chip.key === 'freehit') {
-          if (ga.matches < 8) score += 6;
-          if (ga.matches < 6) score += 3;
+          // FH best for BGW (few matches) or many blanks in squad
+          if (ga.matches < 8) score += 5;
+          if (ga.matches < 6) score += 4;
           if (ga.myBlanks >= 4) score += 4;
           if (ga.myBlanks >= 6) score += 3;
+          // Penalize using FH on normal GWs
+          if (ga.matches >= 9 && ga.myBlanks <= 1) score = Math.max(0, score - 3);
         }
+
         if (chip.key === 'bboost') {
-          if (ga.dgwTeams >= 3) score += 4;
-          if (ga.dgwTeams >= 5) score += 3;
-          if (benchAvg >= 3) score += 2;
-          if (ga.myBlanks === 0) score += 2;
+          // BB ONLY valuable when bench is genuinely strong
+          if (benchAvg >= 5.5) score += 6;
+          else if (benchAvg >= 4.5) score += 4;
+          else if (benchAvg >= 3.5) score += 1;
+          else score -= 6; // HARD PENALIZE: weak bench = absolutely don't use BB
+
+          // DGW bonus (bench players get double fixtures)
+          if (ga.dgwTeams >= 3) score += 3;
+          if (ga.dgwTeams >= 5) score += 2;
+
+          // No blanks in bench
+          if (ga.myBlanks === 0) score += 1;
+          else score -= 3; // Penalize if bench has blanks
+
+          // Require squad to be mostly settled (low upgrade needs)
+          if (lowScorers >= 3) score -= 4; // Focus on upgrading XI first, not BB
+          if (lowScorers >= 5) score -= 3;
+
+          // Late season: only if bench is actually good
+          if (isLateseason && benchAvg >= 4) score += 2;
         }
+
         if (chip.key === '3xc') {
-          if (ga.dgwTeams >= 2) score += 3;
-          if (ga.bestCap && ga.bestCapFDR < 2.0) score += 4;
-          else if (ga.bestCap && ga.bestCapFDR < 2.5) score += 2;
+          // TC best with strong captain on easy fixture
+          if (ga.dgwTeams >= 2) score += 2;
+          if (ga.bestCap && ga.bestCapFDR < 1.8) score += 5;
+          else if (ga.bestCap && ga.bestCapFDR < 2.2) score += 3;
+          else if (ga.bestCap && ga.bestCapFDR < 2.5) score += 1;
           if (ga.bestCap?.isHome) score += 1;
-          if (ga.bestCapScore >= 8) score += 3;
-          else if (ga.bestCapScore >= 6) score += 2;
+          if (ga.bestCapScore >= 9) score += 3;
+          else if (ga.bestCapScore >= 7) score += 2;
+          // DGW captain (double fixture!) is premium
+          const capTeam = Store.bootstrap?.teams?.find(t=>t.short_name===ga.bestCap?.Team);
+          if (capTeam) {
+            const capDGW = upcoming.filter(f=>f.event===ga.gw&&(f.team_h===capTeam.id||f.team_a===capTeam.id)).length > 1;
+            if (capDGW) score += 5; // DGW captain = huge TC opportunity
+          }
+          // Late season: use it or lose it
+          if (isLateseason) score += 1;
         }
+
         if (chip.key === 'wildcard') {
-          if (lowScorers >= 4) score += 5;
-          if (lowScorers >= 6) score += 3;
-          if (ga.dgwTeams >= 4) score += 2;
-          if (ga.gw === gw+1) score += 1;
+          // WC when squad needs major overhaul
+          if (lowScorers >= 5) score += 5;
+          else if (lowScorers >= 3) score += 3;
+          else score -= 2; // Squad is OK, don't rush WC
+
+          // WC before DGW = plan ahead
+          if (ga.dgwTeams >= 4) score += 3;
+
+          // Don't waste WC on last 2 GWs
+          if (ga.gw >= totalGW - 1) score -= 5;
+
+          // Midseason: good time for WC
+          if (isMidseason && ga.gw === gw+1) score += 1;
+
+          // Early GW1-2: never recommend WC immediately
+          if (ga.gw <= gw + 1 && lowScorers <= 3) score -= 3;
         }
-        scoreMatrix[chip.key][ga.gw] = Math.min(10, score);
+
+        // General: strongly penalize using chips too early
+        if (remainingGWs > 15) {
+          score -= 3; // Very early: save everything, future GWs will have DGW/BGW
+        } else if (remainingGWs > 10 && !isLateseason) {
+          score -= 2; // Still plenty of time — wait for better opportunities
+        } else if (remainingGWs > 6) {
+          score -= 1; // Mid-late: slight caution
+        }
+
+        // Strategic league race: save chips for when they matter most
+        if (isLateseason && remaining.length >= 2) {
+          score += 2; // Use chips now to overtake league rivals
+        }
+
+        // Never recommend a chip with score 0 or below
+        scoreMatrix[chip.key][ga.gw] = Math.max(0, Math.min(10, score));
       });
     });
 
@@ -4264,8 +5106,14 @@ const Render = {
       let reason = '';
 
       if (assignedChip) {
-        if (assignedChip.key === 'freehit') reason = `${ga.matches} match (${ga.myBlanks} pemain blank)`;
-        else if (assignedChip.key === 'bboost') reason = `${ga.dgwTeams} DGW, bench avg ${benchAvg}`;
+        if (assignedChip.key === 'freehit') reason = `${ga.matches} match (${ga.myBlanks} pemain blank) — hindari blank GW`;
+        else if (assignedChip.key === 'bboost') {
+          if (benchAvg < 3.5) {
+            reason = `⚠ Bench masih lemah (avg ${benchAvg}) — upgrade bench dulu sebelum BB! ${ga.dgwTeams} tim DGW`;
+          } else {
+            reason = `Bench kuat (avg ${benchAvg}), ${ga.dgwTeams} tim DGW — bench ikut bermain`;
+          }
+        }
         else if (assignedChip.key === '3xc') reason = `Captain: ${ga.bestCap?.Player||'?'} (${ga.bestCap?.Team||''}) vs ${ga.bestCap?.oppName||'?'} ${ga.bestCap?.isHome?'(H)':'(A)'} · FDR ${ga.bestCapFDR.toFixed(1)}`;
         else if (assignedChip.key === 'wildcard') reason = `${lowScorers} pemain skor rendah — restruktur tim`;
       }
@@ -4313,6 +5161,35 @@ const Render = {
     }).join('');
 
     html += `<div class="chip-grid">${cards}</div>`;
+
+    // Strategic advice
+    const advices = [];
+    if (benchAvg < 3.5 && remaining.some(c=>c.key==='bboost')) {
+      advices.push(`⚠ <b>Bench terlalu lemah untuk BB (avg ${benchAvg})</b> — prioritaskan upgrade bench via transfer reguler atau Wildcard sebelum menggunakan Bench Boost. Target bench avg ≥ 4.5 untuk BB yang efektif. Bench saat ini: ${benchPlayers.map(p=>p.Player+' ('+((p.ScoutScore||p.GWScore||0).toFixed(1))+')').join(', ')||'–'}`);
+    }
+    if (lowScorers >= 3 && remaining.some(c=>c.key==='bboost')) {
+      advices.push(`🔄 <b>${lowScorers} pemain XI berkinerja rendah</b> — fokus upgrade starting XI dulu sebelum BB. Bench Boost hanya efektif saat seluruh 15 pemain berkualitas tinggi.`);
+    }
+    if (remaining.length >= 3 && remainingGWs > 10) {
+      advices.push(`📋 <b>${remaining.length} chip tersisa, ${remainingGWs} GW lagi</b> — jangan terburu-buru. Informasi DGW/BGW biasanya diumumkan beberapa GW sebelumnya. Simpan chip untuk timing optimal.`);
+    } else if (remaining.length >= 3 && remainingGWs > 6) {
+      advices.push(`📋 <b>${remaining.length} chip tersisa, ${remainingGWs} GW lagi</b> — mulai rencanakan penggunaan chip. Perhatikan jadwal DGW/BGW yang akan datang.`);
+    }
+    if (remaining.length >= 2 && remainingGWs <= 6) {
+      advices.push(`🏁 <b>Akhir season!</b> ${remaining.length} chip tersisa, ${remainingGWs} GW lagi — gunakan sekarang untuk memaksimalkan poin dan mendahului rival di mini-league.`);
+    }
+    if (lowScorers >= 3 && remaining.some(c=>c.key==='wildcard')) {
+      advices.push(`🃏 <b>${lowScorers} pemain berkinerja rendah</b> — pertimbangkan Wildcard sebelum DGW berikutnya untuk restruktur squad secara menyeluruh.`);
+    }
+    if (remaining.some(c=>c.key==='3xc') && !gwAnalysis.some(ga=>ga.bestCapFDR<2.2)) {
+      advices.push(`👑 <b>Belum ada fixture TC ideal</b> — simpan TC untuk GW dengan DGW + captain premium (Haaland/Salah) melawan tim lemah di kandang.`);
+    }
+
+    if (advices.length) {
+      html += `<div class="section-title" style="margin-top:20px">💡 Saran Strategis</div>`;
+      html += advices.map(a => `<div class="info-box" style="margin-bottom:8px">${a}</div>`).join('');
+    }
+
     return html;
   },
 
@@ -4355,6 +5232,25 @@ const Render = {
             <button class="btn btn-secondary" onclick="UI.saveSettings()">Simpan Saja</button>
           </div>
           <div id="settings-status" class="status-msg"></div>
+        </div>
+
+        <div class="settings-card">
+          <h3>Liga Saya</h3>
+          <div id="league-list">
+            ${CFG.leagues.map((l,i) => `
+              <div class="league-item">
+                <span class="league-item-name">${l.name}</span>
+                <span class="dim mono" style="font-size:11px">ID: ${l.id}</span>
+                <button class="btn-crit-remove" onclick="UI.removeLeague(${i})" title="Hapus">✕</button>
+              </div>
+            `).join('')}
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <input type="text" id="new-league-name" placeholder="Nama Liga" class="search-input" style="flex:1">
+            <input type="number" id="new-league-id" placeholder="League ID" class="search-input" style="width:120px">
+            <button class="btn btn-primary" onclick="UI.addLeague()" style="white-space:nowrap">+ Tambah</button>
+          </div>
+          <div class="hint" style="margin-top:6px">Temukan League ID di URL: fantasy.premierleague.com/leagues/<b>ID</b>/standings/…</div>
         </div>
 
         <div class="settings-card">
@@ -4639,19 +5535,58 @@ const UI = {
     });
   },
 
-  // ── Save / Share card as image ──
+  // ── Save / Share card as image (desktop-quality) ──
   shareBar(cardId, title='') {
     return `<div class="share-bar">
       <button class="btn-share" onclick="UI.saveCard('${cardId}','${title}')" title="Save as PNG">📥 Save</button>
-      <button class="btn-share" onclick="UI.shareCard('${cardId}','${title}')" title="Share to WhatsApp">💬 Share</button>
+      <button class="btn-share" onclick="UI.shareCard('${cardId}','${title}')" title="Share">💬 Share</button>
     </div>`;
+  },
+
+  async _captureDesktop(el, minWidth = 1600) {
+    const isMobile = window.innerWidth < 700;
+    const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#080d14';
+
+    if (isMobile) {
+      // Add body class that overrides ALL mobile media query styles
+      document.body.classList.add('capture-desktop');
+      // Force element to desktop width
+      const origStyle = el.getAttribute('style') || '';
+      el.style.width = minWidth + 'px';
+      el.style.maxWidth = minWidth + 'px';
+      el.style.overflow = 'visible';
+
+      // Wait for reflow
+      await new Promise(r => setTimeout(r, 200));
+
+      const canvas = await html2canvas(el, {
+        backgroundColor: bgColor,
+        scale: 2,
+        width: minWidth,
+        windowWidth: minWidth,
+        scrollX: 0, scrollY: -window.scrollY,
+        useCORS: true, allowTaint: true,
+      });
+
+      // Restore
+      document.body.classList.remove('capture-desktop');
+      if (origStyle) el.setAttribute('style', origStyle);
+      else el.removeAttribute('style');
+
+      return canvas;
+    }
+
+    return await html2canvas(el, {
+      backgroundColor: bgColor, scale: 2,
+      useCORS: true, allowTaint: true,
+    });
   },
 
   async saveCard(cardId, title='FPL Dashboard') {
     const el = document.getElementById(cardId);
     if (!el) return;
     try {
-      const canvas = await html2canvas(el, { backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#080d14', scale: 2 });
+      const canvas = await this._captureDesktop(el);
       const link = document.createElement('a');
       link.download = `${title.replace(/[^a-zA-Z0-9]/g,'_')}_GW${Store.currentGW||''}.png`;
       link.href = canvas.toDataURL('image/png');
@@ -4663,27 +5598,66 @@ const UI = {
     const el = document.getElementById(cardId);
     if (!el) return;
     try {
-      const canvas = await html2canvas(el, { backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#080d14', scale: 2 });
+      const canvas = await this._captureDesktop(el);
       const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
       const file = new File([blob], `${title}_GW${Store.currentGW||''}.png`, { type:'image/png' });
 
-      // Try native share first (mobile)
       if (navigator.share && navigator.canShare?.({files:[file]})) {
-        await navigator.share({ title, files:[file] });
+        await navigator.share({ title: `${title} — GW${Store.currentGW||''}`, files:[file] });
       } else {
-        // Fallback: open WhatsApp with image URL (desktop)
-        // Save to temp and open WhatsApp Web
-        const url = canvas.toDataURL('image/png');
         const link = document.createElement('a');
         link.download = file.name;
-        link.href = url;
+        link.href = canvas.toDataURL('image/png');
         link.click();
-        // Open WhatsApp with text
         setTimeout(() => {
           window.open(`https://wa.me/?text=${encodeURIComponent(`${title} — GW${Store.currentGW||''}\n${window.location.href}`)}`, '_blank');
         }, 500);
       }
     } catch(e) { console.error('Share failed:', e); }
+  },
+
+  async shareAllLeague() {
+    const cardIds = ['card-bumpchart','card-highlights','card-standings','card-transfers'];
+    const cardTitles = ['Bump_Chart','Manager_Highlights','Standings','Transfer_Chips'];
+    const files = [];
+
+    // Show progress
+    const btn = document.getElementById('share-all-btn');
+    if (btn) { btn.textContent = '⏳ Capturing...'; btn.disabled = true; }
+
+    for (let i = 0; i < cardIds.length; i++) {
+      const el = document.getElementById(cardIds[i]);
+      if (!el) continue;
+      try {
+        const canvas = await this._captureDesktop(el);
+        const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+        files.push(new File([blob], `${cardTitles[i]}_GW${Store.currentGW||''}.png`, { type:'image/png' }));
+      } catch {}
+      if (btn) btn.textContent = `⏳ ${i+1}/${cardIds.length}`;
+    }
+
+    if (btn) { btn.textContent = '📤 Share All'; btn.disabled = false; }
+
+    if (!files.length) return;
+
+    // Try native share with multiple files
+    if (navigator.share && navigator.canShare?.({files})) {
+      const leagueName = Store.leagueData?.league?.name || CFG.leagues[CFG.selectedLeagueIdx]?.name || 'FPL';
+      await navigator.share({
+        title: `${leagueName} — GW${Store.currentGW||''}`,
+        text: `FPL Dashboard League Report — GW${Store.currentGW||''}\n${window.location.href}`,
+        files
+      });
+    } else {
+      // Fallback: download all
+      files.forEach(f => {
+        const link = document.createElement('a');
+        link.download = f.name;
+        link.href = URL.createObjectURL(f);
+        link.click();
+        URL.revokeObjectURL(link.href);
+      });
+    }
   },
 
   cycleTheme() {
@@ -4746,6 +5720,22 @@ const UI = {
       + `<span style="color:var(--orange)">${s.expired} expired</span> · `
       + `Hits: <span style="color:var(--blue)">${Store.cacheHits||0}</span> / `
       + `Miss: <span style="color:var(--text3)">${Store.cacheMisses||0}</span>`;
+  },
+
+  showFormTip(el, e) {
+    const tip = document.getElementById('tooltip');
+    if (!tip) return;
+    const text = (el.dataset.tip || '').replace(/&#10;/g, '<br>');
+    tip.innerHTML = text;
+    tip.classList.add('show');
+    const rect = el.getBoundingClientRect();
+    tip.style.left = Math.min(rect.left, window.innerWidth - 240) + 'px';
+    tip.style.top = (rect.bottom + 6) + 'px';
+  },
+
+  hideFormTip() {
+    const tip = document.getElementById('tooltip');
+    if (tip) tip.classList.remove('show');
   },
 
   setFilter(pos) { Store.posFilter=pos; Nav.goSubtab('lineup','gwscoring'); },
@@ -4881,6 +5871,34 @@ const UI = {
     });
   },
 
+  applyAdaptiveAsManual() {
+    if (!Store._activeBacktestWeights) return;
+    Store.gwWeights = JSON.parse(JSON.stringify(Store._activeBacktestWeights));
+    try { localStorage.setItem('fplDashGWWeights', JSON.stringify(Store.gwWeights)); } catch {}
+    console.log(`[UI] Adaptive weights copied to manual: ${Object.keys(Store.gwWeights).length} criteria`);
+    // Switch back to current GW
+    Store.targetGW = 0;
+    this.changeTargetGW(0);
+  },
+
+  addLeague() {
+    const name = document.getElementById('new-league-name')?.value?.trim();
+    const id = +document.getElementById('new-league-id')?.value;
+    if (!name || !id) return;
+    if (CFG.leagues.some(l => l.id === id)) return;
+    CFG.leagues.push({ name, id });
+    this.saveSettings();
+    Nav.goTab('settings');
+  },
+
+  removeLeague(idx) {
+    if (CFG.leagues.length <= 1) return;
+    CFG.leagues.splice(idx, 1);
+    if (CFG.selectedLeagueIdx >= CFG.leagues.length) CFG.selectedLeagueIdx = 0;
+    this.saveSettings();
+    Nav.goTab('settings');
+  },
+
   applyGWWeights() {
     const newWeights = {};
     document.querySelectorAll('.weight-input[data-mode="gw"]').forEach(el => {
@@ -5009,6 +6027,11 @@ const UI = {
 
   // ── Deadline Countdown ──
   startDeadlineTimer() {
+    let notified1h = false, notified15m = false;
+    // Request notification permission early
+    if ('Notification' in window && Notification.permission === 'default') {
+      // Will ask on first interaction
+    }
     const update = () => {
       const el = document.getElementById('deadline-timer');
       if (!el || !Store.bootstrap) return;
@@ -5025,9 +6048,136 @@ const UI = {
       const isUrgent = diff < 3600000; // < 1 hour
       const text = d > 0 ? `${d}d ${h}h ${m}m` : `${h}h ${m}m ${s}s`;
       el.innerHTML = `<span class="deadline-timer${isUrgent?' urgent':''}">⏱ GW${nextEv.id} ${text}</span><button class="btn-ics" onclick="UI.exportDeadlineICS()" title="Tambah ke Kalender">📅</button>`;
+
+      // Browser notifications
+      if ('Notification' in window && Notification.permission === 'granted') {
+        if (diff <= 3600000 && diff > 3599000 && !notified1h) {
+          notified1h = true;
+          new Notification('⚽ FPL Deadline 1 Jam Lagi!', {
+            body: `GW${nextEv.id} deadline dalam 1 jam. Pastikan transfer dan lineup sudah diatur.`,
+            icon: 'icons/icon-192.png',
+            tag: 'fpl-deadline-1h',
+          });
+        }
+        if (diff <= 900000 && diff > 899000 && !notified15m) {
+          notified15m = true;
+          new Notification('⚠ FPL Deadline 15 Menit!', {
+            body: `GW${nextEv.id} deadline dalam 15 menit! Segera finalisasi tim Anda.`,
+            icon: 'icons/icon-192.png',
+            tag: 'fpl-deadline-15m',
+          });
+        }
+      }
     };
     update();
     setInterval(update, 1000);
+
+    // Request permission on first click
+    document.addEventListener('click', function reqNotif() {
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
+      document.removeEventListener('click', reqNotif);
+    }, { once: true });
+  },
+
+  // ── Live Score Polling (auto-refresh during matches) ──
+  _livePollingId: null,
+  _livePollingActive: false,
+
+  startLivePolling() {
+    if (this._livePollingId) return; // Already running
+
+    const poll = async () => {
+      if (!Store.bootstrap || !Store.currentGW) return;
+
+      // Check if current GW has matches being played right now
+      const gw = Store.currentGW;
+      const gwEvent = Store.bootstrap.events.find(e => e.id === gw);
+      if (!gwEvent) return;
+
+      // GW is active if: is_current=true AND not finished AND deadline has passed
+      const deadline = new Date(gwEvent.deadline_time);
+      const now = new Date();
+      const isActive = gwEvent.is_current && !gwEvent.finished && now > deadline;
+
+      // Also check if any fixture for this GW is being played (kickoff <= now <= kickoff+2h)
+      const gwFixtures = (Store.fixtures || []).filter(f => f.event === gw);
+      const hasLiveMatch = gwFixtures.some(f => {
+        if (!f.kickoff_time) return false;
+        const ko = new Date(f.kickoff_time);
+        const endApprox = new Date(ko.getTime() + 130 * 60000); // ~2h10m after kickoff
+        return now >= ko && now <= endApprox && !f.finished_provisional;
+      });
+
+      const badge = document.getElementById('src-badge');
+
+      if (isActive && hasLiveMatch) {
+        if (!this._livePollingActive) {
+          console.log('[Live] 🔴 Match in progress — starting 60s polling');
+          this._livePollingActive = true;
+        }
+
+        // Fetch fresh live data (bypass cache)
+        try {
+          const liveData = await Fetch.fpl(`event/${gw}/live/`, true);
+          if (liveData) {
+            Store.liveEvent = liveData;
+            // Re-process players with new live data
+            const { players } = Process.fromBootstrap(Store.bootstrap, Store.fixtures, liveData);
+            Store.players = players;
+            Process.applyScores(players);
+
+            // Update live points in my squad
+            if (Store.mySquadData?.length) {
+              Store.mySquadData.forEach(p => {
+                const live = liveData.elements?.find(e => e.id === p.id);
+                if (live) p.livePoints = live.stats.total_points;
+              });
+            }
+
+            // Re-render current tab if relevant
+            const cur = Nav.current;
+            if (['lineup','other'].includes(cur)) Nav.goTab(cur);
+
+            if (badge) {
+              badge.textContent = '🔴 LIVE';
+              badge.className = 'badge badge-src';
+              badge.style.color = '#ff5252';
+              badge.style.borderColor = '#ff5252';
+            }
+            console.log(`[Live] ✓ Updated at ${new Date().toLocaleTimeString()}`);
+          }
+        } catch(e) {
+          console.log(`[Live] ✗ Poll failed: ${e.message}`);
+        }
+      } else {
+        if (this._livePollingActive) {
+          console.log('[Live] ⚪ No live matches — pausing');
+          this._livePollingActive = false;
+          if (badge) {
+            badge.textContent = '⚡ Cached';
+            badge.className = 'badge badge-src';
+            badge.style.color = '';
+            badge.style.borderColor = '';
+          }
+        }
+      }
+    };
+
+    // Poll every 60 seconds
+    poll(); // First check immediately
+    this._livePollingId = setInterval(poll, 60000);
+    console.log('[Live] Polling started (60s interval)');
+  },
+
+  stopLivePolling() {
+    if (this._livePollingId) {
+      clearInterval(this._livePollingId);
+      this._livePollingId = null;
+      this._livePollingActive = false;
+      console.log('[Live] Polling stopped');
+    }
   },
 
   // ── Export Data to CSV ──
@@ -5474,6 +6624,7 @@ const UI = {
         myTeamId:CFG.myTeamId, myTeamName:CFG.myTeamName,
         sheetsUrl:CFG.sheetsUrl, minMinutes:CFG.minMinutes,
         maxPerTeam:CFG.maxPerTeam, selectedLeagueIdx:CFG.selectedLeagueIdx,
+        leagues:CFG.leagues,
       }));
       const s=document.getElementById('settings-status');
       if(s){s.textContent='✓ Settings tersimpan.';s.className='status-msg ok';}
@@ -5490,6 +6641,7 @@ const UI = {
       if(saved.minMinutes)       CFG.minMinutes       = saved.minMinutes;
       if(saved.maxPerTeam)       CFG.maxPerTeam       = saved.maxPerTeam;
       if(saved.selectedLeagueIdx!==undefined) CFG.selectedLeagueIdx = saved.selectedLeagueIdx;
+      if(saved.leagues?.length) CFG.leagues = saved.leagues;
     } catch {}
     // Load scout weights
     try {
@@ -5633,6 +6785,7 @@ const App = {
     Nav.goTab(Nav.current);
     UI.buildGWSelect();
     UI.startDeadlineTimer();
+    UI.startLivePolling();
 
     // ── Step 4: League data (background, concurrency=5) ──
     this.loadLeagueData(gw);
