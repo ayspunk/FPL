@@ -29,28 +29,28 @@ const CFG = {
     u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
   ],
   GW_WEIGHTS: {
-    'fdr_short':       { GK:.35, DEF:.30, MID:.30, FWD:.35 },
-    'home':            { GK:.15, DEF:.10, MID:.10, FWD:.15 },
-    'ppg':             { GK:.30, DEF:.30, MID:.30, FWD:.25 },
-    'xgi':             { GK:.00, DEF:.10, MID:.20, FWD:.25 },
-    'xgc':             { GK:.00, DEF:.20, MID:.10, FWD:.00 },
+    'fdr_short':       { GK:.30, DEF:.25, MID:.25, FWD:.30 },
+    'home':            { GK:.10, DEF:.08, MID:.08, FWD:.10 },
+    'ppg':             { GK:.25, DEF:.25, MID:.25, FWD:.20 },
+    'xgi':             { GK:.00, DEF:.10, MID:.17, FWD:.20 },
+    'xgc':             { GK:.00, DEF:.17, MID:.10, FWD:.00 },
     'saves':           { GK:.20, DEF:.00, MID:.00, FWD:.00 },
-    'dgw_blank':       { GK:.00, DEF:.00, MID:.00, FWD:.00 },
+    'dgw_blank':       { GK:.15, DEF:.15, MID:.15, FWD:.20 },
   },
   SCOUT_WEIGHTS: {
-    'fdr_short':       {GK:.15,DEF:.15,MID:.15,FWD:.15},
-    'home':            {GK:.10,DEF:.05,MID:.05,FWD:.05},
-    'form':            {GK:.15,DEF:.10,MID:.15,FWD:.15},
-    'ppg':             {GK:.20,DEF:.15,MID:.10,FWD:.10},
-    'xgi':             {GK:.00,DEF:.10,MID:.10,FWD:.20},
-    'xgc':             {GK:.00,DEF:.15,MID:.10,FWD:.00},
-    'saves':           {GK:.15,DEF:.00,MID:.00,FWD:.00},
-    'ict_index':       {GK:.00,DEF:.05,MID:.10,FWD:.10},
+    'fdr_short':       {GK:.12,DEF:.12,MID:.12,FWD:.12},
+    'home':            {GK:.08,DEF:.04,MID:.04,FWD:.04},
+    'form':            {GK:.12,DEF:.08,MID:.12,FWD:.12},
+    'ppg':             {GK:.17,DEF:.13,MID:.08,FWD:.08},
+    'xgi':             {GK:.00,DEF:.08,MID:.08,FWD:.17},
+    'xgc':             {GK:.00,DEF:.13,MID:.08,FWD:.00},
+    'saves':           {GK:.13,DEF:.00,MID:.00,FWD:.00},
+    'ict_index':       {GK:.00,DEF:.04,MID:.08,FWD:.08},
     'value_form':      {GK:.02,DEF:.02,MID:.02,FWD:.02},
-    'net_transfers':   {GK:.08,DEF:.08,MID:.08,FWD:.08},
+    'net_transfers':   {GK:.06,DEF:.06,MID:.06,FWD:.06},
     'yellow_cards':    {GK:.05,DEF:.05,MID:.05,FWD:.05},
-    'dgw_blank':       {GK:.00,DEF:.00,MID:.00,FWD:.00},
-    'ep_next':         {GK:.10,DEF:.10,MID:.10,FWD:.10},
+    'dgw_blank':       {GK:.15,DEF:.15,MID:.15,FWD:.15},
+    'ep_next':         {GK:.10,DEF:.10,MID:.12,FWD:.11},
   },
 };
 
@@ -71,7 +71,7 @@ const CRITERIA = [
   {key:'fdr_short',    label:'FDR Jangka Pendek',   group:'Fixture', type:'computed', field:null, tip:'Skor FDR lawan di GW target saja. Rendah = lawan mudah.'},
   {key:'fdr_multi',    label:'FDR Multi-GW',         group:'Fixture', type:'computed', field:null, tip:'Rata-rata FDR lawan untuk N GW ke depan (diatur via slider Horizon).'},
   {key:'home',         label:'Home Advantage',       group:'Fixture', type:'computed', field:null, tip:'Bermain di kandang (10) atau tandang (5).'},
-  {key:'dgw_blank',    label:'DGW / Blank',          group:'Fixture', type:'computed', field:null, tip:'Double GW (+10) atau Blank GW (-10). Normal = 0.'},
+  {key:'dgw_blank',    label:'DGW / Blank',          group:'Fixture', type:'computed', field:null, tip:'Double GW (5–10 tergantung kesulitan lawan) atau Blank GW (-10). Normal = 0. DGW dengan lawan mudah = skor lebih tinggi.'},
   // ── Performance ──
   {key:'total_points', label:'Total Points',         group:'Performance', type:'direct',  field:'total_points', tip:'Akumulasi poin sepanjang musim.'},
   {key:'round_points', label:'Round Points',         group:'Performance', type:'direct',  field:'event_points', tip:'Poin yang didapat di GW terakhir.'},
@@ -542,22 +542,36 @@ const Process = {
         return;
       }
 
-      const fix = gwFixes[0];
-      const isHome = fix.team_h === t.id;
-      const oppId  = isHome ? fix.team_a : fix.team_h;
-      const opp    = teamMap[oppId];
-      if (!opp) return;
+      // Build per-fixture details (all fixtures in this GW for this team)
+      const fixDetails = gwFixes.map(f => {
+        const isH = f.team_h === t.id;
+        const oppId = isH ? f.team_a : f.team_h;
+        const opp = teamMap[oppId];
+        if (!opp) return null;
+        return {
+          opp: opp.short_name, oppFull: opp.name,
+          isHome: isH,
+          fdrDef: nFDR(isH ? opp.strength_attack_away : opp.strength_attack_home, mnD, mxD),
+          fdrAtk: nFDR(isH ? opp.strength_defence_away : opp.strength_defence_home, mnA, mxA),
+        };
+      }).filter(Boolean);
+      if (!fixDetails.length) return;
 
-      const fdrDef = nFDR(isHome ? opp.strength_attack_away : opp.strength_attack_home, mnD, mxD);
-      const fdrAtk = nFDR(isHome ? opp.strength_defence_away: opp.strength_defence_home, mnA, mxA);
+      // For DGW: average FDR across all fixtures (easier combined = lower avg)
+      const avgFdrDef = +(fixDetails.reduce((s,d)=>s+d.fdrDef,0)/fixDetails.length).toFixed(2);
+      const avgFdrAtk = +(fixDetails.reduce((s,d)=>s+d.fdrAtk,0)/fixDetails.length).toFixed(2);
 
+      // Primary fixture info (first fixture for display), but FDR uses average
+      const primary = fixDetails[0];
       teamFix[t.id] = {
-        opp: opp.short_name, oppFull: opp.name,
-        isHome, fdrAtk, fdrDef,
+        opp: primary.opp, oppFull: primary.oppFull,
+        isHome: primary.isHome,
+        fdrAtk: avgFdrAtk, fdrDef: avgFdrDef,
         isDGW: fixtureCount > 1,
         isBlank: false,
         fixtureCount,
         event: targetGW,
+        fixtures: fixDetails, // all fixture details for DGW display
       };
     });
     const blankTeams = Object.entries(teamFix).filter(([_,f])=>f.isBlank).map(([id,_])=>teamMap[+id]?.short_name||id);
@@ -622,8 +636,22 @@ const Process = {
       const sHome  = fix.isHome ? 10 : 5;
       const sPPG   = norm(+p.points_per_game||0, maxPPG);
       const sXGI   = norm(+p.expected_goal_involvements||0, maxXGI);
-      // DGW/Blank score: +10 for DGW, 0 for normal, -10 for blank
-      const sDGW   = fix.isBlank ? -10 : (fix.isDGW ? 10 : 0);
+      // DGW/Blank score: scaled by fixture count and difficulty
+      // DGW: base bonus proportional to extra fixtures × FDR quality
+      // fixtureCount=2 with easy FDR → high score; fixtureCount=2 with hard FDR → moderate score
+      // Blank: -10 penalty (no match at all)
+      // Normal: 0
+      let sDGW = 0;
+      if (fix.isBlank) {
+        sDGW = -10;
+      } else if (fix.isDGW && fix.fixtureCount > 1) {
+        // Base: fixture multiplier (2 fixtures = 2x opportunity)
+        // Scale by how easy the average FDR is: (5 - avgFDR)/4 maps 1→1.0, 5→0.0
+        const avgFDR = fdrR; // already averaged for DGW in teamFix
+        const easeBonus = Math.max(0, (5 - avgFDR) / 4); // 0..1
+        // DGW score: 5 (base DGW bonus) + 5 scaled by ease → range 5..10
+        sDGW = +(5 + 5 * easeBonus).toFixed(2);
+      }
       const xgcPM  = p.minutes >= 90
                      ? +(+p.expected_goals_conceded/(p.minutes/90)).toFixed(3)
                      : null;
@@ -2984,7 +3012,14 @@ const Render = {
           if (c.blank) return `<td class="fdr-cell fdr-none">–</td>`;
           return `<td class="fdr-cell ${H.fdrClass(c.fdr)}"><div class="fc-opp">${c.opp}</div><div class="fc-ha">${c.isHome?'(H)':'(A)'}</div></td>`;
         }
-        return c.map(x => `<td class="fdr-cell ${H.fdrClass(x.fdr)}"><div class="fc-opp">${x.opp}</div><div class="fc-ha">${x.isHome?'(H)':'(A)'}</div></td>`).join('');
+        if (c.length === 1) {
+          const x = c[0];
+          return `<td class="fdr-cell ${H.fdrClass(x.fdr)}"><div class="fc-opp">${x.opp}</div><div class="fc-ha">${x.isHome?'(H)':'(A)'}</div></td>`;
+        }
+        // DGW: combine all fixtures into single cell
+        const avgFdr = +(c.reduce((s,x)=>s+x.fdr,0)/c.length).toFixed(1);
+        const fixItems = c.map(x => `<div class="fdr-dgw-fix ${H.fdrClass(x.fdr)}"><span class="${x.isHome?'fc-home':'fc-away'}">${x.opp} ${x.isHome?'(H)':'(A)'}</span></div>`).join('');
+        return `<td class="fdr-cell fdr-dgw-cell ${H.fdrClass(avgFdr)}"><div class="fdr-dgw-badge">DGW</div>${fixItems}</td>`;
       }).join('');
       return `<tr><td style="font-weight:700;position:sticky;left:0;background:var(--bg2);z-index:1">${td.team}</td>${cells}<td class="fdr-avg-col ${H.fdrClass(td.avg)}">${td.avg}</td></tr>`;
     }).join('');
@@ -3820,16 +3855,27 @@ const Render = {
     const trows = rows.map(row => {
       const cells = row.fixes.map(fixArr => {
         if (!fixArr||!fixArr.length) return `<td class="fdr-cell fdr-none">–</td>`;
-        // DGW: show both
-        return fixArr.map(fix=>{
+        if (fixArr.length === 1) {
+          const fix = fixArr[0];
           const cls=H.fdrClass(fix.val);
           const ha =fix.isHome?'fc-home':'fc-away';
           return `<td class="fdr-cell ${cls}">
-            <div class="fc-opp ${ha}">${fix.opp}</div>
-            <div class="fc-ha">${fix.isHome?'(H)':'(A)'}</div>
+            <div class="fc-opp ${ha}">${fix.opp} ${fix.isHome?'(H)':'(A)'}</div>
             <div class="fc-val">${fix.val.toFixed(1)}</div>
           </td>`;
+        }
+        // DGW: combine all fixtures into single cell
+        const avgVal = +(fixArr.reduce((s,f)=>s+f.val,0)/fixArr.length).toFixed(1);
+        const cls = H.fdrClass(avgVal);
+        const fixItems = fixArr.map(fix => {
+          const ha = fix.isHome?'fc-home':'fc-away';
+          const fixCls = H.fdrClass(fix.val);
+          return `<div class="fdr-dgw-fix ${fixCls}"><span class="${ha}">${fix.opp} ${fix.isHome?'(H)':'(A)'}</span></div>`;
         }).join('');
+        return `<td class="fdr-cell fdr-dgw-cell ${cls}">
+          <div class="fdr-dgw-badge">DGW</div>
+          ${fixItems}
+        </td>`;
       }).join('');
       return `<tr>
         <td style="font-weight:700">${row.team}</td>
