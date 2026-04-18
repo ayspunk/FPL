@@ -724,39 +724,81 @@ const Process = {
   },
 
   // ── Snapshot-based correlation engine (no data leakage) ──────────────
-  // Uses snaps[GW-1] as features vs liveAll[GW] as actuals.
-  // Returns { overallCorr, suggested, gwsUsed, eligibleCount, snapKeys }
-  // or null if snapshot data is unavailable.
+  // Uses snaps[GW-1] (performance) + fixtures[GW] (fixture info) as features
+  // vs liveAll[GW] as actuals. Returns { overallCorr, suggested, gwsUsed,
+  // eligibleCount, snapKeys, fixKeys } or null if data unavailable.
   _snapCorrelations(lookback) {
     const snaps   = Store._snapshotsData;
     const liveAll = Store._liveAllData;
     if (!snaps || !liveAll) return null;
 
-    // Criteria extractors from snapshot fields — excludes anything that
-    // would leak the target GW (round_points, ep_next) or fixtures (fdr, home, dgw).
+    // ── Performance criteria from snapshot fields ─────────────────────────
+    // Excludes: round_points (= target GW points → pure leakage),
+    //           ep_next / tsb / transfers (not stored historically).
     const SNAP_DEFS = {
-      ppg:          { ex: s => s.ppg  || 0,                                              type: 'direct'           },
-      form:         { ex: s => s.form || 0,                                              type: 'direct'           },
-      total_points: { ex: s => s.tp   || 0,                                              type: 'direct'           },
-      minutes:      { ex: s => s.mn   || 0,                                              type: 'direct'           },
-      ict_index:    { ex: s => s.ict  || 0,                                              type: 'direct'           },
-      price:        { ex: s => (s.pr  || 0) / 10,                                        type: 'inverse_direct'   },
-      value_form:   { ex: s => s.pr > 0 ? (s.form||0)/((s.pr||100)/10) : 0,             type: 'direct'           },
-      value_season: { ex: s => s.pr > 0 ? (s.tp||0)/((s.pr||100)/10)   : 0,             type: 'direct'           },
-      xgi:          { ex: s => s.mn >= 45 ? (s.xgi||0)/Math.max(s.mn,1)*90 : null,      type: 'per90'            },
-      xgc:          { ex: s => s.mn >= 45 ? (s.xgc||0)/Math.max(s.mn,1)*90 : null,      type: 'inverse_per90'    },
-      saves:        { ex: s => s.mn >= 45 ? (s.sv ||0)/Math.max(s.mn,1)*90 : null,      type: 'per90'            },
-      bonus:        { ex: s => s.mn >= 45 ? (s.bn ||0)/Math.max(s.mn,1)*90 : null,      type: 'per90'            },
-      goals_scored: { ex: s => s.mn >= 45 ? (s.gl ||0)/Math.max(s.mn,1)*90 : null,      type: 'per90'            },
-      assists:      { ex: s => s.mn >= 45 ? (s.as ||0)/Math.max(s.mn,1)*90 : null,      type: 'per90'            },
-      clean_sheets: { ex: s => s.mn >= 45 ? (s.cs ||0)/Math.max(s.mn,1)*90 : null,      type: 'per90'            },
-      yellow_cards: { ex: s => s.mn >= 45 ? (s.yc ||0)/Math.max(s.mn,1)*90 : null,      type: 'inverse_per90'    },
+      ppg:          { ex: s => s.ppg  || 0,                                         type: 'direct'        },
+      form:         { ex: s => s.form || 0,                                         type: 'direct'        },
+      total_points: { ex: s => s.tp   || 0,                                         type: 'direct'        },
+      minutes:      { ex: s => s.mn   || 0,                                         type: 'direct'        },
+      ict_index:    { ex: s => s.ict  || 0,                                         type: 'direct'        },
+      price:        { ex: s => (s.pr  || 0) / 10,                                   type: 'inverse_direct'},
+      value_form:   { ex: s => s.pr > 0 ? (s.form||0)/((s.pr||100)/10) : 0,        type: 'direct'        },
+      value_season: { ex: s => s.pr > 0 ? (s.tp  ||0)/((s.pr||100)/10) : 0,        type: 'direct'        },
+      xgi:          { ex: s => s.mn>=45 ? (s.xgi||0)/Math.max(s.mn,1)*90 : null,   type: 'per90'         },
+      xgc:          { ex: s => s.mn>=45 ? (s.xgc||0)/Math.max(s.mn,1)*90 : null,   type: 'inverse_per90' },
+      saves:        { ex: s => s.mn>=45 ? (s.sv ||0)/Math.max(s.mn,1)*90 : null,   type: 'per90'         },
+      bonus:        { ex: s => s.mn>=45 ? (s.bn ||0)/Math.max(s.mn,1)*90 : null,   type: 'per90'         },
+      goals_scored: { ex: s => s.mn>=45 ? (s.gl ||0)/Math.max(s.mn,1)*90 : null,   type: 'per90'         },
+      assists:      { ex: s => s.mn>=45 ? (s.as ||0)/Math.max(s.mn,1)*90 : null,   type: 'per90'         },
+      clean_sheets: { ex: s => s.mn>=45 ? (s.cs ||0)/Math.max(s.mn,1)*90 : null,   type: 'per90'         },
+      yellow_cards: { ex: s => s.mn>=45 ? (s.yc ||0)/Math.max(s.mn,1)*90 : null,   type: 'inverse_per90' },
     };
     const snapKeys = Object.keys(SNAP_DEFS);
-    const posArr   = ['GK','DEF','MID','FWD'];
-    const posMap   = {1:'GK',2:'DEF',3:'MID',4:'FWD'};
 
-    // Find GWs that have both snap[GW-1] and liveAll[GW]
+    // ── Fixture criteria from Store.fixtures (genuine pre-GW info) ────────
+    // team_h_difficulty / team_a_difficulty are announced before the GW → no leakage.
+    // fixKeys are computed per-player inside the per-GW loop via gwTeamFix[gw][teamId].
+    const fixKeys  = ['fdr_short', 'home', 'dgw_blank'];
+    const allOptKeys = [...snapKeys, ...fixKeys];
+
+    // Pre-build historical fixture map: gwTeamFix[gw][teamId] = { fdrScore, homeScore, dgwScore }
+    const gwTeamFix = {};
+    (Store.fixtures || []).forEach(f => {
+      if (!f.event) return;
+      const gw = f.event;
+      if (!gwTeamFix[gw]) gwTeamFix[gw] = {};
+      const addTeam = (teamId, fdr, isHome) => {
+        if (!gwTeamFix[gw][teamId]) gwTeamFix[gw][teamId] = { fixts: [] };
+        gwTeamFix[gw][teamId].fixts.push({ fdr, isHome });
+      };
+      addTeam(f.team_h, f.team_h_difficulty || 3, true);
+      addTeam(f.team_a, f.team_a_difficulty || 3, false);
+    });
+    // Convert raw fixture lists to 0-10 scores (same formula as fromBootstrap)
+    const gwTeamScores = {};
+    Object.entries(gwTeamFix).forEach(([gw, teams]) => {
+      gwTeamScores[+gw] = {};
+      Object.entries(teams).forEach(([teamId, data]) => {
+        const fixts  = data.fixts;
+        const count  = fixts.length;
+        if (!count) return;
+        const avgFdr = fixts.reduce((s,f) => s + f.fdr, 0) / count;
+        const isHome = fixts[0].isHome;
+        const fdrScore  = +Math.max(0, (5 - avgFdr) / 4 * 10).toFixed(2);
+        const homeScore = isHome ? 10 : 5;
+        let dgwScore = 0;
+        if (count > 1) {
+          const ease = Math.max(0, (5 - avgFdr) / 4);
+          dgwScore = +(5 + 5 * ease).toFixed(2);
+        }
+        gwTeamScores[+gw][+teamId] = { fdrScore, homeScore, dgwScore };
+      });
+    });
+
+    const posArr = ['GK','DEF','MID','FWD'];
+    const posMap = {1:'GK',2:'DEF',3:'MID',4:'FWD'};
+
+    // Find GWs with both snap[GW-1] and liveAll[GW]
     const validGWs = Object.keys(liveAll).map(Number)
       .filter(gw => snaps[gw-1] && liveAll[gw]?.length)
       .sort((a,b) => a-b);
@@ -764,28 +806,26 @@ const Process = {
 
     const gwsToUse = validGWs.slice(-Math.max(1, lookback));
 
-    // Accumulators: sum of Pearson r across GWs, keyed by criterion
-    const corrSum    = {};                                         // overall
-    const corrSumPos = {};                                         // per-position
-    snapKeys.forEach(key => { corrSum[key] = 0; });
-    posArr.forEach(pos => { corrSumPos[pos] = {}; snapKeys.forEach(k => { corrSumPos[pos][k] = 0; }); });
-    const corrCnt    = {};  snapKeys.forEach(k => { corrCnt[k] = 0; });
-    const corrCntPos = {};  posArr.forEach(pos => { corrCntPos[pos] = {}; snapKeys.forEach(k => { corrCntPos[pos][k] = 0; }); });
+    // Accumulators: sum of Pearson r across GWs
+    const corrSum    = {};  allOptKeys.forEach(k => { corrSum[k] = 0; });
+    const corrCnt    = {};  allOptKeys.forEach(k => { corrCnt[k] = 0; });
+    const corrSumPos = {};  posArr.forEach(pos => { corrSumPos[pos] = {}; allOptKeys.forEach(k => { corrSumPos[pos][k] = 0; }); });
+    const corrCntPos = {};  posArr.forEach(pos => { corrCntPos[pos] = {}; allOptKeys.forEach(k => { corrCntPos[pos][k] = 0; }); });
     let totalEligible = 0;
 
     gwsToUse.forEach(gw => {
-      const snap = snaps[gw - 1];
-      const live = liveAll[gw];
+      const snap    = snaps[gw - 1];
+      const live    = liveAll[gw];
       const liveMap = {};
       live.forEach(e => { liveMap[e.id] = e.tp; });
+      const teamFix = gwTeamScores[gw] || {};
 
-      // Players eligible for this GW (≥90 min before the GW, actual points known)
       const players = Object.entries(snap)
         .filter(([id, s]) => s.mn >= 90 && liveMap[+id] != null)
         .map(([id, s]) => ({ id: +id, pos: posMap[s.pos] || '?', s, actual: liveMap[+id] }));
       if (players.length < 10) return;
 
-      // Compute max values across players for normalization
+      // Max values for normalization (snapshot criteria only)
       const maxV = {};
       snapKeys.forEach(key => {
         const vals = players.map(p => { const v = SNAP_DEFS[key].ex(p.s); return v != null ? Math.abs(v) : 0; });
@@ -795,25 +835,32 @@ const Process = {
       // Score each player
       players.forEach(p => {
         p.scores = {};
+        // Snapshot-based scores
         snapKeys.forEach(key => {
           const raw = SNAP_DEFS[key].ex(p.s);
           const t   = SNAP_DEFS[key].type;
           let sc = 0;
-          if (raw == null)                    sc = t === 'inverse_per90' ? 5 : 0;
-          else if (t === 'direct')            sc = Math.min(10, (raw / maxV[key]) * 10);
-          else if (t === 'inverse_direct')    sc = Math.max(0, (1 - raw / maxV[key]) * 10);
-          else if (t === 'per90')             sc = Math.min(10, (raw / maxV[key]) * 10);
-          else if (t === 'inverse_per90')     sc = Math.max(0, (1 - raw / maxV[key]) * 10);
+          if (raw == null)                sc = t === 'inverse_per90' ? 5 : 0;
+          else if (t === 'direct')        sc = Math.min(10, (raw / maxV[key]) * 10);
+          else if (t === 'inverse_direct')sc = Math.max(0, (1 - raw / maxV[key]) * 10);
+          else if (t === 'per90')         sc = Math.min(10, (raw / maxV[key]) * 10);
+          else if (t === 'inverse_per90') sc = Math.max(0, (1 - raw / maxV[key]) * 10);
           p.scores[key] = +sc.toFixed(2);
         });
+        // Fixture-based scores (pre-GW info from fixtures)
+        const fix = teamFix[p.s.tm] || { fdrScore: 5, homeScore: 5, dgwScore: 0 };
+        p.scores.fdr_short = fix.fdrScore;
+        p.scores.home      = fix.homeScore;
+        p.scores.dgw_blank = fix.dgwScore;
       });
 
       totalEligible += players.length;
 
-      // Pearson r — overall
-      const actual  = players.map(p => p.actual);
-      const meanA   = actual.reduce((s,v)=>s+v,0)/actual.length;
-      snapKeys.forEach(key => {
+      // Pearson r — overall and per-position
+      const actual = players.map(p => p.actual);
+      const meanA  = actual.reduce((s,v)=>s+v,0)/actual.length;
+
+      allOptKeys.forEach(key => {
         const sc = players.map(p => p.scores[key]);
         const ms = sc.reduce((s,v)=>s+v,0)/sc.length;
         let num=0,dA=0,dB=0;
@@ -821,13 +868,12 @@ const Process = {
         if (dA>0&&dB>0) { corrSum[key] += num/Math.sqrt(dA*dB); corrCnt[key]++; }
       });
 
-      // Pearson r — per-position (only positive for weight derivation)
       posArr.forEach(pos => {
         const pp = players.filter(p => p.pos === pos);
         if (pp.length < 3) return;
         const pa = pp.map(p => p.actual);
         const pm = pa.reduce((s,v)=>s+v,0)/pa.length;
-        snapKeys.forEach(key => {
+        allOptKeys.forEach(key => {
           const sc = pp.map(p => p.scores[key]);
           const ms = sc.reduce((s,v)=>s+v,0)/sc.length;
           let n=0,dA=0,dB=0;
@@ -839,30 +885,30 @@ const Process = {
 
     // Average correlations across GWs
     const overallCorr = {};
-    snapKeys.forEach(key => {
+    allOptKeys.forEach(key => {
       overallCorr[key] = corrCnt[key] > 0 ? +(corrSum[key]/corrCnt[key]).toFixed(4) : 0;
     });
 
-    // Derive suggested weights per position from averaged positive correlations
+    // Derive suggested weights per position
     const allCriteriaKeys = CRITERIA.map(c => c.key);
     const suggested = {};
     allCriteriaKeys.forEach(key => { suggested[key] = {GK:0,DEF:0,MID:0,FWD:0}; });
 
     posArr.forEach(pos => {
       const corrs = {};
-      snapKeys.forEach(key => {
+      allOptKeys.forEach(key => {
         corrs[key] = corrCntPos[pos][key] > 0 ? corrSumPos[pos][key]/corrCntPos[pos][key] : 0;
       });
       const total = Object.values(corrs).reduce((s,v)=>s+v,0);
       if (total > 0) {
         const raw = {};
-        snapKeys.forEach(key => { raw[key] = corrs[key] / total; });
+        allOptKeys.forEach(key => { raw[key] = corrs[key] / total; });
         const adj = Process._roundWeightsTo100(raw);
-        snapKeys.forEach(key => { suggested[key][pos] = adj[key]; });
+        allOptKeys.forEach(key => { suggested[key][pos] = adj[key]; });
       }
     });
 
-    return { overallCorr, suggested, gwsUsed: gwsToUse, eligibleCount: totalEligible, snapKeys };
+    return { overallCorr, suggested, gwsUsed: gwsToUse, eligibleCount: totalEligible, snapKeys, fixKeys, allOptKeys };
   },
 
   // ── Largest Remainder Method: ensure integer %s sum to exactly 100 ──
@@ -2092,30 +2138,27 @@ const Render = {
         <div class="btn-row"><button class="btn btn-secondary" onclick="Nav.goSubtab('${parentTab}','${backTab}')">← Kembali</button></div>`;
     }
 
-    const { overallCorr, suggested, gwsUsed, eligibleCount, snapKeys } = result;
-    const snapKeySet = new Set(snapKeys);
+    const { overallCorr, suggested, gwsUsed, eligibleCount, allOptKeys } = result;
+    const optKeySet = new Set(allOptKeys);
 
-    // Fixture-based criteria: cannot be back-tested (fixture changes each GW)
-    const fixtureBased = new Set(['fdr_short','fdr_multi','home','dgw_blank']);
-
-    // Criteria excluded due to data leakage or absence in snapshots
-    // round_points = event_points of the target GW → identical to actual → r≈1, pure leakage
+    // round_points = event_points of the target GW → identical to actual → pure leakage
     const leaky = new Set(['round_points']);
+    // fdr_multi requires forward-looking fixture window per historical GW — skip for now
+    const cannotCompute = new Set(['fdr_multi']);
 
-    const gwLabel  = gwsUsed.length > 1
+    const gwLabel = gwsUsed.length > 1
       ? `GW${gwsUsed[0]}–GW${gwsUsed[gwsUsed.length-1]}`
       : `GW${gwsUsed[0]}`;
-    const allKeys  = CRITERIA.map(c => c.key);
+    const allKeys = CRITERIA.map(c => c.key);
 
     const lookbackOpts = [1,3,5].map(n =>
       `<button class="filter-btn ${lookback===n?'active':''}" onclick="Store.optimizeLookback=${n};Nav.goSubtab('${parentTab}','${optTab}')">${n} GW</button>`
     ).join('');
 
-    // Sort: snap-available first by |r|, then fixture-based, then rest
+    // Sort: computable criteria by |r|, then rest
     const sortedKeys = [
-      ...[...allKeys].filter(k => snapKeySet.has(k)).sort((a,b) => Math.abs(overallCorr[b]||0) - Math.abs(overallCorr[a]||0)),
-      ...[...allKeys].filter(k => fixtureBased.has(k)),
-      ...[...allKeys].filter(k => !snapKeySet.has(k) && !fixtureBased.has(k)),
+      ...[...allKeys].filter(k => optKeySet.has(k)).sort((a,b) => Math.abs(overallCorr[b]||0) - Math.abs(overallCorr[a]||0)),
+      ...[...allKeys].filter(k => !optKeySet.has(k)),
     ];
 
     const currentActive = new Set(Object.keys(weights));
@@ -2128,13 +2171,13 @@ const Render = {
         `<td class="mono c dim">${isActive ? ((weights[key]?.[p]||0)*100).toFixed(0)+'%' : '–'}</td>`
       ).join('');
 
-      if (snapKeySet.has(key)) {
-        // ── Snap-available: show real Pearson r ──
-        const corr     = overallCorr[key] || 0;
-        const corrBar  = `<div class="corr-bar"><div class="corr-fill ${corr>=0?'corr-pos':'corr-neg'}" style="width:${Math.min(100,Math.abs(corr)*100)}%"></div></div>`;
-        const corrColor= corr > 0.15 ? 'var(--green)' : corr > 0 ? 'var(--text2)' : corr > -0.05 ? 'var(--text3)' : 'var(--red)';
+      if (optKeySet.has(key)) {
+        // ── Computable: snapshot stats + historical fixture data ──
+        const corr      = overallCorr[key] || 0;
+        const corrBar   = `<div class="corr-bar"><div class="corr-fill ${corr>=0?'corr-pos':'corr-neg'}" style="width:${Math.min(100,Math.abs(corr)*100)}%"></div></div>`;
+        const corrColor = corr > 0.15 ? 'var(--green)' : corr > 0 ? 'var(--text2)' : corr > -0.05 ? 'var(--text3)' : 'var(--red)';
         const hasSuggest = posArr.some(p => (suggested[key]?.[p]||0) > 0.01);
-        const suggestW = posArr.map(p => {
+        const suggestW  = posArr.map(p => {
           const sw = ((suggested[key]?.[p]||0)*100).toFixed(0);
           return `<td class="mono c ${+sw>5?'s-hi':+sw>0?'':'dim'}">${sw}%</td>`;
         }).join('');
@@ -2144,28 +2187,19 @@ const Render = {
           <td>${corrBar}</td>
           ${currentW}${suggestW}
         </tr>`;
-      } else if (fixtureBased.has(key)) {
-        // ── Fixture-based: cannot compute historical r, preserve user weights ──
-        const keepW = posArr.map(p =>
-          `<td class="mono c dim" style="color:var(--gold)" title="Bobot fixture dipertahankan (tidak bisa di-backtest)">${isActive?((weights[key]?.[p]||0)*100).toFixed(0)+'%':'–'}</td>`
-        ).join('');
-        return `<tr class="opt-dim">
-          <td${tip}><span class="crit-label">${cr.label}</span> <span class="crit-group">${cr.group}</span></td>
-          <td class="mono c dim" colspan="2" style="font-size:10px;color:var(--gold)">fixture—tidak bisa backtest</td>
-          ${currentW}${keepW}
-        </tr>`;
       } else if (leaky.has(key)) {
-        // ── Leaky criteria: shown but explicitly excluded ──
+        // ── Leaky: explicitly excluded ──
         return `<tr class="opt-dim">
           <td${tip}><span class="crit-label">${cr.label}</span> <span class="crit-group">${cr.group}</span></td>
           <td class="mono c dim" colspan="2" style="font-size:10px;color:var(--red)" title="Data leakage: nilai ini identik dengan target GW">leakage—dikecualikan</td>
           ${currentW}${posArr.map(()=>`<td class="mono c dim">–</td>`).join('')}
         </tr>`;
       } else {
-        // ── Not in snapshots: no historical data ──
+        // ── No historical data (ep_next, tsb, transfers, dll.) ──
+        const note = cannotCompute.has(key) ? 'perlu data multi-GW ke depan' : 'tidak ada data historis';
         return `<tr class="opt-dim">
           <td${tip}><span class="crit-label">${cr.label}</span> <span class="crit-group">${cr.group}</span></td>
-          <td class="mono c dim" colspan="2" style="font-size:10px">tidak ada di snapshot</td>
+          <td class="mono c dim" colspan="2" style="font-size:10px">${note}</td>
           ${currentW}${posArr.map(()=>`<td class="mono c dim">–</td>`).join('')}
         </tr>`;
       }
@@ -2173,12 +2207,11 @@ const Render = {
 
     return `
       <div class="section-title">⚡ ${mode==='gw'?'GW':'Scout'} Weight Optimizer — ${gwLabel}</div>
-      ${H.info(`Korelasi Pearson dihitung dari <b>snapshot GW N-1</b> vs poin aktual GW N — tanpa data leakage.
-        Analisis mencakup <b>${gwsUsed.length} GW</b> (${gwLabel}), <b>${eligibleCount} player-GW</b> eligible.
-        Kriteria fixture dipertahankan dari pengaturan Anda saat ini.`)}
+      ${H.info(`Korelasi Pearson dihitung dari <b>snapshot GW N-1 + fixture historis GW N</b> vs poin aktual GW N — tanpa data leakage.
+        Analisis mencakup <b>${gwsUsed.length} GW</b> (${gwLabel}), <b>${eligibleCount} player-GW</b> eligible.`)}
       <div class="filters" style="margin-bottom:14px">
         <span class="dim" style="font-size:12px;margin-right:8px">Lookback:</span>${lookbackOpts}
-        <span class="dim" style="font-size:11px;margin-left:auto">Sorted by |r| (snapshot criteria first)</span>
+        <span class="dim" style="font-size:11px;margin-left:auto">Sorted by |r|</span>
       </div>
       <div class="table-wrap" style="max-width:960px">
         <table class="weight-table opt-table">
@@ -2198,9 +2231,9 @@ const Render = {
         <button class="btn btn-secondary" onclick="Nav.goSubtab('${parentTab}','${backTab}')">← Kembali</button>
       </div>
       <div class="info-box" style="margin-top:16px">
-        <b>Cara baca:</b> <code>r</code> = korelasi Pearson (snapshot GW N-1 → poin GW N).
-        Baris <span style="color:var(--gold)">kuning</span> = fixture (tidak bisa di-backtest, bobot dipertahankan).
-        Baris <span style="color:var(--red)">merah</span> = leakage (dikecualikan).
+        <b>Cara baca:</b> <code>r</code> = korelasi Pearson (data sebelum GW → poin GW N).
+        Baris <span style="color:var(--red)">merah</span> = dikecualikan karena data leakage.
+        Baris abu-abu = tidak ada data historis (tidak dapat di-backtest).
         Apply → semua kriteria berbobot > 0 otomatis aktif.
       </div>`;
   },
