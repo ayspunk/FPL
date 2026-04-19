@@ -804,7 +804,12 @@ const Process = {
       .sort((a,b) => a-b);
     if (!validGWs.length) return null;
 
-    const gwsToUse = validGWs.slice(-Math.max(1, lookback));
+    // Split lookback strategy:
+    // - Fixture criteria (fdr_short, home, dgw_blank): full season — DGW/BGW events are rare,
+    //   a short window may contain zero DGW GWs → zero variance → Pearson r undefined.
+    // - Snapshot/performance criteria: user's lookback window — captures current form.
+    const gwsToUse    = validGWs.slice(-Math.max(1, lookback)); // recent window for perf criteria
+    const recentGWSet = new Set(gwsToUse);                      // O(1) lookup
 
     // Accumulators: sum of Pearson r across GWs
     const corrSum    = {};  allOptKeys.forEach(k => { corrSum[k] = 0; });
@@ -813,7 +818,10 @@ const Process = {
     const corrCntPos = {};  posArr.forEach(pos => { corrCntPos[pos] = {}; allOptKeys.forEach(k => { corrCntPos[pos][k] = 0; }); });
     let totalEligible = 0;
 
-    gwsToUse.forEach(gw => {
+    // Loop ALL valid GWs (full season) so fixture criteria always get full data.
+    // Snap/performance criteria only accumulate when gw is in the recent window.
+    validGWs.forEach(gw => {
+      const inWindow = recentGWSet.has(gw);
       const snap    = snaps[gw - 1];
       const live    = liveAll[gw];
       const liveMap = {};
@@ -825,17 +833,16 @@ const Process = {
         .map(([id, s]) => ({ id: +id, pos: posMap[s.pos] || '?', s, actual: liveMap[+id] }));
       if (players.length < 10) return;
 
-      // Max values for normalization (snapshot criteria only)
+      // Max values for normalization (snapshot criteria only, recomputed per GW)
       const maxV = {};
       snapKeys.forEach(key => {
         const vals = players.map(p => { const v = SNAP_DEFS[key].ex(p.s); return v != null ? Math.abs(v) : 0; });
         maxV[key] = Math.max(...vals, 0.001);
       });
 
-      // Score each player
+      // Score each player for both snap and fixture criteria
       players.forEach(p => {
         p.scores = {};
-        // Snapshot-based scores
         snapKeys.forEach(key => {
           const raw = SNAP_DEFS[key].ex(p.s);
           const t   = SNAP_DEFS[key].type;
@@ -847,20 +854,21 @@ const Process = {
           else if (t === 'inverse_per90') sc = Math.max(0, (1 - raw / maxV[key]) * 10);
           p.scores[key] = +sc.toFixed(2);
         });
-        // Fixture-based scores (pre-GW info from fixtures)
         const fix = teamFix[p.s.tm] || { fdrScore: 5, homeScore: 5, dgwScore: 0 };
         p.scores.fdr_short = fix.fdrScore;
         p.scores.home      = fix.homeScore;
         p.scores.dgw_blank = fix.dgwScore;
       });
 
-      totalEligible += players.length;
+      if (inWindow) totalEligible += players.length;
 
-      // Pearson r — overall and per-position
+      // Pearson r — overall
       const actual = players.map(p => p.actual);
       const meanA  = actual.reduce((s,v)=>s+v,0)/actual.length;
 
-      allOptKeys.forEach(key => {
+      // fixKeys: accumulate always (full season); snapKeys: only in recent window
+      const keysThisGW = inWindow ? allOptKeys : fixKeys;
+      keysThisGW.forEach(key => {
         const sc = players.map(p => p.scores[key]);
         const ms = sc.reduce((s,v)=>s+v,0)/sc.length;
         let num=0,dA=0,dB=0;
@@ -868,12 +876,13 @@ const Process = {
         if (dA>0&&dB>0) { corrSum[key] += num/Math.sqrt(dA*dB); corrCnt[key]++; }
       });
 
+      // Pearson r — per-position
       posArr.forEach(pos => {
         const pp = players.filter(p => p.pos === pos);
         if (pp.length < 3) return;
         const pa = pp.map(p => p.actual);
         const pm = pa.reduce((s,v)=>s+v,0)/pa.length;
-        allOptKeys.forEach(key => {
+        keysThisGW.forEach(key => {
           const sc = pp.map(p => p.scores[key]);
           const ms = sc.reduce((s,v)=>s+v,0)/sc.length;
           let n=0,dA=0,dB=0;
@@ -908,7 +917,9 @@ const Process = {
       }
     });
 
-    return { overallCorr, suggested, gwsUsed: gwsToUse, eligibleCount: totalEligible, snapKeys, fixKeys, allOptKeys };
+    return { overallCorr, suggested, corrCnt,
+             gwsUsed: gwsToUse, gwsFixUsed: validGWs,
+             eligibleCount: totalEligible, snapKeys, fixKeys, allOptKeys };
   },
 
   // ── Largest Remainder Method: ensure integer %s sum to exactly 100 ──
