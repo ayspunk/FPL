@@ -1571,6 +1571,201 @@ const Process = {
       xiScore: bestScore,
     };
   },
+
+  // ══════════════════════════════════════════════════════
+  // LP SQUAD OPTIMIZER — Lagrangian Relaxation + Swap Search
+  // Replaces greedy knapsack. Uses historical data as extra features.
+  // ══════════════════════════════════════════════════════
+
+  // Build per-player historical features from live-all.json (last N GWs)
+  _computeHistoricalFeatures(players, lookback = 10) {
+    const liveAll = Store._liveAllData;
+    if (!liveAll) return {};
+    const gwList = Object.keys(liveAll).map(Number).sort((a, b) => a - b);
+    const recentGWs = gwList.slice(-Math.max(2, lookback));
+    const features = {};
+    players.forEach(p => {
+      const pts = [];
+      recentGWs.forEach(gw => {
+        const entry = (liveAll[gw] || []).find(e => e.id === p.id);
+        if (entry != null) pts.push(entry.tp);
+      });
+      if (pts.length < 2) {
+        features[p.id] = { avgPts: 0, stdDev: 0, consistency: 0.5, volatility: 0.5, trend: 0, gamesPlayed: pts.length };
+        return;
+      }
+      const avg = pts.reduce((s, v) => s + v, 0) / pts.length;
+      const variance = pts.reduce((s, v) => s + (v - avg) ** 2, 0) / pts.length;
+      const std = Math.sqrt(variance);
+      const cv = avg > 0 ? std / avg : 1;
+      // Trend: slope via simple linear regression over recent GWs
+      const n = pts.length;
+      const xMean = (n - 1) / 2;
+      let num = 0, den = 0;
+      pts.forEach((v, i) => { num += (i - xMean) * (v - avg); den += (i - xMean) ** 2; });
+      const slope = den > 0 ? num / den : 0;
+      features[p.id] = {
+        avgPts:      +avg.toFixed(2),
+        stdDev:      +std.toFixed(2),
+        consistency: +Math.max(0, Math.min(1, 1 - cv)).toFixed(3),
+        volatility:  +Math.min(1, cv).toFixed(3),
+        trend:       +slope.toFixed(3),
+        gamesPlayed: pts.length,
+        ptsHistory:  pts,
+      };
+    });
+    return features;
+  },
+
+  // Solve position-constrained selection for a given Lagrange multiplier λ
+  _solveForLambda(byPos, SLOTS, maxPerTeam, λ) {
+    const squad = [], teamCount = {};
+    for (const pos of ['GK', 'DEF', 'MID', 'FWD']) {
+      const adjusted = byPos[pos]
+        .map(p => ({ ...p, _adj: p._lpScore - λ * p.Price }))
+        .sort((a, b) => b._adj - a._adj);
+      let picked = 0;
+      for (const p of adjusted) {
+        if (picked >= SLOTS[pos]) break;
+        if ((teamCount[p.TeamKey] || 0) >= maxPerTeam) continue;
+        squad.push(p);
+        teamCount[p.TeamKey] = (teamCount[p.TeamKey] || 0) + 1;
+        picked++;
+      }
+    }
+    return squad;
+  },
+
+  // Lagrangian relaxation: binary-search λ so that total squad cost ≤ budget
+  _lagrangianSquad(players, budget, maxPerTeam, SLOTS) {
+    const byPos = {};
+    ['GK', 'DEF', 'MID', 'FWD'].forEach(pos => {
+      byPos[pos] = players.filter(p => p.Position === pos);
+    });
+
+    // λ = 0: no price penalty (may be over budget); λ large: very cheap squad
+    const squadAt = λ => this._solveForLambda(byPos, SLOTS, maxPerTeam, λ);
+    const cost = sq => sq.reduce((s, p) => s + p.Price, 0);
+
+    // Check if unconstrained solution is already feasible
+    const sq0 = squadAt(0);
+    if (sq0.length === 15 && cost(sq0) <= budget) return sq0;
+
+    // Binary search on λ ∈ [0, 5]
+    let lo = 0, hi = 5, bestSquad = null;
+    for (let iter = 0; iter < 64; iter++) {
+      const mid = (lo + hi) / 2;
+      const sq = squadAt(mid);
+      if (sq.length < 15) { lo = mid; continue; }
+      if (cost(sq) <= budget) { bestSquad = sq; hi = mid; }
+      else lo = mid;
+    }
+
+    // Fallback: if binary search found nothing feasible, force budget by swapping
+    if (!bestSquad) {
+      bestSquad = squadAt(hi);
+      let c = cost(bestSquad);
+      let iters = 0;
+      while (c > budget && iters++ < 60) {
+        bestSquad.sort((a, b) => a._lpScore / a.Price - b._lpScore / b.Price);
+        const worst = bestSquad[0];
+        const cheaper = byPos[worst.Position].find(p =>
+          !bestSquad.some(s => s.id === p.id) && p.Price < worst.Price
+        );
+        if (!cheaper) break;
+        bestSquad[0] = cheaper;
+        c = cost(bestSquad);
+      }
+    }
+    return bestSquad;
+  },
+
+  // Local swap search: improve total lpScore within budget, one swap at a time
+  _swapSearch(squad, allPlayers, budget, maxPerTeam) {
+    let sq = [...squad];
+    const byPos = {};
+    ['GK', 'DEF', 'MID', 'FWD'].forEach(pos => {
+      byPos[pos] = allPlayers.filter(p => p.Position === pos);
+    });
+    let improved = true, iters = 0;
+    while (improved && iters++ < 30) {
+      improved = false;
+      const sqCost = sq.reduce((s, p) => s + p.Price, 0);
+      for (let i = 0; i < sq.length; i++) {
+        const out = sq[i];
+        const teamCount = {};
+        sq.filter((_, j) => j !== i).forEach(p => { teamCount[p.TeamKey] = (teamCount[p.TeamKey] || 0) + 1; });
+        const remaining = budget - sqCost + out.Price;
+        const best = byPos[out.Position]
+          .filter(p =>
+            !sq.some(s => s.id === p.id) &&
+            p._lpScore > out._lpScore &&
+            p.Price <= remaining &&
+            (teamCount[p.TeamKey] || 0) < maxPerTeam
+          )
+          .sort((a, b) => b._lpScore - a._lpScore)[0];
+        if (best) {
+          sq = [...sq]; sq[i] = best;
+          improved = true;
+          break;
+        }
+      }
+    }
+    return sq;
+  },
+
+  // Main LP entry point — called instead of knapsackSquad from lineupKnapsack
+  lpSquad(players, budget, maxPerTeam = 3) {
+    const SLOTS = { GK: 2, DEF: 5, MID: 5, FWD: 3 };
+    const eligible = players.filter(p => !p.isBlank && p.Price > 0 && p.minutes >= 90);
+    if (eligible.length < 15) return null;
+
+    // Historical features from live-all.json
+    const histFeatures = this._computeHistoricalFeatures(eligible, 10);
+
+    // Normalise historical avgPts to 0–10 scale for mixing with GWScore
+    const maxAvg = Math.max(...eligible.map(p => histFeatures[p.id]?.avgPts || 0), 0.001);
+
+    // Composite LP objective per player (all weights sum to 1.0)
+    eligible.forEach(p => {
+      const h = histFeatures[p.id] || { avgPts: 0, consistency: 0.5, trend: 0 };
+      const normAvg   = (h.avgPts / maxAvg) * 10;
+      const normTrend = Math.min(10, Math.max(-10, h.trend)) / 10; // –1..+1
+      p._lpScore =
+        p.GWScore  * 0.55 +   // current form & fixture
+        normAvg    * 0.30 +   // historical scoring rate
+        h.consistency * 2.0 + // consistency bonus (already 0-1, scale to ~0-2)
+        normTrend  * 0.5;     // improving trend
+    });
+
+    // Lagrangian relaxation to find budget-feasible squad
+    const lagSq = this._lagrangianSquad(eligible, budget, maxPerTeam, SLOTS);
+    if (!lagSq || lagSq.length < 15) return null;
+
+    // Local swap search for further improvement
+    const squad = this._swapSearch(lagSq, eligible, budget, maxPerTeam);
+
+    // Best XI + formation
+    const starters = this._bestXIFromSquad(squad);
+    const totalCost = squad.reduce((s, p) => s + p.Price, 0);
+    const totalScore = squad.reduce((s, p) => s + p.GWScore, 0);
+
+    return {
+      squad,
+      starters: starters.xi,
+      bench: starters.bench,
+      formation: starters.formation,
+      cap: starters.cap,
+      vc: starters.vc,
+      totalPrice:   +totalCost.toFixed(1),
+      totalScore:   +totalScore.toFixed(2),
+      xiScore:      +starters.xiScore.toFixed(2),
+      budget,
+      remaining:    +(budget - totalCost).toFixed(1),
+      histFeatures,
+      lpObjective:  +squad.reduce((s, p) => s + (p._lpScore || 0), 0).toFixed(2),
+    };
+  },
 };
 
 // ═══════════════════════════════════════════════════════
@@ -1802,70 +1997,114 @@ const Render = {
     return html;
   },
 
-  // ── Backtest Weight Optimizer ──────────────────────────
-  // ── Knapsack Best XV ───────────────────────────────────
+  // ── LP Best XV ─────────────────────────────────────────
   lineupKnapsack() {
     if (!Store.scoredPlayers?.length) return H.error('Data belum siap.');
 
-    // Get budget from manager info or default £100
     const mi = Store.myManagerInfo;
     const bank = mi?.last_deadline_bank ? mi.last_deadline_bank / 10 : 0;
     const teamValue = mi?.last_deadline_total_value ? mi.last_deadline_total_value / 10 : 100;
     const totalBudget = teamValue + bank;
     const maxPT = +document.getElementById('max-per-team')?.value || CFG.maxPerTeam;
 
-    // Run optimizer
-    const result = Process.knapsackSquad(Store.scoredPlayers, totalBudget, maxPT);
+    const result = Process.lpSquad(Store.scoredPlayers, totalBudget, maxPT);
     if (!result) return H.error('Tidak dapat menemukan squad optimal. Pastikan cukup pemain eligible.');
 
-    const {squad, starters, bench, formation, cap, vc, totalPrice, totalScore, xiScore, remaining} = result;
+    const { squad, starters, bench, formation, cap, vc, totalPrice, totalScore, xiScore, remaining, histFeatures, lpObjective } = result;
+    const hasHist = histFeatures && Object.keys(histFeatures).length > 0;
 
-    // Starters table
-    const xiRows = starters.map((p,i) => {
-      const isCap = cap && p.id === cap.id;
-      const isVC = vc && p.id === vc.id;
+    const playerRow = (p, i, isBench) => {
+      const h = hasHist ? (histFeatures[p.id] || {}) : {};
+      const isCap = !isBench && cap && p.id === cap.id;
+      const isVC  = !isBench && vc  && p.id === vc.id;
       const badge = isCap ? ' <span class="cap-tag">⭐ C</span>' : isVC ? ' <span class="cap-tag" style="color:var(--blue)">🌟 V</span>' : '';
-      return `<tr class="${isCap?'row-cap':''}">
-        <td class="dim">${i+1}</td>
+      const trendStr = h.trend != null ? (h.trend > 0.1 ? `<span style="color:var(--green)">▲${h.trend.toFixed(1)}</span>` : h.trend < -0.1 ? `<span style="color:var(--red)">▼${Math.abs(h.trend).toFixed(1)}</span>` : '<span class="dim">–</span>') : '<span class="dim">–</span>';
+      const consStr  = h.consistency != null ? `${(h.consistency * 100).toFixed(0)}%` : '–';
+      const avgStr   = h.avgPts != null ? h.avgPts.toFixed(1) : '–';
+      const lpStr    = p._lpScore != null ? p._lpScore.toFixed(2) : '–';
+      const opacity  = isBench ? 'opacity:0.6;' : '';
+      return `<tr style="${opacity}" class="${isCap ? 'row-cap' : ''}">
+        <td class="dim">${isBench ? `B${i+1}` : i+1}</td>
         <td>${H.posPill(p.Position)}</td>
         <td style="font-weight:${isCap?800:600}">${p.Player}${badge}${p.doubt?' <span class="doubt-tag">⚠</span>':''}</td>
         <td>${H.teamTag(p.Team)}</td>
         <td class="mono r ${H.scoreClass(p.GWScore)}">${p.GWScore.toFixed(2)}</td>
+        <td class="mono r" style="color:var(--blue)">${lpStr}</td>
+        <td class="mono dim r">${avgStr}</td>
+        <td class="mono dim r">${consStr}</td>
+        <td class="mono dim r">${trendStr}</td>
         <td class="mono dim r">${p.isHome?'🏠':'✈'} ${p.opponent||'?'}</td>
         <td class="mono dim r">£${p.Price.toFixed(1)}</td>
-        <td class="mono dim r">${H.numFmt(p.PPG,1)}</td>
       </tr>`;
-    }).join('');
+    };
 
-    const benchRows = bench.map((p,i) => `<tr style="opacity:0.6">
-        <td class="dim">B${i+1}</td>
-        <td>${H.posPill(p.Position)}</td>
-        <td>${p.Player}</td>
-        <td>${H.teamTag(p.Team)}</td>
-        <td class="mono r dim">${p.GWScore.toFixed(2)}</td>
-        <td class="mono dim r">${p.isHome?'🏠':'✈'} ${p.opponent||'?'}</td>
-        <td class="mono dim r">£${p.Price.toFixed(1)}</td>
-        <td class="mono dim r">${H.numFmt(p.PPG,1)}</td>
-      </tr>`).join('');
+    const xiRows    = starters.map((p, i) => playerRow(p, i, false)).join('');
+    const benchRows = bench.map((p, i) => playerRow(p, i, true)).join('');
 
-    // Team distribution
     const teamDist = {};
     squad.forEach(p => { teamDist[p.Team] = (teamDist[p.Team]||0) + 1; });
     const teamTags = Object.entries(teamDist).sort((a,b) => b[1]-a[1])
       .map(([t,n]) => `<span class="team-tag" style="${n>=3?'border-color:var(--orange)':''}">${t} ×${n}</span>`).join(' ');
 
-    // Position distribution
-    const posDist = {};
-    squad.forEach(p => { posDist[p.Position] = (posDist[p.Position]||0) + 1; });
+    // LP feature weights info box
+    const lpInfoHtml = `
+      <div class="section-title" style="margin-top:16px">📐 LP Objective — Bobot Parameter</div>
+      ${H.info(`Skor LP = <b>GWScore × 0.55</b> (form + fixture) + <b>Hist Avg Pts × 0.30</b> (rata-rata histori, 10 GW) + <b>Konsistensi × 2.0</b> (1−CV) + <b>Tren × 0.5</b> (regresi linear pts per GW).
+        Sumber data: <code>live-all.json</code> (${hasHist ? Object.keys(histFeatures).length : 0} pemain dengan histori).
+        LP menggunakan Lagrangian Relaxation + local swap search (bukan greedy).`)}`;
 
-    // Compare with current squad if available
+    // Historical feature correlation mini-table (all 15 squad players)
+    let corrHtml = '';
+    if (hasHist) {
+      const squadWithHist = squad.filter(p => histFeatures[p.id]?.gamesPlayed >= 3);
+      if (squadWithHist.length >= 5) {
+        const avgPtsVals  = squadWithHist.map(p => histFeatures[p.id].avgPts);
+        const consVals    = squadWithHist.map(p => histFeatures[p.id].consistency);
+        const trendVals   = squadWithHist.map(p => histFeatures[p.id].trend);
+        const gwScores    = squadWithHist.map(p => p.GWScore);
+        const lpScores    = squadWithHist.map(p => p._lpScore || 0);
+        const pearson = (x, y) => {
+          const n = x.length, mx = x.reduce((s,v)=>s+v,0)/n, my = y.reduce((s,v)=>s+v,0)/n;
+          let num=0,da=0,db=0;
+          for (let i=0;i<n;i++){const dx=x[i]-mx,dy=y[i]-my;num+=dx*dy;da+=dx*dx;db+=dy*dy;}
+          return da>0&&db>0 ? +(num/Math.sqrt(da*db)).toFixed(3) : 0;
+        };
+        const rBar = (r) => {
+          const pct = Math.abs(r) * 100;
+          const col = r > 0.3 ? 'var(--green)' : r < -0.3 ? 'var(--red)' : 'var(--text3)';
+          return `<div style="display:flex;align-items:center;gap:6px">
+            <div style="width:${pct.toFixed(0)}px;height:6px;background:${col};border-radius:3px;max-width:80px"></div>
+            <span style="color:${col}">${r > 0 ? '+' : ''}${r}</span></div>`;
+        };
+        const features = [
+          { label: 'GWScore (bobot 55%)', vals: gwScores },
+          { label: 'Hist Avg Pts (bobot 30%)', vals: avgPtsVals },
+          { label: 'Konsistensi (bobot 20%)', vals: consVals },
+          { label: 'Tren Pts/GW (bobot 5%)', vals: trendVals },
+        ];
+        corrHtml = `
+          <div class="section-title" style="margin-top:16px">📊 Korelasi Antar-Parameter dalam Squad Terpilih</div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Parameter</th><th class="r">r vs LP Score</th><th class="r">r vs GWScore</th></tr></thead>
+            <tbody>
+              ${features.map(f => {
+                const r1 = pearson(f.vals, lpScores);
+                const r2 = pearson(f.vals, gwScores);
+                return `<tr><td>${f.label}</td><td>${rBar(r1)}</td><td>${rBar(r2)}</td></tr>`;
+              }).join('')}
+            </tbody>
+          </table></div>`;
+      }
+    }
+
+    // Transfer comparison
     let compHtml = '';
     if (Store.mySquadData?.length) {
-      const myIds = new Set(Store.mySquadData.map(p => p.id));
+      const myIds  = new Set(Store.mySquadData.map(p => p.id));
       const optIds = new Set(squad.map(p => p.id));
       const kept = [...myIds].filter(id => optIds.has(id)).length;
       const transfersOut = Store.mySquadData.filter(p => !optIds.has(p.id));
-      const transfersIn = squad.filter(p => !myIds.has(p.id));
+      const transfersIn  = squad.filter(p => !myIds.has(p.id));
       compHtml = `
         <div class="section-title" style="margin-top:20px">🔄 Transfer yang Diperlukan (dari skuad Anda saat ini)</div>
         <div class="stat-strip">
@@ -1874,32 +2113,37 @@ const Render = {
           <div class="stat-box"><div class="stat-label">Transfer In</div><div class="stat-val" style="color:var(--green)">${transfersIn.length}</div></div>
         </div>
         ${transfersIn.length ? `<div class="table-wrap" style="margin-top:8px"><table>
-          <thead><tr><th>In</th><th>Pos</th><th>Tim</th><th class="r">Score</th><th class="r">£</th>
+          <thead><tr><th>In</th><th>Pos</th><th>Tim</th><th class="r">GWScore</th><th class="r">LP Score</th><th class="r">Hist Avg</th><th class="r">£</th>
             <th style="padding:0 4px">←</th>
-            <th>Out</th><th>Pos</th><th>Tim</th><th class="r">Score</th><th class="r">£</th></tr></thead>
-          <tbody>${transfersIn.map((pIn,i) => {
+            <th>Out</th><th>Pos</th><th>Tim</th><th class="r">GWScore</th><th class="r">£</th></tr></thead>
+          <tbody>${transfersIn.map((pIn, i) => {
             const pOut = transfersOut[i] || {};
+            const hIn  = histFeatures?.[pIn.id] || {};
             return `<tr>
               <td style="color:var(--green);font-weight:600">${pIn.Player}</td><td>${H.posPill(pIn.Position)}</td><td>${H.teamTag(pIn.Team)}</td>
-              <td class="mono r">${pIn.GWScore.toFixed(2)}</td><td class="mono dim r">£${pIn.Price.toFixed(1)}</td>
+              <td class="mono r">${pIn.GWScore.toFixed(2)}</td>
+              <td class="mono r" style="color:var(--blue)">${pIn._lpScore?.toFixed(2)||'–'}</td>
+              <td class="mono dim r">${hIn.avgPts?.toFixed(1)||'–'}</td>
+              <td class="mono dim r">£${pIn.Price.toFixed(1)}</td>
               <td class="c dim">↔</td>
               <td style="color:var(--red)">${pOut.Player||'–'}</td><td>${pOut.Position?H.posPill(pOut.Position):''}</td><td>${pOut.Team?H.teamTag(pOut.Team):''}</td>
-              <td class="mono dim r">${pOut.ScoutScore?pOut.ScoutScore.toFixed(2):'–'}</td><td class="mono dim r">${pOut.Price?'£'+pOut.Price.toFixed(1):'–'}</td>
+              <td class="mono dim r">${pOut.GWScore!=null?pOut.GWScore.toFixed(2):'–'}</td><td class="mono dim r">${pOut.Price?'£'+pOut.Price.toFixed(1):'–'}</td>
             </tr>`;
           }).join('')}</tbody></table></div>` : ''}`;
     }
 
     return `
       ${H.gwTargetBanner()}
-      <div class="section-title">🎒 Best XV — Budget-Constrained Squad Optimizer</div>
-      ${H.info(`Menemukan 15 pemain terbaik (2 GK, 5 DEF, 5 MID, 3 FWD) dengan total harga ≤ budget Anda.
-        Budget: <b>£${totalBudget.toFixed(1)}</b> (Team Value £${teamValue.toFixed(1)} + Bank £${bank.toFixed(1)}).
-        Max ${maxPT} pemain per tim.`)}
+      <div class="section-title">🎒 Best XV — LP Squad Optimizer</div>
+      ${H.info(`Menemukan 15 pemain optimal (2 GK, 5 DEF, 5 MID, 3 FWD) menggunakan <b>Lagrangian Relaxation + Swap Search</b>.
+        Budget: <b>£${totalBudget.toFixed(1)}</b> (Team Value £${teamValue.toFixed(1)} + Bank £${bank.toFixed(1)}). Max ${maxPT} pemain per tim.
+        Objektif LP menggabungkan GWScore, histori 10 GW, konsistensi, dan tren.`)}
 
       <div class="stat-strip">
         <div class="stat-box"><div class="stat-label">Formasi</div><div class="stat-val">${formation}</div></div>
         <div class="stat-box"><div class="stat-label">XI Score</div><div class="stat-val" style="color:var(--blue)">${xiScore.toFixed(2)}</div></div>
         <div class="stat-box"><div class="stat-label">15-Man Score</div><div class="stat-val" style="color:var(--green)">${totalScore.toFixed(2)}</div></div>
+        <div class="stat-box"><div class="stat-label">LP Objective</div><div class="stat-val" style="color:var(--gold)">${lpObjective?.toFixed(2)||'–'}</div></div>
         <div class="stat-box"><div class="stat-label">Total Harga</div><div class="stat-val" style="color:${totalPrice>totalBudget?'var(--red)':'var(--text)'}">£${totalPrice.toFixed(1)}</div></div>
         <div class="stat-box"><div class="stat-label">Sisa Budget</div><div class="stat-val" style="color:${remaining>=0?'var(--green)':'var(--red)'}">£${remaining.toFixed(1)}</div></div>
         <div class="stat-box"><div class="stat-label">Captain</div><div class="stat-val" style="font-size:13px;color:var(--gold)">${cap?.Player||'–'}</div></div>
@@ -1911,22 +2155,29 @@ const Render = {
         <table>
           <thead><tr>
             <th>#</th><th>Pos</th><th>Pemain</th><th>Tim</th>
-            <th class="r">GWScore</th><th>Lawan</th><th class="r">£</th><th class="r">PPG</th>
+            <th class="r">GWScore</th>
+            <th class="r" title="LP Objective Score = GWScore×0.55 + HistAvg×0.30 + Konsistensi×2 + Tren×0.5">LP Score</th>
+            <th class="r" title="Rata-rata poin aktual 10 GW terakhir">Hist Avg</th>
+            <th class="r" title="Konsistensi scoring (100% = tidak pernah blank)">Consist</th>
+            <th class="r" title="Tren poin per GW (▲ = membaik)">Tren</th>
+            <th>Lawan</th><th class="r">£</th>
           </tr></thead>
           <tbody>
             ${xiRows}
-            <tr class="row-sep"><td colspan="8" style="font-size:10px;letter-spacing:2px;color:var(--text3);text-transform:uppercase;padding:8px 12px;background:var(--bg3)">Bench</td></tr>
+            <tr class="row-sep"><td colspan="11" style="font-size:10px;letter-spacing:2px;color:var(--text3);text-transform:uppercase;padding:8px 12px;background:var(--bg3)">Bench</td></tr>
             ${benchRows}
             <tr class="row-total">
               <td colspan="4" style="font-size:11px;color:var(--text3)">TOTAL (15 pemain)</td>
               <td class="mono r" style="font-weight:700;color:var(--green)">${totalScore.toFixed(2)}</td>
-              <td></td>
+              <td class="mono r" style="font-weight:700;color:var(--gold)">${lpObjective?.toFixed(2)||'–'}</td>
+              <td colspan="4"></td>
               <td class="mono r" style="font-weight:700">£${totalPrice.toFixed(1)}</td>
-              <td></td>
             </tr>
           </tbody>
         </table>
       </div>
+      ${lpInfoHtml}
+      ${corrHtml}
       ${compHtml}`;
   },
 
