@@ -2034,6 +2034,12 @@ const Render = {
       const avgStr   = h.avgPts != null ? h.avgPts.toFixed(1) : '–';
       const lpStr    = p._lpScore != null ? p._lpScore.toFixed(2) : '–';
       const opacity  = isBench ? 'opacity:0.6;' : '';
+      // Fixture cell — same style as GW scoring table
+      const fixCell  = p.isBlank
+        ? `<td class="c"><span style="color:var(--red);font-weight:700">⛔</span> <span style="font-size:11px;color:var(--red)">BGW</span></td>`
+        : p.isDGW
+          ? `<td class="c"><span style="color:var(--blue);font-weight:700">2️⃣</span> <span style="font-size:11px">${p.isHome?'🏠':'✈'} ${p.opponent||'?'}</span>${p.fixtureCount>2?` <span class="dim" style="font-size:10px">(+${p.fixtureCount-1})</span>`:''}</td>`
+          : `<td class="c dim" style="font-size:11px">${p.isHome?'🏠':'✈'} ${p.opponent||'?'}</td>`;
       return `<tr style="${opacity}" class="${isCap ? 'row-cap' : ''}">
         <td class="dim">${isBench ? `B${i+1}` : i+1}</td>
         <td>${H.posPill(p.Position)}</td>
@@ -2044,7 +2050,7 @@ const Render = {
         <td class="mono dim r">${avgStr}</td>
         <td class="mono dim r">${consStr}</td>
         <td class="mono dim r">${trendStr}</td>
-        <td class="mono dim r">${p.isHome?'🏠':'✈'} ${p.opponent||'?'}</td>
+        ${fixCell}
         <td class="mono dim r">£${p.Price.toFixed(1)}</td>
       </tr>`;
     };
@@ -2124,17 +2130,23 @@ const Render = {
           <div class="stat-box"><div class="stat-label">Transfer In</div><div class="stat-val" style="color:var(--green)">${transfersIn.length}</div></div>
         </div>
         ${transfersIn.length ? `<div class="table-wrap" style="margin-top:8px"><table>
-          <thead><tr><th>In</th><th>Pos</th><th>Tim</th><th class="r">GWScore</th><th class="r">LP Score</th><th class="r">Hist Avg</th><th class="r">£</th>
+          <thead><tr><th>In</th><th>Pos</th><th>Tim</th><th class="r">GWScore</th><th class="r">LP Score</th><th class="r">Hist Avg</th><th class="c">Fixture</th><th class="r">£</th>
             <th style="padding:0 4px">←</th>
             <th>Out</th><th>Pos</th><th>Tim</th><th class="r">GWScore</th><th class="r">£</th></tr></thead>
           <tbody>${transfersIn.map((pIn, i) => {
             const pOut = transfersOut[i] || {};
             const hIn  = histFeatures?.[pIn.id] || {};
+            const fixIn = pIn.isBlank
+              ? `<span style="color:var(--red)">⛔BGW</span>`
+              : pIn.isDGW
+                ? `<span style="color:var(--blue)">2️⃣</span> ${pIn.isHome?'🏠':'✈'}${pIn.opponent||'?'}`
+                : `${pIn.isHome?'🏠':'✈'} ${pIn.opponent||'?'}`;
             return `<tr>
               <td style="color:var(--green);font-weight:600">${pIn.Player}</td><td>${H.posPill(pIn.Position)}</td><td>${H.teamTag(pIn.Team)}</td>
               <td class="mono r">${pIn.GWScore.toFixed(2)}</td>
               <td class="mono r" style="color:var(--blue)">${pIn._lpScore?.toFixed(2)||'–'}</td>
               <td class="mono dim r">${hIn.avgPts?.toFixed(1)||'–'}</td>
+              <td class="c" style="font-size:11px">${fixIn}</td>
               <td class="mono dim r">£${pIn.Price.toFixed(1)}</td>
               <td class="c dim">↔</td>
               <td style="color:var(--red)">${pOut.Player||'–'}</td><td>${pOut.Position?H.posPill(pOut.Position):''}</td><td>${pOut.Team?H.teamTag(pOut.Team):''}</td>
@@ -2171,7 +2183,7 @@ const Render = {
             <th class="r" title="Rata-rata poin aktual 10 GW terakhir">Hist Avg</th>
             <th class="r" title="Konsistensi scoring (100% = tidak pernah blank)">Consist</th>
             <th class="r" title="Tren poin per GW (▲ = membaik)">Tren</th>
-            <th>Lawan</th><th class="r">£</th>
+            <th class="c" title="Fixture GW ini — 2️⃣ = DGW, ⛔ = BGW">Fixture</th><th class="r">£</th>
           </tr></thead>
           <tbody>
             ${xiRows}
@@ -2400,8 +2412,9 @@ const Render = {
         <div class="btn-row"><button class="btn btn-secondary" onclick="Nav.goSubtab('${parentTab}','${backTab}')">← Kembali</button></div>`;
     }
 
-    const { overallCorr, suggested, gwsUsed, eligibleCount, allOptKeys } = result;
+    const { overallCorr, suggested, corrCnt, gwsUsed, gwsFixUsed, eligibleCount, allOptKeys, fixKeys } = result;
     const optKeySet = new Set(allOptKeys);
+    const fixKeySet = new Set(fixKeys || []);
 
     // round_points = event_points of the target GW → identical to actual → pure leakage
     const leaky = new Set(['round_points']);
@@ -2411,13 +2424,16 @@ const Render = {
     const gwLabel = gwsUsed.length > 1
       ? `GW${gwsUsed[0]}–GW${gwsUsed[gwsUsed.length-1]}`
       : `GW${gwsUsed[0]}`;
+    const fixLabel = gwsFixUsed?.length > 1
+      ? `GW${gwsFixUsed[0]}–GW${gwsFixUsed[gwsFixUsed.length-1]} (${gwsFixUsed.length} GW)`
+      : gwsFixUsed?.length === 1 ? `GW${gwsFixUsed[0]}` : gwLabel;
     const allKeys = CRITERIA.map(c => c.key);
 
     const lookbackOpts = [1,3,5].map(n =>
       `<button class="filter-btn ${lookback===n?'active':''}" onclick="Store.optimizeLookback=${n};Nav.goSubtab('${parentTab}','${optTab}')">${n} GW</button>`
     ).join('');
 
-    // Sort: computable criteria by |r|, then rest
+    // Sort: computable criteria by |r| desc, then rest
     const sortedKeys = [
       ...[...allKeys].filter(k => optKeySet.has(k)).sort((a,b) => Math.abs(overallCorr[b]||0) - Math.abs(overallCorr[a]||0)),
       ...[...allKeys].filter(k => !optKeySet.has(k)),
@@ -2435,16 +2451,38 @@ const Render = {
 
       if (optKeySet.has(key)) {
         // ── Computable: snapshot stats + historical fixture data ──
+        const cnt       = corrCnt?.[key] ?? 0;
         const corr      = overallCorr[key] || 0;
+        const isFixKey  = fixKeySet.has(key);
+        const noData    = cnt === 0;
+
+        // Criteria with 0 GWs of data: show explicit warning instead of silent 0
+        if (noData) {
+          const hint = isFixKey
+            ? 'tidak ada GW DGW/BGW dalam data'
+            : `tidak ada data dalam window ${lookback} GW`;
+          return `<tr class="opt-dim">
+            <td${tip}><span class="crit-label">${cr.label}</span> <span class="crit-group">${cr.group}</span></td>
+            <td class="mono c dim" colspan="2" style="font-size:10px;color:var(--orange)" title="${hint}">⚠ ${hint}</td>
+            ${currentW}${posArr.map(()=>`<td class="mono c dim">–</td>`).join('')}
+          </tr>`;
+        }
+
         const corrBar   = `<div class="corr-bar"><div class="corr-fill ${corr>=0?'corr-pos':'corr-neg'}" style="width:${Math.min(100,Math.abs(corr)*100)}%"></div></div>`;
         const corrColor = corr > 0.15 ? 'var(--green)' : corr > 0 ? 'var(--text2)' : corr > -0.05 ? 'var(--text3)' : 'var(--red)';
+        // Low-data warning badge (< 3 GWs)
+        const dataBadge = cnt < 3
+          ? `<span title="${cnt} GW data" style="font-size:9px;color:var(--orange);margin-left:4px">⚠${cnt}GW</span>`
+          : isFixKey
+            ? `<span title="${cnt} GW data (full season)" style="font-size:9px;color:var(--blue);margin-left:4px">↔${cnt}GW</span>`
+            : '';
         const hasSuggest = posArr.some(p => (suggested[key]?.[p]||0) > 0.01);
         const suggestW  = posArr.map(p => {
           const sw = ((suggested[key]?.[p]||0)*100).toFixed(0);
           return `<td class="mono c ${+sw>5?'s-hi':+sw>0?'':'dim'}">${sw}%</td>`;
         }).join('');
         return `<tr class="${hasSuggest?'':'opt-dim'}">
-          <td${tip}><span class="crit-label">${cr.label}</span> <span class="crit-group">${cr.group}</span></td>
+          <td${tip}><span class="crit-label">${cr.label}</span> <span class="crit-group">${cr.group}</span>${dataBadge}</td>
           <td class="mono c" style="color:${corrColor}">${corr.toFixed(3)}</td>
           <td>${corrBar}</td>
           ${currentW}${suggestW}
@@ -2458,7 +2496,7 @@ const Render = {
         </tr>`;
       } else {
         // ── No historical data (ep_next, tsb, transfers, dll.) ──
-        const note = cannotCompute.has(key) ? 'perlu data multi-GW ke depan' : 'tidak ada data historis';
+        const note = cannotCompute.has(key) ? 'perlu data multi-GW ke depan' : 'tidak ada data historis (tidak disimpan di snapshot)';
         return `<tr class="opt-dim">
           <td${tip}><span class="crit-label">${cr.label}</span> <span class="crit-group">${cr.group}</span></td>
           <td class="mono c dim" colspan="2" style="font-size:10px">${note}</td>
@@ -2469,10 +2507,11 @@ const Render = {
 
     return `
       <div class="section-title">⚡ ${mode==='gw'?'GW':'Scout'} Weight Optimizer — ${gwLabel}</div>
-      ${H.info(`Korelasi Pearson dihitung dari <b>snapshot GW N-1 + fixture historis GW N</b> vs poin aktual GW N — tanpa data leakage.
-        Analisis mencakup <b>${gwsUsed.length} GW</b> (${gwLabel}), <b>${eligibleCount} player-GW</b> eligible.`)}
+      ${H.info(`Korelasi Pearson dihitung dari <b>snapshot GW N-1 + fixture historis GW N</b> vs poin aktual GW N — tanpa data leakage.<br>
+        <b>Kriteria performa</b> (ppg, form, xgi, dll.): lookback <b>${gwsUsed.length} GW</b> (${gwLabel}), <b>${eligibleCount} player-GW</b> eligible.<br>
+        <b>Kriteria fixture</b> (FDR, Home, DGW/Blank): seluruh musim <b>${fixLabel}</b> — event DGW/BGW langka, butuh window penuh.`)}
       <div class="filters" style="margin-bottom:14px">
-        <span class="dim" style="font-size:12px;margin-right:8px">Lookback:</span>${lookbackOpts}
+        <span class="dim" style="font-size:12px;margin-right:8px">Lookback performa:</span>${lookbackOpts}
         <span class="dim" style="font-size:11px;margin-left:auto">Sorted by |r|</span>
       </div>
       <div class="table-wrap" style="max-width:960px">
@@ -2494,9 +2533,11 @@ const Render = {
       </div>
       <div class="info-box" style="margin-top:16px">
         <b>Cara baca:</b> <code>r</code> = korelasi Pearson (data sebelum GW → poin GW N).
+        Badge <span style="color:var(--blue)">↔NGW</span> = fixture criteria (full season, N GW total).
+        Badge <span style="color:var(--orange)">⚠NGW</span> = data terbatas (&lt;3 GW) — korelasi kurang reliable.
+        Baris <span style="color:var(--orange)">oranye</span> = 0 GW data (window tidak mengandung DGW/BGW atau semua pemain tidak memenuhi syarat).
         Baris <span style="color:var(--red)">merah</span> = dikecualikan karena data leakage.
-        Baris abu-abu = tidak ada data historis (tidak dapat di-backtest).
-        Apply → semua kriteria berbobot > 0 otomatis aktif.
+        Apply → semua kriteria berbobot &gt; 0 otomatis aktif.
       </div>`;
   },
 
