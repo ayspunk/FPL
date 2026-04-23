@@ -60,6 +60,46 @@ const CFG = {
 
 function isOwner() { return CFG.myTeamId === CFG.OWNER_TEAM_ID; }
 
+async function fetchAndSetLeagues(teamId) {
+  if (!teamId) return [];
+  try {
+    // Force fresh — cache mungkin tidak punya leagues field (proxy strip response lama)
+    const entryPath = 'entry/' + teamId + '/';
+    Cache.invalidate(CFG.FPL + entryPath);
+    const info = await Fetch.fpl(entryPath, true);
+
+    console.log('[Leagues] entry response keys:', info ? Object.keys(info) : 'null');
+    console.log('[Leagues] Has leagues?', !!info?.leagues, '| Has classic?', !!info?.leagues?.classic);
+    if (info?.leagues?.classic) {
+      console.log('[Leagues] classic count:', info.leagues.classic.length,
+        info.leagues.classic.map(l => `${l.name}(${l.id})`));
+    }
+
+    if (!info?.leagues?.classic) {
+      console.warn('[Leagues] entry/{id}/ tidak return leagues.classic');
+      return [];
+    }
+
+    const leagues = info.leagues.classic
+      .filter(l => {
+        if (!l.name || !l.id) return false;
+        const n = l.name.toLowerCase();
+        if (n.includes('overall') || n.includes('gameweek')) return false;
+        if (l.id <= 100) return false;
+        return true;
+      })
+      .map(l => ({ name: l.name, id: l.id }));
+
+    console.log('[Leagues] Auto-detected:', leagues.length, leagues.map(l => l.name));
+    CFG.leagues = leagues;
+    CFG.selectedLeagueIdx = 0;
+    return leagues;
+  } catch(e) {
+    console.warn('[Leagues] Auto-detect error:', e);
+    return [];
+  }
+}
+
 const MANAGER_COLORS = [
   '#00e676','#448aff','#ffd740','#ff5252','#ce93d8',
   '#80cbc4','#ffcc80','#90caf9','#a5d6a7','#ef9a9a',
@@ -4547,6 +4587,18 @@ const Render = {
 
   // ── League Rekap ───────────────────────────────────────
   leagueRekap() {
+    // Belum ada liga dikonfigurasi
+    if (!CFG.leagues.length) {
+      return `<div class="info-box" style="text-align:center;padding:40px 20px;margin:20px auto;max-width:480px">
+        <div style="font-size:36px;margin-bottom:12px">🏆</div>
+        <div style="font-size:16px;font-weight:700;margin-bottom:8px">Belum Ada Liga</div>
+        <div style="color:var(--text2);margin-bottom:20px;line-height:1.6">
+          Masukkan FPL Team ID di Settings untuk mendeteksi liga kamu secara otomatis.
+        </div>
+        <button class="btn btn-primary" onclick="Nav.goTab('settings')">Buka Settings →</button>
+      </div>`;
+    }
+
     // Build from FPL league standings + manager history
     const managers = Store.leagueManagers || [];
     const ls       = Store.leagueData;
@@ -5766,21 +5818,8 @@ const Render = {
               ${detectedName ? `<div class="lookup-ok">✓ Tim: <b>${detectedName}</b> — Manajer: ${detectedPlayer}</div>` : CFG.myTeamId ? '<div class="lookup-pending">Mendeteksi nama tim…</div>' : ''}
             </div>
           </div>
-          <div class="field-group">
-            <label>Filter Minimum Menit <span style="color:var(--text3)">(untuk GW Scoring & Rekomendasi)</span></label>
-            <input type="number" id="min-minutes" value="${CFG.minMinutes}" min="0" max="3000" step="90">
-            <div class="hint">
-              Pemain dengan total menit bermain di bawah nilai ini <b>tidak masuk</b> dalam GW Scoring dan Formasi Rekomendasi,
-              karena data statistik per-90-menit mereka belum reliable.<br>
-              <b>450</b> = ≈5 match penuh &nbsp;|&nbsp; <b>270</b> = ≈3 match &nbsp;|&nbsp; <b>0</b> = tampilkan semua (termasuk pemain baru).
-            </div>
-          </div>
-          <div class="field-group">
-            <label>Max Pemain per Tim (FPL rule: 3)</label>
-            <input type="number" id="max-per-team" value="${CFG.maxPerTeam}" min="1" max="5">
-          </div>
           <div class="btn-row">
-            <button class="btn btn-primary" onclick="UI.saveSettings();App.refresh()">Simpan & Refresh</button>
+            <button class="btn btn-primary" onclick="UI.saveAndRefresh()">Simpan & Refresh</button>
             <button class="btn btn-secondary" onclick="UI.saveSettings()">Simpan Saja</button>
           </div>
           <div id="settings-status" class="status-msg"></div>
@@ -5788,21 +5827,27 @@ const Render = {
 
         <div class="settings-card">
           <h3>Liga Saya</h3>
-          <div id="league-list">
-            ${CFG.leagues.map((l,i) => `
-              <div class="league-item">
-                <span class="league-item-name">${l.name}</span>
-                <span class="dim mono" style="font-size:11px">ID: ${l.id}</span>
-                <button class="btn-crit-remove" onclick="UI.removeLeague(${i})" title="Hapus">✕</button>
-              </div>
-            `).join('')}
-          </div>
-          <div style="display:flex;gap:8px;margin-top:10px">
-            <input type="number" id="new-league-id" placeholder="League ID" class="search-input" style="width:150px" oninput="UI.lookupLeagueId(this.value)">
-            <button class="btn btn-primary" onclick="UI.addLeague()" style="white-space:nowrap">+ Tambah</button>
-          </div>
-          <div id="league-lookup-result" style="margin-top:6px;min-height:18px"></div>
-          <div class="hint" style="margin-top:4px">Temukan League ID di URL: fantasy.premierleague.com/leagues/<b>ID</b>/standings/…</div>
+          ${!CFG.myTeamId
+            ? `<div class="hint">Masukkan Team ID di atas untuk mendeteksi liga otomatis.</div>`
+            : CFG.leagues.length === 0
+              ? `<div class="hint" style="color:var(--text2)">Belum ada liga terdeteksi. Klik <b>Refresh Liga</b> untuk mencari ulang.</div>`
+              : `<div id="league-list">
+                  ${CFG.leagues.map((l,i) => `
+                    <div class="league-item">
+                      <span class="league-item-name">${l.name}</span>
+                      <span class="dim mono" style="font-size:11px">ID: ${l.id}</span>
+                      <button class="btn-crit-remove" onclick="UI.removeLeague(${i})" title="Hapus">✕</button>
+                    </div>
+                  `).join('')}
+                </div>`
+          }
+          ${CFG.myTeamId ? `
+            <div class="btn-row" style="margin-top:12px">
+              <button class="btn btn-secondary" onclick="UI.refreshLeagues()">🔄 Refresh Liga</button>
+            </div>
+            <div id="league-refresh-status" style="margin-top:6px;font-size:12px;min-height:16px"></div>
+            <div class="hint" style="margin-top:4px">Liga diambil otomatis dari FPL API berdasarkan Team ID.</div>
+          ` : ''}
         </div>
 
         <div class="settings-card">
@@ -6451,48 +6496,6 @@ const UI = {
     this.changeTargetGW(0);
   },
 
-  _leagueLookupTimer: null,
-  _leagueLookupName: '',
-
-  lookupLeagueId(val) {
-    clearTimeout(this._leagueLookupTimer);
-    this._leagueLookupName = '';
-    const el = document.getElementById('league-lookup-result');
-    const id = +val;
-    if (!id || id < 1) { if (el) el.innerHTML = ''; return; }
-    if (el) el.innerHTML = '<div class="lookup-pending">Mencari liga…</div>';
-    this._leagueLookupTimer = setTimeout(async () => {
-      try {
-        const data = await Fetch.leagueStandings(id);
-        const name = data?.league?.name;
-        if (name) {
-          this._leagueLookupName = name;
-          if (el) el.innerHTML = `<div class="lookup-ok">✓ Liga ditemukan: <b>${name}</b></div>`;
-        } else {
-          if (el) el.innerHTML = '<div class="lookup-err">✗ Liga tidak ditemukan</div>';
-        }
-      } catch {
-        if (el) el.innerHTML = '<div class="lookup-err">✗ Gagal menghubungi FPL API</div>';
-      }
-    }, 800);
-  },
-
-  addLeague() {
-    const id = +document.getElementById('new-league-id')?.value;
-    const name = this._leagueLookupName;
-    if (!id || !name) {
-      const el = document.getElementById('league-lookup-result');
-      if (el && !name) el.innerHTML = '<div class="lookup-err">✗ Masukkan League ID dan tunggu nama liga ditemukan</div>';
-      return;
-    }
-    if (CFG.leagues.some(l => l.id === id)) return;
-    CFG.leagues.push({ name, id });
-    this._leagueLookupName = '';
-    document.getElementById('new-league-id').value = '';
-    document.getElementById('league-lookup-result').innerHTML = '';
-    this.saveSettings();
-    Nav.goTab('settings');
-  },
 
   async _previewRegistry() {
     const el = document.getElementById('registry-preview');
@@ -6585,14 +6588,9 @@ const UI = {
     if (resultEl) resultEl.innerHTML = '<div class="lookup-pending">Mencari…</div>';
     this._onboardingLookupTimer = setTimeout(async () => {
       try {
-        const info = await Fetch.managerInfo(id);
-
-        // Debug: cek apakah API mengembalikan leagues
-        console.log('[Onboarding] managerInfo:', JSON.stringify(info)?.slice(0, 2000));
-        console.log('[Onboarding] leagues?', !!info?.leagues, '| classic?', !!info?.leagues?.classic);
-        if (info?.leagues?.classic) {
-          console.log('[Onboarding] classic leagues:', info.leagues.classic.map(l => `${l.name}(${l.id})`));
-        }
+        // Force fresh agar response lengkap (tidak terpotong cache lama)
+        Cache.invalidate(CFG.FPL + 'entry/' + id + '/');
+        const info = await Fetch.fpl('entry/' + id + '/', true);
 
         if (!info?.name) {
           if (resultEl) resultEl.innerHTML = '<div class="lookup-err">✗ Team ID tidak ditemukan</div>';
@@ -6601,7 +6599,8 @@ const UI = {
         }
 
         const playerName = `${info.player_first_name||''} ${info.player_last_name||''}`.trim();
-        const leagues    = App.autoDetectLeagues(info);
+        // Gunakan fetchAndSetLeagues agar konsisten dan pakai filter yang sama
+        const leagues    = await fetchAndSetLeagues(id);
         this._onboardingInfo = { id, teamName: info.name, playerName, leagues };
 
         // Render semua inline di satu div — tidak perlu elemen terpisah
@@ -6633,19 +6632,21 @@ const UI = {
     }, 800);
   },
 
-  _onboardingStart() {
+  async _onboardingStart() {
     const info = this._onboardingInfo;
     if (!info) return;
     CFG.myTeamId   = info.id;
     CFG.myTeamName = info.teamName;
+    // Use leagues already detected during lookup; fall back to a fresh fetch
     if (info.leagues.length) {
       CFG.leagues = info.leagues;
       CFG.selectedLeagueIdx = 0;
+    } else {
+      await fetchAndSetLeagues(info.id);
     }
-    this.saveSettings();
+    this._persistSettings();
     this.buildLeagueSelect();
     this._onboardingClose();
-    // Full refresh agar semua panel terupdate dengan config baru
     App.refresh();
     UserRegistry.register(info.id, info.teamName, info.playerName);
   },
@@ -7370,31 +7371,72 @@ const UI = {
     }, 800);
   },
 
-  saveSettings() {
-    CFG.myTeamId   = +document.getElementById('my-team-id')?.value   || null;
-    if (Store.myManagerInfo?.name) CFG.myTeamName = Store.myManagerInfo.name;
-    CFG.sheetsUrl  = document.getElementById('sheets-url')?.value    || '';
-    CFG.minMinutes = +document.getElementById('min-minutes')?.value  || 450;
-    CFG.maxPerTeam = +document.getElementById('max-per-team')?.value || 3;
-    CFG.githubToken = document.getElementById('github-token')?.value?.trim() || CFG.githubToken;
+  _persistSettings() {
     try {
       localStorage.setItem('fplDashCfg', JSON.stringify({
-        myTeamId:CFG.myTeamId, myTeamName:CFG.myTeamName,
-        sheetsUrl:CFG.sheetsUrl, minMinutes:CFG.minMinutes,
-        maxPerTeam:CFG.maxPerTeam, selectedLeagueIdx:CFG.selectedLeagueIdx,
-        leagues:CFG.leagues,
-        githubToken:CFG.githubToken,
+        myTeamId: CFG.myTeamId, myTeamName: CFG.myTeamName,
+        sheetsUrl: CFG.sheetsUrl, minMinutes: CFG.minMinutes,
+        maxPerTeam: CFG.maxPerTeam, selectedLeagueIdx: CFG.selectedLeagueIdx,
+        leagues: CFG.leagues, githubToken: CFG.githubToken,
       }));
-      const s=document.getElementById('settings-status');
-      if(s){s.textContent='✓ Settings tersimpan.';s.className='status-msg ok';}
     } catch {}
+  },
+
+  async saveSettings() {
+    const newTeamId   = +document.getElementById('my-team-id')?.value || null;
+    const teamIdChanged = newTeamId !== CFG.myTeamId;
+    CFG.myTeamId    = newTeamId;
+    if (Store.myManagerInfo?.name) CFG.myTeamName = Store.myManagerInfo.name;
+    CFG.sheetsUrl   = document.getElementById('sheets-url')?.value   || '';
+    CFG.githubToken = document.getElementById('github-token')?.value?.trim() || CFG.githubToken;
+
+    // Auto-detect liga jika Team ID berubah
+    if (teamIdChanged && newTeamId) {
+      const statusEl = document.getElementById('settings-status');
+      if (statusEl) { statusEl.textContent = '⏳ Mendeteksi liga…'; statusEl.className = 'status-msg'; }
+      await fetchAndSetLeagues(newTeamId);
+    }
+
+    this._persistSettings();
     this.buildLeagueSelect();
 
-    // Register user ke Gist jika team ID valid
+    const s = document.getElementById('settings-status');
+    if (s) {
+      const liga = CFG.leagues.length ? ` ${CFG.leagues.length} liga terdeteksi.` : '';
+      s.textContent = '✓ Settings tersimpan.' + liga;
+      s.className = 'status-msg ok';
+    }
+
+    // Re-render settings page agar daftar liga terupdate
+    if (Nav.current === 'settings') Nav.goTab('settings');
+
+    // Register user
     if (CFG.myTeamId && Store.myManagerInfo?.name) {
       const playerName = `${Store.myManagerInfo.player_first_name||''} ${Store.myManagerInfo.player_last_name||''}`.trim();
       UserRegistry.register(CFG.myTeamId, CFG.myTeamName, playerName);
     }
+  },
+
+  async saveAndRefresh() {
+    await this.saveSettings();
+    App.refresh();
+  },
+
+  async refreshLeagues() {
+    if (!CFG.myTeamId) return;
+    const el = document.getElementById('league-refresh-status');
+    if (el) el.innerHTML = '<span style="color:var(--text3)">⏳ Memperbarui daftar liga…</span>';
+    const leagues = await fetchAndSetLeagues(CFG.myTeamId);
+    this._persistSettings();
+    this.buildLeagueSelect();
+    Nav.goTab('settings'); // re-render daftar liga
+    const statusEl = document.getElementById('league-refresh-status');
+    if (statusEl) {
+      statusEl.innerHTML = leagues.length
+        ? `<span style="color:var(--green)">✓ ${leagues.length} liga ditemukan.</span>`
+        : '<span style="color:var(--orange)">Tidak ada liga ditemukan dari FPL API.</span>';
+    }
+    if (leagues.length) App.loadLeagueData(Store.currentGW);
   },
 
   loadSettings() {
@@ -7765,17 +7807,17 @@ const App = {
     if (Nav.current === 'league') Nav.goTab('league');
   },
 
-  // Ekstrak mini-liga user dari respons entry API
+  // Wrapper — delegates to global fetchAndSetLeagues for onboarding preview
   autoDetectLeagues(managerInfo) {
     const classics = managerInfo?.leagues?.classic;
     if (!Array.isArray(classics)) return [];
     return classics
       .filter(l => {
         if (!l.name || !l.id) return false;
-        const isGlobal = l.name.toLowerCase().includes('overall')
-          || (l.entry_rank != null && l.entry_rank > 100000)
-          || l.id <= 100;
-        return !isGlobal;
+        if (l.name.toLowerCase().includes('overall')) return false;
+        if (l.id <= 100) return false;
+        if (l.entry_rank != null && l.entry_rank > 500000) return false;
+        return true;
       })
       .map(l => ({ name: l.name, id: l.id }))
       .slice(0, 10);
