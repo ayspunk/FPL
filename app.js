@@ -8,13 +8,14 @@
 // 1. CONFIG
 // ═══════════════════════════════════════════════════════
 const CFG = {
-  leagues: [
-    { name: 'Lantai 3 TU P2B League',  id: 611927  },
-    { name: 'P2B Super League',         id: 24873   },
-    { name: 'Tugas Belajar PLN League', id: 2150310 },
-  ],
-  myTeamId:     2414649,      // FPL entry/team ID user
-  myTeamName:   'r00kie',     // nama tim untuk highlight (auto-detected from API)
+  // ── Owner constants (never change these) ──
+  OWNER_TEAM_ID: 2414649,
+  OWNER_LEAGUES: [611927, 24873, 2150310],
+
+  // ── Runtime state — populated from localStorage on init ──
+  leagues:      [],    // empty default; owner & guest both set via localStorage/onboarding
+  myTeamId:     null,
+  myTeamName:   '',
   minMinutes:   450,
   maxPerTeam:   3,
   sheetsUrl:    '',
@@ -56,6 +57,8 @@ const CFG = {
     'ep_next':         {GK:.10,DEF:.10,MID:.12,FWD:.11},
   },
 };
+
+function isOwner() { return CFG.myTeamId === CFG.OWNER_TEAM_ID; }
 
 const MANAGER_COLORS = [
   '#00e676','#448aff','#ffd740','#ff5252','#ce93d8',
@@ -6528,6 +6531,131 @@ const UI = {
       </div>`;
   },
 
+  // ── Onboarding ──────────────────────────────────────────
+  _onboardingInfo: null,   // { id, teamName, playerName, leagues }
+
+  showOnboarding() {
+    if (document.getElementById('onboarding-overlay')) return;
+    const el = document.createElement('div');
+    el.id = 'onboarding-overlay';
+    el.className = 'onboarding-overlay';
+    el.innerHTML = `
+      <div class="onboarding-modal" role="dialog" aria-modal="true">
+        <div class="onboarding-logo">⚽</div>
+        <h2 class="onboarding-title">Selamat Datang di FPL Dashboard!</h2>
+        <p class="onboarding-desc">
+          Masukkan FPL Team ID kamu untuk melihat data tim, liga, dan rekomendasi personal.
+          Kamu tetap bisa pakai fitur scouting &amp; FDR tanpa Team ID.
+        </p>
+        <div class="onboarding-hint-box">
+          <b>Cara cari Team ID:</b> Buka <span style="color:var(--blue)">fantasy.premierleague.com</span>
+          → My Team → lihat URL: <code>/entry/<b>[ID]</b>/event/…</code>
+        </div>
+        <div class="field-group" style="margin-top:18px">
+          <label style="font-size:13px;color:var(--text2)">FPL Team ID</label>
+          <input type="number" id="onboarding-team-id" class="search-input"
+            placeholder="contoh: 2414649"
+            oninput="UI._onboardingLookup(this.value)"
+            style="width:100%;margin-top:6px;font-size:15px;padding:10px 12px">
+          <div id="onboarding-lookup-result" style="margin-top:8px;min-height:22px"></div>
+        </div>
+        <div id="onboarding-leagues-wrap" style="display:none;margin-top:14px">
+          <div style="font-size:12px;color:var(--text2);margin-bottom:6px">Liga terdeteksi:</div>
+          <div id="onboarding-leagues-list" class="onboarding-leagues-list"></div>
+        </div>
+        <div class="onboarding-actions">
+          <button class="btn btn-secondary" onclick="UI._onboardingSkip()">Lewati</button>
+          <button class="btn btn-primary" id="onboarding-start-btn"
+            onclick="UI._onboardingStart()" disabled>Mulai →</button>
+        </div>
+      </div>`;
+    document.body.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('onboarding-visible'));
+    setTimeout(() => document.getElementById('onboarding-team-id')?.focus(), 120);
+  },
+
+  _onboardingLookupTimer: null,
+  _onboardingLookup(val) {
+    clearTimeout(this._onboardingLookupTimer);
+    this._onboardingInfo = null;
+    const resultEl = document.getElementById('onboarding-lookup-result');
+    const startBtn  = document.getElementById('onboarding-start-btn');
+    const leaguesWrap = document.getElementById('onboarding-leagues-wrap');
+    const id = +val;
+    if (!id || id < 1) {
+      if (resultEl) resultEl.innerHTML = '';
+      if (startBtn) startBtn.disabled = true;
+      if (leaguesWrap) leaguesWrap.style.display = 'none';
+      return;
+    }
+    if (resultEl) resultEl.innerHTML = '<div class="lookup-pending">Mencari…</div>';
+    this._onboardingLookupTimer = setTimeout(async () => {
+      try {
+        const info = await Fetch.managerInfo(id);
+        if (!info?.name) {
+          if (resultEl) resultEl.innerHTML = '<div class="lookup-err">✗ Team ID tidak ditemukan</div>';
+          if (startBtn) startBtn.disabled = true;
+          return;
+        }
+        const playerName = `${info.player_first_name||''} ${info.player_last_name||''}`.trim();
+        if (resultEl) resultEl.innerHTML =
+          `<div class="lookup-ok">✓ Tim: <b>${info.name}</b> — Manajer: ${playerName}</div>`;
+
+        // Auto-detect leagues dari response API
+        const detectedLeagues = App.autoDetectLeagues(info);
+        this._onboardingInfo = { id, teamName: info.name, playerName, leagues: detectedLeagues };
+
+        if (detectedLeagues.length && leaguesWrap) {
+          leaguesWrap.style.display = 'block';
+          const listEl = document.getElementById('onboarding-leagues-list');
+          if (listEl) listEl.innerHTML = detectedLeagues.map(l =>
+            `<div class="onboarding-league-item">
+              <span>${l.name}</span>
+              <span class="dim mono" style="font-size:11px">ID: ${l.id}</span>
+            </div>`).join('');
+        }
+        if (startBtn) startBtn.disabled = false;
+      } catch {
+        if (resultEl) resultEl.innerHTML = '<div class="lookup-err">✗ Gagal menghubungi FPL API</div>';
+        if (startBtn) startBtn.disabled = true;
+      }
+    }, 700);
+  },
+
+  _onboardingStart() {
+    const info = this._onboardingInfo;
+    if (!info) return;
+    CFG.myTeamId   = info.id;
+    CFG.myTeamName = info.teamName;
+    if (info.leagues.length) {
+      CFG.leagues = info.leagues;
+      CFG.selectedLeagueIdx = 0;
+    }
+    this.saveSettings();
+    this._onboardingClose();
+    App.loadMySquad(Store.currentGW || 1);
+    if (CFG.leagues.length) App.loadLeagueData(Store.currentGW || 1);
+    // Register user
+    UserRegistry.register(info.id, info.teamName, info.playerName);
+  },
+
+  _onboardingSkip() {
+    // Simpan penanda bahwa user sudah melewati onboarding
+    try {
+      if (!localStorage.getItem('fplDashCfg')) {
+        localStorage.setItem('fplDashCfg', JSON.stringify({ skipped: true }));
+      }
+    } catch {}
+    this._onboardingClose();
+  },
+
+  _onboardingClose() {
+    const el = document.getElementById('onboarding-overlay');
+    if (!el) return;
+    el.classList.remove('onboarding-visible');
+    setTimeout(() => el.remove(), 300);
+  },
+
   removeLeague(idx) {
     if (CFG.leagues.length <= 1) return;
     CFG.leagues.splice(idx, 1);
@@ -7264,17 +7392,26 @@ const UI = {
   },
 
   loadSettings() {
-    try {
-      const saved=JSON.parse(localStorage.getItem('fplDashCfg')||'{}');
-      if(saved.myTeamId)         CFG.myTeamId         = saved.myTeamId;
-      if(saved.myTeamName)       CFG.myTeamName       = saved.myTeamName;
-      if(saved.sheetsUrl)        CFG.sheetsUrl        = saved.sheetsUrl;
-      if(saved.minMinutes)       CFG.minMinutes       = saved.minMinutes;
-      if(saved.maxPerTeam)       CFG.maxPerTeam       = saved.maxPerTeam;
-      if(saved.selectedLeagueIdx!==undefined) CFG.selectedLeagueIdx = saved.selectedLeagueIdx;
-      if(saved.leagues?.length) CFG.leagues = saved.leagues;
-      if(saved.githubToken) CFG.githubToken = saved.githubToken;
-    } catch {}
+    const raw = localStorage.getItem('fplDashCfg');
+    if (!raw) {
+      // First-time visitor: clear owner defaults so guest starts fresh
+      CFG.leagues           = [];
+      CFG.myTeamId          = null;
+      CFG.myTeamName        = '';
+      CFG.selectedLeagueIdx = 0;
+    } else {
+      try {
+        const saved = JSON.parse(raw);
+        if (saved.myTeamId)                       CFG.myTeamId          = saved.myTeamId;
+        if (saved.myTeamName)                     CFG.myTeamName        = saved.myTeamName;
+        if (saved.sheetsUrl)                      CFG.sheetsUrl         = saved.sheetsUrl;
+        if (saved.minMinutes)                     CFG.minMinutes        = saved.minMinutes;
+        if (saved.maxPerTeam)                     CFG.maxPerTeam        = saved.maxPerTeam;
+        if (saved.selectedLeagueIdx !== undefined) CFG.selectedLeagueIdx = saved.selectedLeagueIdx;
+        if (saved.leagues?.length)                CFG.leagues           = saved.leagues;
+        if (saved.githubToken)                    CFG.githubToken       = saved.githubToken;
+      } catch {}
+    }
     // Load scout weights
     try {
       const sw = JSON.parse(localStorage.getItem('fplDashScoutWeights')||'null');
@@ -7330,7 +7467,8 @@ const App = {
     // ── Step 0: Try GitHub Pages JSON (same-origin, no CORS) ──
     const ghAll = await Fetch.githubJSON('all.json');
     if (ghAll && !bsCached) {
-      // GitHub JSON available — use as sheetsData for computed data
+      // all.json league section berisi data owner — hapus untuk guest
+      if (!isOwner() && ghAll.league) delete ghAll.league;
       Store.sheetsData = ghAll;
       console.log('[App] GitHub JSON loaded as sheetsData');
     }
@@ -7621,6 +7759,16 @@ const App = {
     if (Nav.current === 'league') Nav.goTab('league');
   },
 
+  // Ekstrak mini-liga user dari respons entry API
+  autoDetectLeagues(managerInfo) {
+    const classics = managerInfo?.leagues?.classic;
+    if (!Array.isArray(classics)) return [];
+    return classics
+      .filter(l => l.league_type === 'x' && l.name && l.id)
+      .map(l => ({ name: l.name, id: l.id }))
+      .slice(0, 10); // batasi 10 liga
+  },
+
   async loadSetForget() {
     const sf = await Fetch.githubJSON('transfer-impact.json');
     if (sf?.impactData) {
@@ -7634,12 +7782,14 @@ const App = {
     const tid = CFG.myTeamId;
     if (!tid) return;
 
-    // Try GitHub first (instant, no proxy needed)
-    let picks = await Fetch.githubJSON('picks.json');
-    if (picks) console.log('[App] ✓ My picks from GitHub');
-
-    let info = await Fetch.githubJSON('manager.json');
-    if (info) console.log('[App] ✓ My manager info from GitHub');
+    // GitHub JSON hanya untuk owner (berisi data milik owner)
+    let picks = null, info = null;
+    if (isOwner()) {
+      picks = await Fetch.githubJSON('picks.json');
+      if (picks) console.log('[App] ✓ My picks from GitHub (owner)');
+      info = await Fetch.githubJSON('manager.json');
+      if (info) console.log('[App] ✓ My manager info from GitHub (owner)');
+    }
 
     // Proxy fallback only if GitHub didn't have it
     if (!picks) {
@@ -7689,6 +7839,8 @@ const App = {
     UI.buildLeagueSelect();
     Nav.init();
     this.refresh();
+    // Onboarding hanya muncul jika belum pernah ada config (first-time visitor)
+    if (!CFG.myTeamId && !localStorage.getItem('fplDashCfg')) UI.showOnboarding();
   },
 };
 

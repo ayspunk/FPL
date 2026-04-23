@@ -1989,3 +1989,53 @@ body.capture-desktop #app-header { display: none !important; }
 .dgw-my-row td:first-child { color: var(--green); font-weight: 800; }
 .dgw-col { background: rgba(68,138,255,.08); }
 .bgw-col { background: rgba(255,82,82,.08); }
+
+/* ── Onboarding Modal ── */
+.onboarding-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(4,8,16,.85);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0; transition: opacity .25s ease;
+  padding: 16px;
+}
+.onboarding-overlay.onboarding-visible { opacity: 1; }
+.onboarding-modal {
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: 16px;
+  padding: 32px 28px 24px;
+  width: 100%; max-width: 480px;
+  box-shadow: 0 24px 60px rgba(0,0,0,.5);
+  transform: translateY(20px); transition: transform .25s ease;
+}
+.onboarding-overlay.onboarding-visible .onboarding-modal { transform: translateY(0); }
+.onboarding-logo { font-size: 40px; text-align: center; margin-bottom: 12px; }
+.onboarding-title { font-size: 20px; font-weight: 700; color: var(--text); text-align: center; margin: 0 0 10px; }
+.onboarding-desc { font-size: 13px; color: var(--text2); text-align: center; margin: 0 0 16px; line-height: 1.6; }
+.onboarding-hint-box {
+  font-size: 12px; color: var(--text2); background: var(--bg3);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; line-height: 1.7;
+}
+.onboarding-hint-box code { color: var(--gold); font-size: 11px; }
+.onboarding-leagues-list { display: flex; flex-direction: column; gap: 6px; }
+.onboarding-league-item {
+  display: flex; justify-content: space-between; align-items: center;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 6px; padding: 7px 10px;
+  font-size: 12px; color: var(--text);
+}
+.onboarding-actions {
+  display: flex; gap: 10px; justify-content: flex-end;
+  margin-top: 22px;
+}
+.onboarding-actions .btn { min-width: 90px; }
+@media (max-width: 480px) {
+  .onboarding-modal { padding: 24px 18px 20px; border-radius: 12px; }
+  .onboarding-title { font-size: 17px; }
+  .onboarding-actions { flex-direction: column-reverse; }
+  .onboarding-actions .btn { width: 100%; }
+}
+
