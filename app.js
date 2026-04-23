@@ -6619,7 +6619,7 @@ const UI = {
         if (resultEl) resultEl.innerHTML = '<div class="lookup-err">✗ Gagal menghubungi FPL API</div>';
         if (startBtn) startBtn.disabled = true;
       }
-    }, 700);
+    }, 800);
   },
 
   _onboardingStart() {
@@ -6640,12 +6640,7 @@ const UI = {
   },
 
   _onboardingSkip() {
-    // Simpan penanda bahwa user sudah melewati onboarding
-    try {
-      if (!localStorage.getItem('fplDashCfg')) {
-        localStorage.setItem('fplDashCfg', JSON.stringify({ skipped: true }));
-      }
-    } catch {}
+    try { localStorage.setItem('fpl_onboarding_skipped', '1'); } catch {}
     this._onboardingClose();
   },
 
@@ -7764,9 +7759,15 @@ const App = {
     const classics = managerInfo?.leagues?.classic;
     if (!Array.isArray(classics)) return [];
     return classics
-      .filter(l => l.league_type === 'x' && l.name && l.id)
+      .filter(l => {
+        if (!l.name || !l.id) return false;
+        const isGlobal = l.name.toLowerCase().includes('overall')
+          || (l.entry_rank != null && l.entry_rank > 100000)
+          || l.id <= 100;
+        return !isGlobal;
+      })
       .map(l => ({ name: l.name, id: l.id }))
-      .slice(0, 10); // batasi 10 liga
+      .slice(0, 10);
   },
 
   async loadSetForget() {
@@ -7833,14 +7834,16 @@ const App = {
     if (cur==='epl') Nav.goTab('epl');
   },
 
-  init() {
+  async init() {
     UI.loadSettings();
     UI.initTheme();
     UI.buildLeagueSelect();
     Nav.init();
-    this.refresh();
-    // Onboarding hanya muncul jika belum pernah ada config (first-time visitor)
-    if (!CFG.myTeamId && !localStorage.getItem('fplDashCfg')) UI.showOnboarding();
+    // Tunggu refresh selesai agar CORS proxy sudah terdeteksi sebelum onboarding lookup
+    await this.refresh();
+    const neverSetup = !localStorage.getItem('fplDashCfg');
+    const skipped    = !!localStorage.getItem('fpl_onboarding_skipped');
+    if (!CFG.myTeamId && neverSetup && !skipped) UI.showOnboarding();
   },
 };
 
