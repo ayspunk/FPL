@@ -6559,10 +6559,6 @@ const UI = {
             style="width:100%;margin-top:6px;font-size:15px;padding:10px 12px">
           <div id="onboarding-lookup-result" style="margin-top:8px;min-height:22px"></div>
         </div>
-        <div id="onboarding-leagues-wrap" style="display:none;margin-top:14px">
-          <div style="font-size:12px;color:var(--text2);margin-bottom:6px">Liga terdeteksi:</div>
-          <div id="onboarding-leagues-list" class="onboarding-leagues-list"></div>
-        </div>
         <div class="onboarding-actions">
           <button class="btn btn-secondary" onclick="UI._onboardingSkip()">Lewati</button>
           <button class="btn btn-primary" id="onboarding-start-btn"
@@ -6580,42 +6576,57 @@ const UI = {
     this._onboardingInfo = null;
     const resultEl = document.getElementById('onboarding-lookup-result');
     const startBtn  = document.getElementById('onboarding-start-btn');
-    const leaguesWrap = document.getElementById('onboarding-leagues-wrap');
     const id = +val;
     if (!id || id < 1) {
       if (resultEl) resultEl.innerHTML = '';
       if (startBtn) startBtn.disabled = true;
-      if (leaguesWrap) leaguesWrap.style.display = 'none';
       return;
     }
     if (resultEl) resultEl.innerHTML = '<div class="lookup-pending">Mencari…</div>';
     this._onboardingLookupTimer = setTimeout(async () => {
       try {
         const info = await Fetch.managerInfo(id);
+
+        // Debug: cek apakah API mengembalikan leagues
+        console.log('[Onboarding] managerInfo:', JSON.stringify(info)?.slice(0, 2000));
+        console.log('[Onboarding] leagues?', !!info?.leagues, '| classic?', !!info?.leagues?.classic);
+        if (info?.leagues?.classic) {
+          console.log('[Onboarding] classic leagues:', info.leagues.classic.map(l => `${l.name}(${l.id})`));
+        }
+
         if (!info?.name) {
           if (resultEl) resultEl.innerHTML = '<div class="lookup-err">✗ Team ID tidak ditemukan</div>';
           if (startBtn) startBtn.disabled = true;
           return;
         }
+
         const playerName = `${info.player_first_name||''} ${info.player_last_name||''}`.trim();
-        if (resultEl) resultEl.innerHTML =
-          `<div class="lookup-ok">✓ Tim: <b>${info.name}</b> — Manajer: ${playerName}</div>`;
+        const leagues    = App.autoDetectLeagues(info);
+        this._onboardingInfo = { id, teamName: info.name, playerName, leagues };
 
-        // Auto-detect leagues dari response API
-        const detectedLeagues = App.autoDetectLeagues(info);
-        this._onboardingInfo = { id, teamName: info.name, playerName, leagues: detectedLeagues };
+        // Render semua inline di satu div — tidak perlu elemen terpisah
+        let html = `<div class="lookup-ok">✓ Tim: <b>${info.name}</b> — Manajer: ${playerName}</div>`;
 
-        if (detectedLeagues.length && leaguesWrap) {
-          leaguesWrap.style.display = 'block';
-          const listEl = document.getElementById('onboarding-leagues-list');
-          if (listEl) listEl.innerHTML = detectedLeagues.map(l =>
-            `<div class="onboarding-league-item">
-              <span>${l.name}</span>
-              <span class="dim mono" style="font-size:11px">ID: ${l.id}</span>
-            </div>`).join('');
+        if (leagues.length > 0) {
+          html += `<div style="margin-top:10px;padding:10px;background:var(--bg3);border-radius:6px;border:1px solid var(--border)">
+            <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">
+              📋 Liga ditemukan (${leagues.length})
+            </div>
+            ${leagues.map(l => `<div style="padding:3px 0;font-size:12px;color:var(--text)">
+              <span style="color:var(--green)">✓</span> ${l.name}
+              <span style="color:var(--text3);font-size:10px"> (ID: ${l.id})</span>
+            </div>`).join('')}
+          </div>`;
+        } else {
+          html += `<div style="margin-top:8px;font-size:11px;color:var(--text3)">
+            Tidak ada mini liga terdeteksi. Bisa tambahkan manual di Settings nanti.
+          </div>`;
         }
+
+        if (resultEl) resultEl.innerHTML = html;
         if (startBtn) startBtn.disabled = false;
-      } catch {
+      } catch(e) {
+        console.error('[Onboarding] lookup error:', e);
         if (resultEl) resultEl.innerHTML = '<div class="lookup-err">✗ Gagal menghubungi FPL API</div>';
         if (startBtn) startBtn.disabled = true;
       }
@@ -6632,10 +6643,10 @@ const UI = {
       CFG.selectedLeagueIdx = 0;
     }
     this.saveSettings();
+    this.buildLeagueSelect();
     this._onboardingClose();
-    App.loadMySquad(Store.currentGW || 1);
-    if (CFG.leagues.length) App.loadLeagueData(Store.currentGW || 1);
-    // Register user
+    // Full refresh agar semua panel terupdate dengan config baru
+    App.refresh();
     UserRegistry.register(info.id, info.teamName, info.playerName);
   },
 
