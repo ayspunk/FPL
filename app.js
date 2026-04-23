@@ -5792,11 +5792,11 @@ const Render = {
             `).join('')}
           </div>
           <div style="display:flex;gap:8px;margin-top:10px">
-            <input type="text" id="new-league-name" placeholder="Nama Liga" class="search-input" style="flex:1">
-            <input type="number" id="new-league-id" placeholder="League ID" class="search-input" style="width:120px">
+            <input type="number" id="new-league-id" placeholder="League ID" class="search-input" style="width:150px" oninput="UI.lookupLeagueId(this.value)">
             <button class="btn btn-primary" onclick="UI.addLeague()" style="white-space:nowrap">+ Tambah</button>
           </div>
-          <div class="hint" style="margin-top:6px">Temukan League ID di URL: fantasy.premierleague.com/leagues/<b>ID</b>/standings/…</div>
+          <div id="league-lookup-result" style="margin-top:6px;min-height:18px"></div>
+          <div class="hint" style="margin-top:4px">Temukan League ID di URL: fantasy.premierleague.com/leagues/<b>ID</b>/standings/…</div>
         </div>
 
         <div class="settings-card">
@@ -6427,12 +6427,45 @@ const UI = {
     this.changeTargetGW(0);
   },
 
+  _leagueLookupTimer: null,
+  _leagueLookupName: '',
+
+  lookupLeagueId(val) {
+    clearTimeout(this._leagueLookupTimer);
+    this._leagueLookupName = '';
+    const el = document.getElementById('league-lookup-result');
+    const id = +val;
+    if (!id || id < 1) { if (el) el.innerHTML = ''; return; }
+    if (el) el.innerHTML = '<div class="lookup-pending">Mencari liga…</div>';
+    this._leagueLookupTimer = setTimeout(async () => {
+      try {
+        const data = await Fetch.leagueStandings(id);
+        const name = data?.league?.name;
+        if (name) {
+          this._leagueLookupName = name;
+          if (el) el.innerHTML = `<div class="lookup-ok">✓ Liga ditemukan: <b>${name}</b></div>`;
+        } else {
+          if (el) el.innerHTML = '<div class="lookup-err">✗ Liga tidak ditemukan</div>';
+        }
+      } catch {
+        if (el) el.innerHTML = '<div class="lookup-err">✗ Gagal menghubungi FPL API</div>';
+      }
+    }, 800);
+  },
+
   addLeague() {
-    const name = document.getElementById('new-league-name')?.value?.trim();
     const id = +document.getElementById('new-league-id')?.value;
-    if (!name || !id) return;
+    const name = this._leagueLookupName;
+    if (!id || !name) {
+      const el = document.getElementById('league-lookup-result');
+      if (el && !name) el.innerHTML = '<div class="lookup-err">✗ Masukkan League ID dan tunggu nama liga ditemukan</div>';
+      return;
+    }
     if (CFG.leagues.some(l => l.id === id)) return;
     CFG.leagues.push({ name, id });
+    this._leagueLookupName = '';
+    document.getElementById('new-league-id').value = '';
+    document.getElementById('league-lookup-result').innerHTML = '';
     this.saveSettings();
     Nav.goTab('settings');
   },
