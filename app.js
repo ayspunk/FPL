@@ -18,6 +18,9 @@ const CFG = {
   minMinutes:   450,
   maxPerTeam:   3,
   sheetsUrl:    '',
+  githubOwner:  'ayspunk',  // GitHub username (owner repo)
+  githubRepo:   'FPL',      // Nama repo GitHub Pages
+  githubToken:  '',         // GitHub PAT scope 'contents:write' (isi oleh admin)
   selectedLeagueIdx: 0,
   // GitHub Pages JSON (same-origin, no CORS needed!)
   // Set to '' to disable, or auto-detect from window.location
@@ -5824,6 +5827,24 @@ const Render = {
         </div>
 
         <div class="settings-card">
+          <h3>🔑 Admin — User Registry</h3>
+          <div class="hint" style="margin-bottom:10px">
+            Setiap user yang menyimpan settings akan otomatis tercatat di
+            <b>data/users.json</b> di repo GitHub ini.
+            Isi token hanya di browser admin — tersimpan di localStorage, tidak dikirim ke repo.
+          </div>
+          <div class="field-group">
+            <label>GitHub Personal Access Token <span style="color:var(--text3)">(scope: contents:write)</span></label>
+            <input type="password" id="github-token" value="${CFG.githubToken}" placeholder="ghp_…">
+            <div class="hint">Buat di GitHub → Settings → Developer settings → Fine-grained tokens → Repository: <b>${CFG.githubRepo}</b> → Contents: <b>Read & Write</b>.</div>
+          </div>
+          <div class="btn-row" style="margin-top:10px">
+            <button class="btn btn-secondary" onclick="UI._previewRegistry()">Lihat Daftar User</button>
+          </div>
+          <div id="registry-preview" style="margin-top:10px;font-size:12px"></div>
+        </div>
+
+        <div class="settings-card">
           <h3>⚡ Cache Manager</h3>
           <div class="hint" style="margin-bottom:12px">
             Data di-cache di localStorage untuk mempercepat load. TTL: bootstrap 6j · league 30m · live 5m · sheets 15m.
@@ -6468,6 +6489,43 @@ const UI = {
     document.getElementById('league-lookup-result').innerHTML = '';
     this.saveSettings();
     Nav.goTab('settings');
+  },
+
+  async _previewRegistry() {
+    const el = document.getElementById('registry-preview');
+    if (!el) return;
+    if (!UserRegistry.isConfigured()) {
+      el.innerHTML = '<div class="lookup-err">Token belum diisi. Simpan settings dulu.</div>';
+      return;
+    }
+    el.innerHTML = '<div class="lookup-pending">Memuat daftar user…</div>';
+    const data = await UserRegistry.getAll();
+    if (!data) { el.innerHTML = '<div class="lookup-err">Gagal memuat data registry.</div>'; return; }
+    if (!data.users?.length) { el.innerHTML = '<div class="lookup-pending">Belum ada user terdaftar.</div>'; return; }
+    const rows = data.users.map(u => `
+      <tr>
+        <td>${u.entryId}</td>
+        <td>${u.teamName}</td>
+        <td>${u.playerName}</td>
+        <td>${u.usageCount}</td>
+        <td style="white-space:nowrap">${u.firstSeen?.slice(0,10) ?? '-'}</td>
+        <td style="white-space:nowrap">${u.lastSeen?.slice(0,10) ?? '-'}</td>
+      </tr>`).join('');
+    el.innerHTML = `
+      <div style="margin-bottom:6px"><b>${data.users.length} user terdaftar</b></div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead><tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:4px">Entry ID</th>
+            <th style="text-align:left;padding:4px">Nama Tim</th>
+            <th style="text-align:left;padding:4px">Manajer</th>
+            <th style="text-align:left;padding:4px">Akses</th>
+            <th style="text-align:left;padding:4px">Pertama</th>
+            <th style="text-align:left;padding:4px">Terakhir</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
   },
 
   removeLeague(idx) {
@@ -7180,22 +7238,29 @@ const UI = {
 
   saveSettings() {
     CFG.myTeamId   = +document.getElementById('my-team-id')?.value   || null;
-    // Auto-set team name from manager info lookup
     if (Store.myManagerInfo?.name) CFG.myTeamName = Store.myManagerInfo.name;
     CFG.sheetsUrl  = document.getElementById('sheets-url')?.value    || '';
     CFG.minMinutes = +document.getElementById('min-minutes')?.value  || 450;
     CFG.maxPerTeam = +document.getElementById('max-per-team')?.value || 3;
+    CFG.githubToken = document.getElementById('github-token')?.value?.trim() || CFG.githubToken;
     try {
       localStorage.setItem('fplDashCfg', JSON.stringify({
         myTeamId:CFG.myTeamId, myTeamName:CFG.myTeamName,
         sheetsUrl:CFG.sheetsUrl, minMinutes:CFG.minMinutes,
         maxPerTeam:CFG.maxPerTeam, selectedLeagueIdx:CFG.selectedLeagueIdx,
         leagues:CFG.leagues,
+        githubToken:CFG.githubToken,
       }));
       const s=document.getElementById('settings-status');
       if(s){s.textContent='✓ Settings tersimpan.';s.className='status-msg ok';}
     } catch {}
     this.buildLeagueSelect();
+
+    // Register user ke Gist jika team ID valid
+    if (CFG.myTeamId && Store.myManagerInfo?.name) {
+      const playerName = `${Store.myManagerInfo.player_first_name||''} ${Store.myManagerInfo.player_last_name||''}`.trim();
+      UserRegistry.register(CFG.myTeamId, CFG.myTeamName, playerName);
+    }
   },
 
   loadSettings() {
@@ -7208,6 +7273,7 @@ const UI = {
       if(saved.maxPerTeam)       CFG.maxPerTeam       = saved.maxPerTeam;
       if(saved.selectedLeagueIdx!==undefined) CFG.selectedLeagueIdx = saved.selectedLeagueIdx;
       if(saved.leagues?.length) CFG.leagues = saved.leagues;
+      if(saved.githubToken) CFG.githubToken = saved.githubToken;
     } catch {}
     // Load scout weights
     try {
