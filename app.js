@@ -6358,7 +6358,7 @@ const UI = {
     const finalH = Math.round(SVG_H * RENDER_SCALE * (finalW / (CROP_W * RENDER_SCALE)));
 
     // Extra width to accommodate system sans-serif being ~30% wider than Barlow Condensed
-    const LABEL_EXTRA = 250;
+    const LABEL_EXTRA = 50;
     const RENDER_W = CROP_W + LABEL_EXTRA; // extended canvas so labels are never clipped
 
     const captureFrame = () => new Promise((resolve, reject) => {
