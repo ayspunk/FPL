@@ -6325,23 +6325,39 @@ const UI = {
 
     const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#080d14';
     const lines = [...wrap.querySelectorAll('.bump-manager')];
-    const { series } = matrix;
 
-    // Save & restore helpers for SVG inline styles
-    const saveState = () => lines.map(g => ({
-      line: g.querySelector('.bump-line'),
-      dots: [...g.querySelectorAll('circle')],
-      lbl:  g.querySelector('text'),
-      lineOrig: g.querySelector('.bump-line')?.getAttribute('style') || '',
-      lblOrig:  g.querySelector('text')?.getAttribute('style') || '',
-      dotOrig:  [...g.querySelectorAll('circle')].map(d => d.getAttribute('style') || ''),
-    }));
+    // Resize canvas to max width to keep GIF file size small & encoding fast
+    const MAX_GIF_W = 750;
+    const resizeCanvas = (src) => {
+      if (src.width <= MAX_GIF_W) return src;
+      const ratio = MAX_GIF_W / src.width;
+      const dst = document.createElement('canvas');
+      dst.width = MAX_GIF_W;
+      dst.height = Math.round(src.height * ratio);
+      dst.getContext('2d').drawImage(src, 0, 0, dst.width, dst.height);
+      return dst;
+    };
 
-    const setHighlight = (activeIdx, state) => {
-      state.forEach(({ line: l, dots, lbl, lineOrig }, i) => {
+    // Load worker script as blob URL to avoid CORS/CSP issues with CDN
+    const getWorkerScript = async () => {
+      const CDN = 'https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js';
+      try {
+        const resp = await fetch(CDN);
+        if (!resp.ok) throw new Error('fetch failed');
+        const text = await resp.text();
+        return URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
+      } catch {
+        return CDN; // fallback to direct CDN URL
+      }
+    };
+
+    const setHighlight = (activeIdx) => {
+      lines.forEach((g, i) => {
+        const l = g.querySelector('.bump-line');
+        const dots = [...g.querySelectorAll('circle')];
+        const lbl = g.querySelector('text');
         const isMe = l?.classList.contains('hl');
         if (activeIdx === null) {
-          // Restore natural opacity
           if (l) { l.style.opacity = isMe ? '1' : '0.4'; l.style.strokeWidth = isMe ? '3' : '1.5'; }
           dots.forEach(d => { d.style.opacity = ''; });
           if (lbl) { lbl.style.opacity = ''; lbl.style.fontWeight = ''; lbl.style.fontSize = ''; }
@@ -6357,60 +6373,70 @@ const UI = {
       });
     };
 
-    const capture = () => html2canvas(wrap, {
-      backgroundColor: bgColor, scale: 1,
-      logging: false, useCORS: true, allowTaint: true,
-    });
+    const capture = async () => {
+      const raw = await html2canvas(wrap, {
+        backgroundColor: bgColor, scale: 1,
+        logging: false, useCORS: true, allowTaint: true,
+      });
+      return resizeCanvas(raw);
+    };
 
-    const state = saveState();
-    let gif;
+    let workerScript, gif, encodingTimeout;
 
     try {
-      // Frame 0: overview (all lines visible at normal opacity)
-      setHighlight(null, state);
+      setBtn('⏳ Siapkan…', true);
+      workerScript = await getWorkerScript();
+
+      // Frame 0: overview
+      setHighlight(null);
       await new Promise(r => setTimeout(r, 120));
       const overviewCanvas = await capture();
       const gifW = overviewCanvas.width, gifH = overviewCanvas.height;
 
       gif = new GIF({
-        workers: 2, quality: 8,
+        workers: 4, quality: 15,  // quality 15 = faster encode, still good for sharing
         width: gifW, height: gifH,
-        workerScript: 'https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js',
+        workerScript,
       });
 
       gif.addFrame(overviewCanvas, { delay: 1200, copy: true });
 
-      // One frame per manager (highlight in turn)
+      // One frame per manager
       for (let i = 0; i < lines.length; i++) {
-        setBtn(`⏳ ${Math.round(((i + 1) / lines.length) * 85)}%`, true);
-        setHighlight(i, state);
-        await new Promise(r => setTimeout(r, 100));
-        const frame = await capture();
-        const delay = i === lines.length - 1 ? 2000 : 1600;
-        gif.addFrame(frame, { delay, copy: true });
+        setBtn(`⏳ ${Math.round(((i + 1) / lines.length) * 80)}%`, true);
+        setHighlight(i);
+        await new Promise(r => setTimeout(r, 80));
+        gif.addFrame(await capture(), { delay: i === lines.length - 1 ? 2000 : 1600, copy: true });
       }
 
-      // Final frame: overview again
-      setHighlight(null, state);
-      await new Promise(r => setTimeout(r, 80));
+      // Final overview
+      setHighlight(null);
+      await new Promise(r => setTimeout(r, 60));
       gif.addFrame(await capture(), { delay: 1500, copy: true });
 
     } finally {
-      // Always restore visual state
-      setHighlight(null, state);
+      setHighlight(null);
     }
 
     setBtn('⏳ Encoding…', true);
 
+    // Timeout guard — if encoding hangs, reset the button
+    encodingTimeout = setTimeout(() => {
+      setBtn('❌ Gagal — coba lagi', false);
+      try { gif?.abort(); } catch {}
+    }, 60000);
+
+    gif.on('progress', p => setBtn(`⏳ ${Math.round(80 + p * 20)}%`, true));
+
     gif.on('finished', blob => {
+      clearTimeout(encodingTimeout);
+      if (workerScript?.startsWith('blob:')) URL.revokeObjectURL(workerScript);
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = `Bump_Chart_GW${Store.currentGW || ''}.gif`;
       a.click();
       setBtn('🎬 GIF', false);
     });
-
-    gif.on('progress', p => setBtn(`⏳ ${Math.round(85 + p * 15)}%`, true));
 
     gif.render();
   },
