@@ -6208,41 +6208,68 @@ const UI = {
 
   async _captureDesktop(el, minWidth = 1600) {
     const isMobile = window.innerWidth < 700;
+    const isPortrait = window.innerHeight > window.innerWidth;
     const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#080d14';
 
+    // Always add capture-desktop class (fixes overflow/max-height on both mobile and desktop)
+    document.body.classList.add('capture-desktop');
+
+    // Save and clear any inline overflow/max-height constraints inside el that would clip content
+    const overflowEls = [el, ...el.querySelectorAll('*')].filter(n => {
+      const s = n.getAttribute?.('style') || '';
+      return s.includes('overflow') || s.includes('max-height');
+    });
+    const savedStyles = overflowEls.map(n => ({ el: n, style: n.getAttribute('style') }));
+    overflowEls.forEach(n => {
+      const s = n.getAttribute('style') || '';
+      n.setAttribute('style', s
+        .replace(/overflow[^;]*;?/g, '')
+        .replace(/max-height[^;]*;?/g, '')
+        .trim()
+      );
+    });
+
+    // Force desktop width on mobile
+    const origElStyle = el.getAttribute('style') || '';
     if (isMobile) {
-      // Add body class that overrides ALL mobile media query styles
-      document.body.classList.add('capture-desktop');
-      // Force element to desktop width
-      const origStyle = el.getAttribute('style') || '';
       el.style.width = minWidth + 'px';
       el.style.maxWidth = minWidth + 'px';
-      el.style.overflow = 'visible';
-
-      // Wait for reflow
-      await new Promise(r => setTimeout(r, 200));
-
-      const canvas = await html2canvas(el, {
-        backgroundColor: bgColor,
-        scale: 2,
-        width: minWidth,
-        windowWidth: minWidth,
-        scrollX: 0, scrollY: -window.scrollY,
-        useCORS: true, allowTaint: true,
-      });
-
-      // Restore
-      document.body.classList.remove('capture-desktop');
-      if (origStyle) el.setAttribute('style', origStyle);
-      else el.removeAttribute('style');
-
-      return canvas;
     }
 
-    return await html2canvas(el, {
-      backgroundColor: bgColor, scale: 2,
+    // Wait for reflow
+    await new Promise(r => setTimeout(r, 200));
+
+    const canvas = await html2canvas(el, {
+      backgroundColor: bgColor,
+      scale: 2,
+      ...(isMobile ? { width: minWidth, windowWidth: minWidth, scrollX: 0, scrollY: -window.scrollY } : {}),
       useCORS: true, allowTaint: true,
     });
+
+    // Restore all styles
+    document.body.classList.remove('capture-desktop');
+    savedStyles.forEach(({ el: n, style }) => {
+      if (style) n.setAttribute('style', style);
+      else n.removeAttribute('style');
+    });
+    if (isMobile) {
+      if (origElStyle) el.setAttribute('style', origElStyle);
+      else el.removeAttribute('style');
+    }
+
+    // On mobile portrait: rotate canvas 90° to produce a landscape image (bigger, sharper)
+    if (isMobile && isPortrait && canvas.width < canvas.height) {
+      const rotated = document.createElement('canvas');
+      rotated.width = canvas.height;
+      rotated.height = canvas.width;
+      const ctx = rotated.getContext('2d');
+      ctx.translate(canvas.height / 2, canvas.width / 2);
+      ctx.rotate(Math.PI / 2);
+      ctx.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
+      return rotated;
+    }
+
+    return canvas;
   },
 
   async saveCard(cardId, title='FPL Dashboard') {
