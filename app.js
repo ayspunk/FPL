@@ -6352,7 +6352,7 @@ const UI = {
 
     // Render SVG at 2× then cap at MAX_GIF_W for sharp output
     const RENDER_SCALE = 2;
-    const MAX_GIF_W = 2000;
+    const MAX_GIF_W = 1000;
     // finalW based on CROP_W (content area), but rendering uses RENDER_W (+ label overflow room)
     const finalW = Math.min(CROP_W * RENDER_SCALE, MAX_GIF_W);
     const finalH = Math.round(SVG_H * RENDER_SCALE * (finalW / (CROP_W * RENDER_SCALE)));
