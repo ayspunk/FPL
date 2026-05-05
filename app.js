@@ -4750,7 +4750,12 @@ const Render = {
       </div>
       <div class="charts-grid">
         <div class="chart-card wide" id="card-bumpchart">
-          <div class="chart-header"><div class="chart-title">📈 Ranking per GW — Bump Chart</div>${UI.shareBar('card-bumpchart','Bump_Chart')}</div>
+          <div class="chart-header"><div class="chart-title">📈 Ranking per GW — Bump Chart</div>
+            <div style="display:flex;gap:6px;align-items:center">
+              ${UI.shareBar('card-bumpchart','Bump_Chart')}
+              <button id="bump-gif-btn" class="btn-share" onclick="UI.generateBumpGIF()" title="Download GIF animasi highlight per manajer">🎬 GIF</button>
+            </div>
+          </div>
           <div class="hm-league-name">${ligaName}</div>
           <div id="bump-chart-wrap" class="bump-svg-wrap">${hasMatrix?H.loader('Membangun chart…'):H.info('Data ranking per GW belum tersedia.')}</div>
         </div>
@@ -6304,6 +6309,110 @@ const UI = {
         }, 500);
       }
     } catch(e) { console.error('Share failed:', e); }
+  },
+
+  // ── Bump Chart — animated GIF (highlight each manager in turn) ──
+  async generateBumpGIF() {
+    const wrap = document.getElementById('bump-chart-wrap');
+    if (!wrap) return;
+    const matrix = Store.leagueMatrix;
+    if (!matrix?.series?.length) { alert('Bump chart belum tersedia.'); return; }
+    if (typeof GIF === 'undefined') { alert('GIF encoder belum dimuat. Coba refresh halaman.'); return; }
+
+    const btn = document.getElementById('bump-gif-btn');
+    const setBtn = (txt, dis) => { if (btn) { btn.textContent = txt; btn.disabled = dis; } };
+    setBtn('⏳ 0%', true);
+
+    const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#080d14';
+    const lines = [...wrap.querySelectorAll('.bump-manager')];
+    const { series } = matrix;
+
+    // Save & restore helpers for SVG inline styles
+    const saveState = () => lines.map(g => ({
+      line: g.querySelector('.bump-line'),
+      dots: [...g.querySelectorAll('circle')],
+      lbl:  g.querySelector('text'),
+      lineOrig: g.querySelector('.bump-line')?.getAttribute('style') || '',
+      lblOrig:  g.querySelector('text')?.getAttribute('style') || '',
+      dotOrig:  [...g.querySelectorAll('circle')].map(d => d.getAttribute('style') || ''),
+    }));
+
+    const setHighlight = (activeIdx, state) => {
+      state.forEach(({ line: l, dots, lbl, lineOrig }, i) => {
+        const isMe = l?.classList.contains('hl');
+        if (activeIdx === null) {
+          // Restore natural opacity
+          if (l) { l.style.opacity = isMe ? '1' : '0.4'; l.style.strokeWidth = isMe ? '3' : '1.5'; }
+          dots.forEach(d => { d.style.opacity = ''; });
+          if (lbl) { lbl.style.opacity = ''; lbl.style.fontWeight = ''; lbl.style.fontSize = ''; }
+        } else if (i === activeIdx) {
+          if (l) { l.style.opacity = '1'; l.style.strokeWidth = '3'; }
+          dots.forEach(d => { d.style.opacity = '1'; d.setAttribute('r', '4'); });
+          if (lbl) { lbl.style.opacity = '1'; lbl.style.fontWeight = '700'; lbl.style.fontSize = '13px'; }
+        } else {
+          if (l) { l.style.opacity = '0.06'; l.style.strokeWidth = '1'; }
+          dots.forEach(d => { d.style.opacity = '0.06'; });
+          if (lbl) { lbl.style.opacity = '0.06'; }
+        }
+      });
+    };
+
+    const capture = () => html2canvas(wrap, {
+      backgroundColor: bgColor, scale: 1,
+      logging: false, useCORS: true, allowTaint: true,
+    });
+
+    const state = saveState();
+    let gif;
+
+    try {
+      // Frame 0: overview (all lines visible at normal opacity)
+      setHighlight(null, state);
+      await new Promise(r => setTimeout(r, 120));
+      const overviewCanvas = await capture();
+      const gifW = overviewCanvas.width, gifH = overviewCanvas.height;
+
+      gif = new GIF({
+        workers: 2, quality: 8,
+        width: gifW, height: gifH,
+        workerScript: 'https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js',
+      });
+
+      gif.addFrame(overviewCanvas, { delay: 1200, copy: true });
+
+      // One frame per manager (highlight in turn)
+      for (let i = 0; i < lines.length; i++) {
+        setBtn(`⏳ ${Math.round(((i + 1) / lines.length) * 85)}%`, true);
+        setHighlight(i, state);
+        await new Promise(r => setTimeout(r, 100));
+        const frame = await capture();
+        const delay = i === lines.length - 1 ? 2000 : 1600;
+        gif.addFrame(frame, { delay, copy: true });
+      }
+
+      // Final frame: overview again
+      setHighlight(null, state);
+      await new Promise(r => setTimeout(r, 80));
+      gif.addFrame(await capture(), { delay: 1500, copy: true });
+
+    } finally {
+      // Always restore visual state
+      setHighlight(null, state);
+    }
+
+    setBtn('⏳ Encoding…', true);
+
+    gif.on('finished', blob => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `Bump_Chart_GW${Store.currentGW || ''}.gif`;
+      a.click();
+      setBtn('🎬 GIF', false);
+    });
+
+    gif.on('progress', p => setBtn(`⏳ ${Math.round(85 + p * 15)}%`, true));
+
+    gif.render();
   },
 
   async shareAllLeague() {
