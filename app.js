@@ -6324,45 +6324,43 @@ const UI = {
     setBtn('⏳ 0%', true);
 
     const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#080d14';
-    const textColor = getComputedStyle(document.documentElement).getPropertyValue('--text3').trim() || '#4a6a88';
     const lines = [...wrap.querySelectorAll('.bump-manager')];
-
-    // Resize canvas to max width to keep GIF file size small & encoding fast
-    const MAX_GIF_W = 800;
-    const resizeCanvas = (src) => {
-      if (src.width <= MAX_GIF_W) return src;
-      const ratio = MAX_GIF_W / src.width;
-      const dst = document.createElement('canvas');
-      dst.width = MAX_GIF_W;
-      dst.height = Math.round(src.height * ratio);
-      dst.getContext('2d').drawImage(src, 0, 0, dst.width, dst.height);
-      return dst;
-    };
 
     // Load worker script as blob URL to avoid CORS/CSP issues with CDN
     const getWorkerScript = async () => {
       const CDN = 'https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js';
       try {
         const resp = await fetch(CDN);
-        if (!resp.ok) throw new Error('fetch failed');
+        if (!resp.ok) throw new Error();
         const text = await resp.text();
         return URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
       } catch { return CDN; }
     };
 
-    // Capture frame by serializing the SVG directly — bypasses overflow:auto clipping
-    // so the FULL chart width is always captured regardless of scroll position
     const svg = wrap.querySelector('.bump-svg');
     if (!svg) { setBtn('🎬 GIF', false); return; }
+
     const SVG_W = parseInt(svg.getAttribute('width')) || 900;
     const SVG_H = parseInt(svg.getAttribute('height')) || 300;
 
+    // Crop width: use getBBox() to remove empty space to the right of labels
+    let CROP_W = SVG_W;
+    try {
+      const bbox = svg.getBBox();
+      CROP_W = Math.min(SVG_W, Math.ceil(bbox.x + bbox.width) + 24);
+    } catch {}
+
+    // Render SVG at 2× then cap at MAX_GIF_W for sharp output
+    const RENDER_SCALE = 2;
+    const MAX_GIF_W = 1000;
+    const finalW = Math.min(CROP_W * RENDER_SCALE, MAX_GIF_W);
+    const finalH = Math.round(SVG_H * RENDER_SCALE * (finalW / (CROP_W * RENDER_SCALE)));
+
     const captureFrame = () => new Promise((resolve, reject) => {
-      // Clone current SVG state (inline styles from setHighlight are preserved)
       const clone = svg.cloneNode(true);
       clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
 
-      // Embed background as first element
+      // Embed background rect
       const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
       bg.setAttribute('x', '0'); bg.setAttribute('y', '0');
       bg.setAttribute('width', SVG_W); bg.setAttribute('height', SVG_H);
@@ -6375,13 +6373,15 @@ const UI = {
       const img = new Image();
       img.onload = () => {
         URL.revokeObjectURL(url);
+        // Draw at 2× scale, cropped to CROP_W (removes right whitespace)
         const c = document.createElement('canvas');
-        c.width = SVG_W; c.height = SVG_H;
+        c.width = finalW; c.height = finalH;
         const ctx = c.getContext('2d');
         ctx.fillStyle = bgColor;
-        ctx.fillRect(0, 0, SVG_W, SVG_H);
-        ctx.drawImage(img, 0, 0, SVG_W, SVG_H);
-        resolve(resizeCanvas(c));
+        ctx.fillRect(0, 0, finalW, finalH);
+        // src rect: (0,0,CROP_W,SVG_H) → dst rect: full canvas
+        ctx.drawImage(img, 0, 0, CROP_W, SVG_H, 0, 0, finalW, finalH);
+        resolve(c);
       };
       img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
       img.src = url;
@@ -6415,29 +6415,18 @@ const UI = {
       setBtn('⏳ Siapkan…', true);
       workerScript = await getWorkerScript();
 
-      // Frame 0: overview (all lines)
-      setHighlight(null);
-      const overviewCanvas = await captureFrame();
-      const gifW = overviewCanvas.width, gifH = overviewCanvas.height;
-
       gif = new GIF({
-        workers: 4, quality: 15,
-        width: gifW, height: gifH,
+        workers: 4, quality: 10,
+        width: finalW, height: finalH,
         workerScript,
       });
 
-      gif.addFrame(overviewCanvas, { delay: 1200, copy: true });
-
-      // One frame per manager
+      // One frame per manager only (no overview frame)
       for (let i = 0; i < lines.length; i++) {
-        setBtn(`⏳ ${Math.round(((i + 1) / lines.length) * 80)}%`, true);
+        setBtn(`⏳ ${Math.round(((i + 1) / lines.length) * 85)}%`, true);
         setHighlight(i);
-        gif.addFrame(await captureFrame(), { delay: i === lines.length - 1 ? 2000 : 1600, copy: true });
+        gif.addFrame(await captureFrame(), { delay: 1800, copy: true });
       }
-
-      // Final overview
-      setHighlight(null);
-      gif.addFrame(await captureFrame(), { delay: 1500, copy: true });
 
     } finally {
       setHighlight(null);
@@ -6450,7 +6439,7 @@ const UI = {
       try { gif?.abort(); } catch {}
     }, 90000);
 
-    gif.on('progress', p => setBtn(`⏳ ${Math.round(80 + p * 20)}%`, true));
+    gif.on('progress', p => setBtn(`⏳ ${Math.round(85 + p * 15)}%`, true));
 
     gif.on('finished', blob => {
       clearTimeout(encodingTimeout);
