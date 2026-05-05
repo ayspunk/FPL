@@ -6324,10 +6324,11 @@ const UI = {
     setBtn('⏳ 0%', true);
 
     const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#080d14';
+    const textColor = getComputedStyle(document.documentElement).getPropertyValue('--text3').trim() || '#4a6a88';
     const lines = [...wrap.querySelectorAll('.bump-manager')];
 
     // Resize canvas to max width to keep GIF file size small & encoding fast
-    const MAX_GIF_W = 750;
+    const MAX_GIF_W = 800;
     const resizeCanvas = (src) => {
       if (src.width <= MAX_GIF_W) return src;
       const ratio = MAX_GIF_W / src.width;
@@ -6346,10 +6347,45 @@ const UI = {
         if (!resp.ok) throw new Error('fetch failed');
         const text = await resp.text();
         return URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
-      } catch {
-        return CDN; // fallback to direct CDN URL
-      }
+      } catch { return CDN; }
     };
+
+    // Capture frame by serializing the SVG directly — bypasses overflow:auto clipping
+    // so the FULL chart width is always captured regardless of scroll position
+    const svg = wrap.querySelector('.bump-svg');
+    if (!svg) { setBtn('🎬 GIF', false); return; }
+    const SVG_W = parseInt(svg.getAttribute('width')) || 900;
+    const SVG_H = parseInt(svg.getAttribute('height')) || 300;
+
+    const captureFrame = () => new Promise((resolve, reject) => {
+      // Clone current SVG state (inline styles from setHighlight are preserved)
+      const clone = svg.cloneNode(true);
+      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+
+      // Embed background as first element
+      const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      bg.setAttribute('x', '0'); bg.setAttribute('y', '0');
+      bg.setAttribute('width', SVG_W); bg.setAttribute('height', SVG_H);
+      bg.setAttribute('fill', bgColor);
+      clone.insertBefore(bg, clone.firstChild);
+
+      const svgStr = new XMLSerializer().serializeToString(clone);
+      const url = URL.createObjectURL(new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' }));
+
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const c = document.createElement('canvas');
+        c.width = SVG_W; c.height = SVG_H;
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = bgColor;
+        ctx.fillRect(0, 0, SVG_W, SVG_H);
+        ctx.drawImage(img, 0, 0, SVG_W, SVG_H);
+        resolve(resizeCanvas(c));
+      };
+      img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
+      img.src = url;
+    });
 
     const setHighlight = (activeIdx) => {
       lines.forEach((g, i) => {
@@ -6359,11 +6395,11 @@ const UI = {
         const isMe = l?.classList.contains('hl');
         if (activeIdx === null) {
           if (l) { l.style.opacity = isMe ? '1' : '0.4'; l.style.strokeWidth = isMe ? '3' : '1.5'; }
-          dots.forEach(d => { d.style.opacity = ''; });
+          dots.forEach(d => { d.style.opacity = ''; d.setAttribute('r', isMe ? '4' : '2'); });
           if (lbl) { lbl.style.opacity = ''; lbl.style.fontWeight = ''; lbl.style.fontSize = ''; }
         } else if (i === activeIdx) {
           if (l) { l.style.opacity = '1'; l.style.strokeWidth = '3'; }
-          dots.forEach(d => { d.style.opacity = '1'; d.setAttribute('r', '4'); });
+          dots.forEach(d => { d.style.opacity = '1'; d.setAttribute('r', '5'); });
           if (lbl) { lbl.style.opacity = '1'; lbl.style.fontWeight = '700'; lbl.style.fontSize = '13px'; }
         } else {
           if (l) { l.style.opacity = '0.06'; l.style.strokeWidth = '1'; }
@@ -6373,28 +6409,19 @@ const UI = {
       });
     };
 
-    const capture = async () => {
-      const raw = await html2canvas(wrap, {
-        backgroundColor: bgColor, scale: 1,
-        logging: false, useCORS: true, allowTaint: true,
-      });
-      return resizeCanvas(raw);
-    };
-
     let workerScript, gif, encodingTimeout;
 
     try {
       setBtn('⏳ Siapkan…', true);
       workerScript = await getWorkerScript();
 
-      // Frame 0: overview
+      // Frame 0: overview (all lines)
       setHighlight(null);
-      await new Promise(r => setTimeout(r, 120));
-      const overviewCanvas = await capture();
+      const overviewCanvas = await captureFrame();
       const gifW = overviewCanvas.width, gifH = overviewCanvas.height;
 
       gif = new GIF({
-        workers: 4, quality: 15,  // quality 15 = faster encode, still good for sharing
+        workers: 4, quality: 15,
         width: gifW, height: gifH,
         workerScript,
       });
@@ -6405,14 +6432,12 @@ const UI = {
       for (let i = 0; i < lines.length; i++) {
         setBtn(`⏳ ${Math.round(((i + 1) / lines.length) * 80)}%`, true);
         setHighlight(i);
-        await new Promise(r => setTimeout(r, 80));
-        gif.addFrame(await capture(), { delay: i === lines.length - 1 ? 2000 : 1600, copy: true });
+        gif.addFrame(await captureFrame(), { delay: i === lines.length - 1 ? 2000 : 1600, copy: true });
       }
 
       // Final overview
       setHighlight(null);
-      await new Promise(r => setTimeout(r, 60));
-      gif.addFrame(await capture(), { delay: 1500, copy: true });
+      gif.addFrame(await captureFrame(), { delay: 1500, copy: true });
 
     } finally {
       setHighlight(null);
@@ -6420,11 +6445,10 @@ const UI = {
 
     setBtn('⏳ Encoding…', true);
 
-    // Timeout guard — if encoding hangs, reset the button
     encodingTimeout = setTimeout(() => {
       setBtn('❌ Gagal — coba lagi', false);
       try { gif?.abort(); } catch {}
-    }, 60000);
+    }, 90000);
 
     gif.on('progress', p => setBtn(`⏳ ${Math.round(80 + p * 20)}%`, true));
 
