@@ -1427,8 +1427,10 @@ const Process = {
     const midP = this.pickN(MID, nM, [...gkP,...defP]);
     const fwdP = this.pickN(FWD, nF, [...gkP,...defP,...midP]);
     const all  = [...gkP,...defP,...midP,...fwdP];
-    const field= [...defP,...midP,...fwdP].sort((a,b)=>b.GWScore-a.GWScore);
     const total= +all.reduce((s,p)=>s+(p.GWScore||0),0).toFixed(2);
+    // DGW players get a 1.5× bonus for captaincy: they play twice so expected pts are ~double
+    const capSortScore = p => (p.GWScore || 0) * (p.isDGW ? 1.5 : 1);
+    const field= [...defP,...midP,...fwdP].sort((a,b)=>capSortScore(b)-capSortScore(a));
     const cap  = field[0]||null;
     const vc   = field[1]||null;
 
@@ -1477,7 +1479,7 @@ const Process = {
 
   rankFormations(fms) {
     const sorted = [...fms].sort((a,b)=>b.total-a.total);
-    return fms.map(f => ({ ...f, rank: sorted.findIndex(s=>s.name===f.name)+1 }));
+    return sorted.map((f, idx) => ({ ...f, rank: idx + 1 }));
   },
 
   // ── Knapsack Squad Optimizer — 15 players within budget ──
@@ -5204,12 +5206,23 @@ const Render = {
     // Total score
     const totalScore = starters.reduce((s,p) => s + (p.ScoutScore||p.GWScore||0), 0);
 
-    // Captain recommendation from own squad
+    // Live points calculation (uses livePoints from live API, falls back to JSON live data via scored players)
+    const hasLive = squad.some(p => p.livePoints != null);
+    const totalLiveXI = starters.reduce((s,p) => s + (p.livePoints ?? 0), 0);
+    const totalLiveBench = bench.reduce((s,p) => s + (p.livePoints ?? 0), 0);
+    const capPlayer = starters.find(p => p.is_captain);
+    const capBonus = capPlayer?.livePoints ?? 0;
+    const totalLiveWithCap = totalLiveXI + capBonus;
+
+    // Captain recommendation from own squad (DGW players get 1.5× bonus)
     const capCandidates = starters.filter(p => p.Position !== 'GK').sort((a,b) => {
-      const sc = p => ((p.scores?.form||0)*0.25+(p.scores?.xgi||0)*0.25+(p.scores?.ppg||0)*0.2+(p.scores?.fdr_short||0)*0.15);
-      return sc(b) - sc(a);
+      const scored_a = Store.scoredPlayers.find(sp => sp.id === a.id);
+      const scored_b = Store.scoredPlayers.find(sp => sp.id === b.id);
+      const sc = (p, sp) => ((sp?.scores?.form||0)*0.25+(sp?.scores?.xgi||0)*0.25+(sp?.scores?.ppg||0)*0.2+(sp?.scores?.fdr_short||0)*0.15) * (sp?.isDGW ? 1.5 : 1);
+      return sc(b, scored_b) - sc(a, scored_a);
     });
     const recCap = capCandidates[0];
+    const recCapScored = recCap ? Store.scoredPlayers.find(sp => sp.id === recCap.id) : null;
 
     // Shirt URL helper
     const shirtUrl = (p) => {
@@ -5231,6 +5244,10 @@ const Render = {
       const tip = `${p.Player} (${p.Team})\n${p.Position} · £${p.Price.toFixed(1)}\nScore: ${sc.toFixed(2)}\nFDR: ${H.numFmt(fdr,1)} · ${isHome?'Home':'Away'} vs ${opp}\nPPG: ${H.numFmt(p.PPG,1)} · xGI: ${H.numFmt(p.xGI,2)}`;
       const oppLabel = scored?.isBlank ? '<span class="p-opp-blank">⛔</span>'
         : `<span class="p-opp-vs">${opp}</span><span class="p-opp-ha">(${isHome?'H':'A'})</span>`;
+      const displayPts = isCap && p.livePoints != null ? p.livePoints * 2 : p.livePoints;
+      const ptsHtml = hasLive && p.livePoints != null
+        ? `<div class="p-chip-pts ${H.ptsClass(displayPts)}">${displayPts}${isCap?' (×2)':''}</div>`
+        : '';
       return `<div class="player-chip" title="${tip}">
         <div class="p-shirt-img-wrap">
           <img class="p-shirt-img" src="${shirtUrl(p)}" alt="${p.Team}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
@@ -5238,50 +5255,81 @@ const Render = {
           ${capBadge}
         </div>
         <div class="p-chip-name">${p.Player.split(' ').slice(-1)[0]}${isCap?' ★':isVC?' ☆':''}</div>
-        <div class="p-chip-score">${sc.toFixed(1)}</div>
+        ${ptsHtml || `<div class="p-chip-score">${sc.toFixed(1)}</div>`}
         <div class="p-chip-fixture"><span class="p-chip-team">${p.Team}</span> ${oppLabel}</div>
       </div>`;
     };
 
     const benchChips = bench.map(p => chip(p)).join('');
 
+    const liveStripHtml = hasLive ? `
+      <div class="eval-summary-strip" style="margin-bottom:12px">
+        <div class="eval-stat">
+          <div class="eval-stat-label">Poin 11 Pemain</div>
+          <div class="eval-stat-val" style="color:var(--text)">${totalLiveXI}</div>
+        </div>
+        <div class="eval-stat">
+          <div class="eval-stat-label">+ Captain (×2)</div>
+          <div class="eval-stat-val" style="color:var(--gold)">+${capBonus}</div>
+        </div>
+        <div class="eval-stat highlight">
+          <div class="eval-stat-label">Total Live</div>
+          <div class="eval-stat-val" style="color:var(--green);font-size:24px">${totalLiveWithCap}</div>
+        </div>
+        <div class="eval-stat">
+          <div class="eval-stat-label">Bench</div>
+          <div class="eval-stat-val dim">${totalLiveBench}</div>
+        </div>
+      </div>` : '';
+
+    const colSpanPts = hasLive ? 8 : 7;
+
     return `
       <div class="section-title">My Formation — ${formName} · GW${Store.currentGW||'–'}</div>
-      ${recCap ? `<div class="info-box">👑 <b>Rekomendasi Captain:</b> ${recCap.Player} (${recCap.Team}) — Form ${H.numFmt(recCap.Form,1)}, PPG ${H.numFmt(recCap.PPG,1)}, xGI ${H.numFmt(recCap.xGI,2)}</div>` : ''}
+      ${recCap ? `<div class="info-box">👑 <b>Rekomendasi Captain:</b> ${recCap.Player} (${recCap.Team})${recCapScored?.isDGW?' 🔥 DGW':''} — Form ${H.numFmt(recCap.Form,1)}, PPG ${H.numFmt(recCap.PPG,1)}, xGI ${H.numFmt(recCap.xGI,2)}</div>` : ''}
+      ${liveStripHtml}
       <div class="lineup-container" style="grid-template-columns:1fr 480px">
         <div>
           <div class="section-title">Squad</div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Role</th><th>Pemain</th><th>Tim</th><th>Lawan</th><th class="r">Score</th><th class="r">PPG</th><th class="r">£</th></tr></thead>
+              <thead><tr><th>Role</th><th>Pemain</th><th>Tim</th><th>Lawan</th><th class="r">Score</th>${hasLive?'<th class="r">Poin</th>':''}<th class="r">PPG</th><th class="r">£</th></tr></thead>
               <tbody>
                 ${starters.map(p => {
                   const scored = Store.scoredPlayers.find(sp=>sp.id===p.id);
                   const sc = p.ScoutScore||p.GWScore||0;
+                  const displayPts = p.is_captain && p.livePoints != null ? p.livePoints * 2 : p.livePoints;
+                  const ptsCell = hasLive
+                    ? `<td class="mono r ${H.ptsClass(displayPts)}" style="font-weight:700">${p.livePoints!=null?(displayPts+(p.is_captain?' ×2':'')):'–'}</td>`
+                    : '';
                   return `<tr class="${p.is_captain?'row-cap':''}">
                     <td class="dim" style="font-size:11px;text-transform:uppercase">${p.squad_role}${p.is_captain?' ⭐':p.is_vice_captain?' 🌟':''}</td>
                     <td style="font-weight:600">${p.Player}</td>
                     <td>${H.teamTag(p.Team)}</td>
                     <td class="dim" style="font-size:12px">${scored?.isHome?'🏠':'✈'} ${scored?.opponent||'?'}</td>
                     <td class="mono r ${H.scoreClass(sc)}">${sc.toFixed(2)}</td>
+                    ${ptsCell}
                     <td class="mono dim r">${H.numFmt(p.PPG,1)}</td>
                     <td class="mono dim r">£${p.Price.toFixed(1)}</td>
                   </tr>`;
                 }).join('')}
-                <tr class="row-sep"><td colspan="7" class="dim" style="font-size:10px;letter-spacing:1px">BENCH</td></tr>
+                <tr class="row-sep"><td colspan="${colSpanPts}" class="dim" style="font-size:10px;letter-spacing:1px">BENCH</td></tr>
                 ${bench.map(p => {
                   const sc = p.ScoutScore||p.GWScore||0;
+                  const ptsCell = hasLive
+                    ? `<td class="mono r dim">${p.livePoints!=null?p.livePoints:'–'}</td>`
+                    : '';
                   return `<tr style="opacity:.6"><td class="dim" style="font-size:11px">Bench</td>
                     <td>${p.Player}</td><td>${H.teamTag(p.Team)}</td><td></td>
-                    <td class="mono r dim">${sc.toFixed(2)}</td><td class="mono dim r">${H.numFmt(p.PPG,1)}</td><td class="mono dim r">£${p.Price.toFixed(1)}</td></tr>`;
+                    <td class="mono r dim">${sc.toFixed(2)}</td>${ptsCell}<td class="mono dim r">${H.numFmt(p.PPG,1)}</td><td class="mono dim r">£${p.Price.toFixed(1)}</td></tr>`;
                 }).join('')}
-                <tr class="row-total"><td>Total</td><td colspan="3"></td><td class="mono r" style="font-size:16px;font-weight:700;color:var(--green)">${totalScore.toFixed(2)}</td><td></td><td></td></tr>
+                <tr class="row-total"><td>Total</td><td colspan="3"></td><td class="mono r" style="font-size:16px;font-weight:700;color:var(--green)">${totalScore.toFixed(2)}</td>${hasLive?`<td class="mono r" style="font-size:16px;font-weight:700;color:var(--gold)">${totalLiveWithCap}</td>`:''}<td></td><td></td></tr>
               </tbody>
             </table>
           </div>
         </div>
         <div class="pitch-wrap">
-          <div class="section-title">Pitch — ${formName}</div>
+          <div class="section-title">Pitch${hasLive?` — ${totalLiveWithCap} pts`:''} — ${formName}</div>
           <div class="pitch">
             <svg class="pitch-lines" viewBox="0 0 100 150" preserveAspectRatio="none">
               <rect x="5" y="5" width="90" height="140" rx="1" stroke="white" stroke-width=".8" fill="none"/>
