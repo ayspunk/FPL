@@ -6065,7 +6065,7 @@ const Charts = {
       const lbl=`<text x="${lastPt.x+10}" y="${lastPt.y+4}" fill="${col}" font-size="${s.isMe?12:10}"
         font-weight="${s.isMe?700:400}" font-family="Barlow Condensed,sans-serif">${fullName} #${lastR}</text>`;
       return `<g class="bump-manager">
-        <path class="bump-line ${s.isMe?'hl':''}" d="${d}" stroke="${col}" stroke-width="${thick}" opacity="${opa}"/>
+        <path class="bump-line ${s.isMe?'hl':''}" d="${d}" stroke="${col}" stroke-width="${thick}" opacity="${opa}" fill="none"/>
         ${dots}${lbl}
       </g>`;
     }).join('');
@@ -6353,17 +6353,30 @@ const UI = {
     // Render SVG at 2× then cap at MAX_GIF_W for sharp output
     const RENDER_SCALE = 2;
     const MAX_GIF_W = 1000;
+    // finalW based on CROP_W (content area), but rendering uses RENDER_W (+ label overflow room)
     const finalW = Math.min(CROP_W * RENDER_SCALE, MAX_GIF_W);
     const finalH = Math.round(SVG_H * RENDER_SCALE * (finalW / (CROP_W * RENDER_SCALE)));
+
+    // Extra width to accommodate system sans-serif being ~30% wider than Barlow Condensed
+    const LABEL_EXTRA = 250;
+    const RENDER_W = CROP_W + LABEL_EXTRA; // extended canvas so labels are never clipped
 
     const captureFrame = () => new Promise((resolve, reject) => {
       const clone = svg.cloneNode(true);
       clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      // Expand viewBox so label text isn't clipped by the SVG boundary
+      clone.setAttribute('width', RENDER_W);
+      clone.setAttribute('viewBox', `0 0 ${RENDER_W} ${SVG_H}`);
+
+      // Force fill="none" on all paths (prevents default black fill in serialized SVG)
+      clone.querySelectorAll('path').forEach(p => {
+        if (!p.getAttribute('fill')) p.setAttribute('fill', 'none');
+      });
 
       // Embed background rect
       const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
       bg.setAttribute('x', '0'); bg.setAttribute('y', '0');
-      bg.setAttribute('width', SVG_W); bg.setAttribute('height', SVG_H);
+      bg.setAttribute('width', RENDER_W); bg.setAttribute('height', SVG_H);
       bg.setAttribute('fill', bgColor);
       clone.insertBefore(bg, clone.firstChild);
 
@@ -6373,14 +6386,13 @@ const UI = {
       const img = new Image();
       img.onload = () => {
         URL.revokeObjectURL(url);
-        // Draw at 2× scale, cropped to CROP_W (removes right whitespace)
+        // Draw at 2× scale into final canvas dimensions
         const c = document.createElement('canvas');
         c.width = finalW; c.height = finalH;
         const ctx = c.getContext('2d');
         ctx.fillStyle = bgColor;
         ctx.fillRect(0, 0, finalW, finalH);
-        // src rect: (0,0,CROP_W,SVG_H) → dst rect: full canvas
-        ctx.drawImage(img, 0, 0, CROP_W, SVG_H, 0, 0, finalW, finalH);
+        ctx.drawImage(img, 0, 0, RENDER_W, SVG_H, 0, 0, finalW, finalH);
         resolve(c);
       };
       img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
