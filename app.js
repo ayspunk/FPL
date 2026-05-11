@@ -205,6 +205,7 @@ const Store = {
   currentGW:     null,
   targetGW:      0,     // 0 = auto (next GW), otherwise user-selected GW
   fdrHorizon:    3,     // number of GWs ahead for FDR multi-GW (1-8)
+  seasonPlannerType: 'def', // 'def' | 'atk' | 'ovr'
   optimizeLookback: 5, // GWs to look back for optimizer
   dataSource:    null,   // 'fpl' | 'sheets' | null
   gwWeights:     JSON.parse(JSON.stringify(CFG.GW_WEIGHTS)),
@@ -597,8 +598,8 @@ const Process = {
         return {
           opp: opp.short_name, oppFull: opp.name,
           isHome: isH,
-          fdrDef: nFDR(isH ? opp.strength_attack_away : opp.strength_attack_home, mnD, mxD),
-          fdrAtk: nFDR(isH ? opp.strength_defence_away : opp.strength_defence_home, mnA, mxA),
+          fdrDef: nFDR(isH ? opp.strength_attack_away : opp.strength_attack_home, mnA, mxA),
+          fdrAtk: nFDR(isH ? opp.strength_defence_away : opp.strength_defence_home, mnD, mxD),
         };
       }).filter(Boolean);
       if (!fixDetails.length) return;
@@ -636,11 +637,10 @@ const Process = {
           const isH = f.team_h === t.id;
           const opp = teamMap[isH ? f.team_a : f.team_h];
           if (!opp) return;
-          fdrVals.def.push(nFDR(isH ? opp.strength_attack_away : opp.strength_attack_home, mnD, mxD));
-          fdrVals.atk.push(nFDR(isH ? opp.strength_defence_away : opp.strength_defence_home, mnA, mxA));
+          fdrVals.def.push(nFDR(isH ? opp.strength_attack_away : opp.strength_attack_home, mnA, mxA));
+          fdrVals.atk.push(nFDR(isH ? opp.strength_defence_away : opp.strength_defence_home, mnD, mxD));
         });
-        // Blank GW for this team in this GW — count as neutral 3.0
-        if (!gwF.length) { fdrVals.def.push(3.0); fdrVals.atk.push(3.0); }
+        // Blank GW — excluded from avg (consistent with FDR table avg)
       });
       const avgD = fdrVals.def.length ? +(fdrVals.def.reduce((s,v)=>s+v,0)/fdrVals.def.length).toFixed(2) : 3;
       const avgA = fdrVals.atk.length ? +(fdrVals.atk.reduce((s,v)=>s+v,0)/fdrVals.atk.length).toFixed(2) : 3;
@@ -3508,11 +3508,10 @@ const Render = {
     const bs = Store.bootstrap;
     const teamMap = {};
     bs.teams.forEach(t => { teamMap[t.id] = t; });
-    const gw = Store.currentGW || 1;
     const upcoming = Store.fixtures.filter(f => !f.finished_provisional).sort((a,b)=>a.event-b.event);
     const gwRange = [...new Set(upcoming.map(f=>f.event))].sort((a,b)=>a-b);
+    const type = Store.seasonPlannerType || 'def';
 
-    // Build FDR per team per GW
     const strDef = bs.teams.flatMap(t=>[t.strength_defence_home,t.strength_defence_away]);
     const strAtk = bs.teams.flatMap(t=>[t.strength_attack_home,t.strength_attack_away]);
     const [mnD,mxD]=[Math.min(...strDef),Math.max(...strDef)];
@@ -3527,13 +3526,15 @@ const Render = {
         return fixes.map(f => {
           const isH = f.team_h===t.id;
           const opp = teamMap[isH?f.team_a:f.team_h];
-          const fdr = nFDR(isH?opp?.strength_attack_away||1200:opp?.strength_attack_home||1200,mnD,mxD);
+          const fdrD = nFDR(isH?opp?.strength_attack_away:opp?.strength_attack_home, mnA, mxA);
+          const fdrA = nFDR(isH?opp?.strength_defence_away:opp?.strength_defence_home, mnD, mxD);
+          const fdr = type==='def'?fdrD : type==='atk'?fdrA : +((fdrD+fdrA)/2).toFixed(1);
           totalFdr += fdr; count++;
           return { opp:opp?.short_name||'?', fdr, blank:false, dgw:fixes.length>1, isHome:isH };
         });
       });
-      return { team:t.short_name, id:t.id, avg: count>0?+(totalFdr/count).toFixed(1):3, gwCells };
-    }).sort((a,b)=>a.avg-b.avg);
+      return { team:t.short_name, id:t.id, avg: count>0?+(totalFdr/count).toFixed(1):null, gwCells };
+    }).sort((a,b)=>(a.avg??9)-(b.avg??9));
 
     // Find rotation pairs (2 teams where combined FDR is consistently low)
     const pairs = [];
@@ -3541,7 +3542,7 @@ const Render = {
       for (let j=i+1;j<teamData.length;j++) {
         const t1=teamData[i], t2=teamData[j];
         let combined=0, cnt=0;
-        gwRange.forEach((gwN,gi)=>{
+        gwRange.forEach((_,gi)=>{
           const c1=t1.gwCells[gi], c2=t2.gwCells[gi];
           const f1=Array.isArray(c1)?Math.min(...c1.map(x=>x.fdr)):c1.fdr||3;
           const f2=Array.isArray(c2)?Math.min(...c2.map(x=>x.fdr)):c2.fdr||3;
@@ -3552,6 +3553,11 @@ const Render = {
     }
     pairs.sort((a,b)=>a.avg-b.avg);
     const topPairs = pairs.slice(0,5);
+
+    const typeLabels = {def:'DEF — kesulitan bertahan vs serangan lawan',atk:'ATK — kesulitan menyerang vs pertahanan lawan',ovr:'OVR — rata-rata DEF & ATK'};
+    const typeBtns = ['def','atk','ovr'].map(k=>
+      `<button class="btn ${type===k?'btn-primary':'btn-ghost'}" onclick="Store.seasonPlannerType='${k}';Nav.goSubtab('fdr','season')" style="padding:4px 12px;font-size:11px">${k.toUpperCase()}</button>`
+    ).join('');
 
     const gwHeaders = gwRange.map(g=>`<th class="c" style="font-size:9px;min-width:50px">GW${g}</th>`).join('');
     const trows = teamData.map(td => {
@@ -3564,12 +3570,11 @@ const Render = {
           const x = c[0];
           return `<td class="fdr-cell ${H.fdrClass(x.fdr)}"><div class="fc-opp">${x.opp}</div><div class="fc-ha">${x.isHome?'(H)':'(A)'}</div></td>`;
         }
-        // DGW: combine all fixtures into single cell
         const avgFdr = +(c.reduce((s,x)=>s+x.fdr,0)/c.length).toFixed(1);
         const fixItems = c.map(x => `<div class="fdr-dgw-fix ${H.fdrClass(x.fdr)}"><span class="${x.isHome?'fc-home':'fc-away'}">${x.opp} ${x.isHome?'(H)':'(A)'}</span></div>`).join('');
         return `<td class="fdr-cell fdr-dgw-cell ${H.fdrClass(avgFdr)}"><div class="fdr-dgw-badge">DGW</div>${fixItems}</td>`;
       }).join('');
-      return `<tr><td style="font-weight:700;position:sticky;left:0;background:var(--bg2);z-index:1">${td.team}</td>${cells}<td class="fdr-avg-col ${H.fdrClass(td.avg)}">${td.avg}</td></tr>`;
+      return `<tr><td style="font-weight:700;position:sticky;left:0;background:var(--bg2);z-index:1">${td.team}</td>${cells}<td class="fdr-avg-col ${H.fdrClass(td.avg)}">${td.avg??'–'}</td></tr>`;
     }).join('');
 
     const pairCards = topPairs.map((p,i)=>
@@ -3578,9 +3583,13 @@ const Render = {
 
     return `
       <div class="section-title">📅 Season Planner — Sisa ${gwRange.length} GW</div>
-      ${H.info('FDR seluruh sisa musim. Rotation Pairs = 2 tim yang bergantian fixture mudah.')}
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+        <span class="dim" style="font-size:11px">Perspektif:</span>${typeBtns}
+        <span class="dim" style="font-size:10px;margin-left:4px">${typeLabels[type]}</span>
+      </div>
+      ${H.info('FDR seluruh sisa musim. Rotation Pairs = 2 tim yang bergantian fixture mudah. Blank GW tidak dihitung dalam rata-rata.')}
       <div class="stat-strip">${pairCards}</div>
-      <div class="table-wrap" style="overflow:auto;max-height:calc(100vh - 340px)">
+      <div class="table-wrap" style="overflow:auto;max-height:calc(100vh - 360px)">
         <table class="fdr-table"><thead><tr><th>Tim</th>${gwHeaders}<th class="c">Avg</th></tr></thead><tbody>${trows}</tbody></table>
       </div>`;
   },
@@ -3595,6 +3604,18 @@ const Render = {
     bs.teams.forEach(t => { teamMap[t.id] = t; });
     const gw = Store.currentGW || 1;
 
+    // FDR normalization (OVR = avg DEF+ATK, same bounds as FDR Matrix)
+    const strDef = bs.teams.flatMap(t=>[t.strength_defence_home,t.strength_defence_away]);
+    const strAtk = bs.teams.flatMap(t=>[t.strength_attack_home,t.strength_attack_away]);
+    const [mnD,mxD]=[Math.min(...strDef),Math.max(...strDef)];
+    const [mnA,mxA]=[Math.min(...strAtk),Math.max(...strAtk)];
+    const nFDR=(v,mn,mx)=>mn===mx?3:+(1+(v-mn)/(mx-mn)*4).toFixed(1);
+    const calcFdrOvr = (opp, isHome) => {
+      const fdrD = nFDR(isHome?opp.strength_attack_away:opp.strength_attack_home, mnA, mxA);
+      const fdrA = nFDR(isHome?opp.strength_defence_away:opp.strength_defence_home, mnD, mxD);
+      return +((fdrD + fdrA) / 2).toFixed(1);
+    };
+
     // All remaining GWs
     const allFix = Store.fixtures.sort((a,b) => a.event - b.event);
     const gwRange = [...new Set(allFix.map(f => f.event))].sort((a,b) => a-b);
@@ -3608,14 +3629,12 @@ const Render = {
       bs.teams.forEach(t => { teamGWData[t.id][gwNum] = { count: 0, opps: [], finished: false }; });
       gwFixes.forEach(f => {
         const hTeam = teamMap[f.team_h], aTeam = teamMap[f.team_a];
-        if (hTeam) {
+        if (hTeam && aTeam) {
           teamGWData[f.team_h][gwNum].count++;
-          teamGWData[f.team_h][gwNum].opps.push({ opp: aTeam?.short_name||'?', isHome: true });
+          teamGWData[f.team_h][gwNum].opps.push({ opp: aTeam.short_name, isHome: true, fdr: calcFdrOvr(aTeam, true) });
           teamGWData[f.team_h][gwNum].finished = f.finished;
-        }
-        if (aTeam) {
           teamGWData[f.team_a][gwNum].count++;
-          teamGWData[f.team_a][gwNum].opps.push({ opp: hTeam?.short_name||'?', isHome: false });
+          teamGWData[f.team_a][gwNum].opps.push({ opp: hTeam.short_name, isHome: false, fdr: calcFdrOvr(hTeam, false) });
           teamGWData[f.team_a][gwNum].finished = f.finished;
         }
       });
@@ -3658,13 +3677,14 @@ const Render = {
           cls = 'dgw-blank'; content = '⛔'; tip = 'Blank GW — tidak ada pertandingan';
         } else if (n === 1) {
           const o = data.opps[0];
-          cls = o?.isHome ? '' : 'dgw-away';
-          content = `<span class="${o?.isHome?'fc-home':'fc-away'}">${o?.opp||'?'}</span>`;
-          tip = `vs ${o?.opp} (${o?.isHome?'H':'A'})`;
+          const fdrCls = H.fdrClass(o?.fdr);
+          cls = fdrCls;
+          content = `<span class="${o?.isHome?'fc-home':'fc-away'}" style="font-size:9px">${o?.opp||'?'} ${o?.isHome?'H':'A'}</span><div style="font-size:8px;opacity:.8">${o?.fdr?.toFixed(1)??''}</div>`;
+          tip = `vs ${o?.opp} (${o?.isHome?'H':'A'}) FDR: ${o?.fdr?.toFixed(1)}`;
         } else {
           cls = 'dgw-double';
-          content = data.opps.map(o => `<span class="${o.isHome?'fc-home':'fc-away'}" style="font-size:9px">${o.opp}</span>`).join('<br>');
-          tip = `DGW: ${data.opps.map(o=>`${o.opp}(${o.isHome?'H':'A'})`).join(', ')}`;
+          content = data.opps.map(o => `<span class="${o.isHome?'fc-home':'fc-away'} ${H.fdrClass(o.fdr)}" style="font-size:8px;display:block;border-radius:2px;margin:1px 0;padding:1px 2px">${o.opp} ${o.isHome?'H':'A'} <span style="opacity:.75">${o.fdr?.toFixed(1)}</span></span>`).join('');
+          tip = `DGW: ${data.opps.map(o=>`${o.opp}(${o.isHome?'H':'A'}) FDR:${o.fdr?.toFixed(1)}`).join(', ')}`;
         }
         if (data.finished) cls += ' dgw-past';
         return `<td class="c ${cls}${isMyTeam?' dgw-my':''}" title="${tip}">${content}</td>`;
@@ -3696,10 +3716,11 @@ const Render = {
       <div class="section-title">⚡ DGW/Blank GW Planner</div>
       ${H.info(`Hijau terang = tim Anda punya DGW. Merah = tim Anda blank. Gunakan untuk merencanakan chip (Free Hit untuk BGW, Bench Boost untuk DGW).`)}
       ${myDGWInfo}
-      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;font-size:11px">
+      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;font-size:11px;align-items:center">
         <span class="dgw-double" style="padding:3px 8px;border-radius:3px">DGW (2 match)</span>
         <span class="dgw-blank" style="padding:3px 8px;border-radius:3px">⛔ Blank</span>
         <span style="padding:3px 8px;border-radius:3px;background:rgba(0,230,118,.1);border:1px solid var(--green3)">Tim Saya</span>
+        <span style="color:var(--text3);font-size:10px;margin-left:4px">Warna sel = FDR OVR (hijau=mudah, merah=sulit). Angka kecil = nilai FDR.</span>
       </div>
       <div class="table-wrap max-h" style="max-width:calc(100vw - 12px)">
         <table class="dgw-table" style="font-size:11px">
@@ -4362,12 +4383,6 @@ const Render = {
     const gwRange = [...new Set(upcoming.map(f=>f.event))].slice(0,8);
 
     const rows = bs.teams.map(t => {
-      // Avg FDR
-      const avgDef = nFDR((t.strength_defence_home+t.strength_defence_away)/2,mnD,mxD);
-      const avgAtk = nFDR((t.strength_attack_home +t.strength_attack_away)/2, mnA,mxA);
-      const avgOvr = +((avgDef+avgAtk)/2).toFixed(1);
-      const avg    = type==='def'?avgDef:type==='atk'?avgAtk:avgOvr;
-
       const fixes = gwRange.map(gw => {
         const gwFixes = upcoming.filter(f=>f.event===gw&&(f.team_h===t.id||f.team_a===t.id));
         if (!gwFixes.length) return null;
@@ -4375,12 +4390,16 @@ const Render = {
           const isHome=f.team_h===t.id;
           const opp   =teamMap[isHome?f.team_a:f.team_h];
           if(!opp) return null;
-          const fdrD=nFDR(isHome?opp.strength_attack_away:opp.strength_attack_home,mnD,mxD);
-          const fdrA=nFDR(isHome?opp.strength_defence_away:opp.strength_defence_home,mnA,mxA);
+          const fdrD=nFDR(isHome?opp.strength_attack_away:opp.strength_attack_home,mnA,mxA);
+          const fdrA=nFDR(isHome?opp.strength_defence_away:opp.strength_defence_home,mnD,mxD);
           const val  =type==='def'?fdrD:type==='atk'?fdrA:+((fdrD+fdrA)/2).toFixed(1);
           return {opp:opp.short_name,isHome,val};
         }).filter(Boolean);
       });
+
+      // Avg from actual upcoming fixture difficulties (blanks excluded, DGW each fixture counted)
+      const allVals = fixes.filter(Boolean).flat().map(f => f.val);
+      const avg = allVals.length ? +(allVals.reduce((s,v) => s+v, 0) / allVals.length).toFixed(1) : null;
 
       return {team:t.short_name, teamId:t.id, avg, fixes, fixtures:upcoming.filter(f=>f.team_h===t.id||f.team_a===t.id).length};
     });
@@ -4425,10 +4444,13 @@ const Render = {
           ${fixItems}
         </td>`;
       }).join('');
+      // Recompute avg from actual fixture values (works for both Bootstrap and Sheets sources)
+      const allVals = (row.fixes||[]).filter(arr=>arr&&arr.length>0).flat().map(f=>f?.val).filter(v=>v!=null);
+      const displayAvg = allVals.length ? +(allVals.reduce((s,v)=>s+v,0)/allVals.length).toFixed(1) : null;
       return `<tr>
         <td style="font-weight:700">${row.team}</td>
         ${cells}
-        <td class="fdr-avg-col ${H.fdrClass(row.avg)}">${row.avg?.toFixed(1)||'–'}</td>
+        <td class="fdr-avg-col ${H.fdrClass(displayAvg)}">${displayAvg?.toFixed(1)??'–'}</td>
       </tr>`;
     }).join('');
 
@@ -5612,7 +5634,7 @@ const Render = {
         const isHome = fix.team_h === teamId;
         const opp = teamMap[isHome?fix.team_a:fix.team_h];
         if (!opp) return;
-        const fdr = nFDR(isHome?opp.strength_defence_away:opp.strength_defence_home,mnA,mxA);
+        const fdr = nFDR(isHome?opp.strength_defence_away:opp.strength_defence_home,mnD,mxD);
         const capS = (p.GWScore||0) + (isHome?1.5:0) + (fdr<2.0?3:fdr<2.5?1.5:0) + (p.Form||0)*0.3;
         if (capS > bestCapScore || (capS === bestCapScore && fdr < bestCapFDR)) {
           bestCap = { Player:p.Player, Team:p.Team, Position:p.Position, oppName:opp.short_name, isHome, GWScore:p.GWScore, Form:p.Form };

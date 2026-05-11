@@ -1987,7 +1987,10 @@ body.capture-desktop #app-header { display: none !important; }
 .dgw-away { opacity: .8; }
 .dgw-past { opacity: .35; }
 .dgw-my { border: 1px solid var(--green) !important; background: rgba(0,230,118,.04); }
-.dgw-my-row td:first-child { color: var(--green); font-weight: 800; }
+.dgw-my-row td:first-child { color: var(--green); font-weight: 800; border-left: 1px solid var(--green) !important; border-bottom: 1px solid var(--green) !important; }
+/* Fix top border: in border-collapse the row above's bottom border wins; make it green */
+.dgw-table tr:has(+ .dgw-my-row) td,
+.dgw-table thead:has(+ tbody .dgw-my-row:first-child) th { border-bottom: 1px solid var(--green) !important; }
 .dgw-col { background: rgba(68,138,255,.08); }
 .bgw-col { background: rgba(255,82,82,.08); }
 
