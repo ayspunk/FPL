@@ -1833,7 +1833,7 @@ const Process = {
 const SUBTABS = {
   lineup:  [{k:'gwrec',l:'GW Recommendation'},{k:'gweval',l:'Evaluasi Poin'},{k:'gwscoring',l:'GW Scoring'},{k:'wlineup',l:'WLineUp'},{k:'optimize',l:'⚡ Optimize'},{k:'knapsack',l:'🎒 Best XV'},{k:'backtest',l:'📊 Backtest Report'}],
   scout:   [{k:'sscoring', l:'Scout Scoring'},{k:'srec',l:'Scout Recommendation'},{k:'swt',l:'Scout Weights'},{k:'soptimize',l:'⚡ Optimize'},{k:'price',l:'💰 Price Change'},{k:'diff',l:'🔮 Differentials'},{k:'captain',l:'👑 Captain Sim'}],
-  fdr:     [{k:'fdr-def',  l:'DEF Matrix'},       {k:'fdr-atk',  l:'ATK Matrix'},{k:'fdr-ovr',l:'OVR Matrix'},{k:'fdrinfo',l:'Team Strength'},{k:'season',l:'📅 Season Planner'},{k:'dgwplan',l:'⚡ DGW/BGW'}],
+  fdr:     [{k:'fdr-ovr',l:'OVR Matrix'},{k:'fdr-def',l:'DEF Matrix'},{k:'fdr-atk',l:'ATK Matrix'},{k:'dgwplan',l:'⚡ DGW/BGW'},{k:'season',l:'📅 Season Planner'},{k:'fdrinfo',l:'Team Strength'}],
   epl:     [],
   league:  [{k:'rekap',    l:'Rekap'},             {k:'charts',   l:'Grafik'},   {k:'transfer',l:'Transfer & Chips'},{k:'h2h',l:'⚔ Head-to-Head'}],
   other:   [{k:'mysquad',l:'My Squad'},{k:'myformation',l:'My Formation'},{k:'transfersim',l:'🔄 Transfer Sim'},{k:'chiprec',l:'Chip Recommendation'},{k:'setforget',l:'📊 Transfer Impact'}],
