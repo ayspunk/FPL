@@ -6849,7 +6849,12 @@ const UI = {
         Cache.invalidate(CFG.FPL + 'entry/' + id + '/');
         const info = await Fetch.fpl('entry/' + id + '/', true);
 
-        if (!info?.name) {
+        if (!info) {
+          if (resultEl) resultEl.innerHTML = '<div class="lookup-err">✗ Gagal menghubungi FPL API (proxy sedang bermasalah) — coba lagi</div>';
+          if (startBtn) startBtn.disabled = true;
+          return;
+        }
+        if (!info.name) {
           if (resultEl) resultEl.innerHTML = '<div class="lookup-err">✗ Team ID tidak ditemukan</div>';
           if (startBtn) startBtn.disabled = true;
           return;
@@ -7619,6 +7624,8 @@ const UI = {
           if (el) el.innerHTML = `<div class="lookup-ok">✓ Tim: <b>${name}</b> — Manajer: ${player}</div>`;
           // Auto-set team name in config
           CFG.myTeamName = name;
+        } else if (!info) {
+          if (el) el.innerHTML = '<div class="lookup-err">✗ Gagal menghubungi FPL API (proxy sedang bermasalah) — coba lagi</div>';
         } else {
           if (el) el.innerHTML = '<div class="lookup-err">✗ Team ID tidak ditemukan</div>';
         }
