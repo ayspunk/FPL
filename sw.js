@@ -1,7 +1,9 @@
 // ============================================================
 // FPL Dashboard — Service Worker (PWA)
 // ============================================================
-const CACHE_NAME = 'fpl-dash-v1';
+// Bump this version string whenever app.js/style.css/index.html changes —
+// it's the only way installed PWAs (HP) detect the update and refresh their cache.
+const CACHE_NAME = 'fpl-dash-v2';
 const CORE_ASSETS = [
   '/FPL/',
   '/FPL/index.html',
