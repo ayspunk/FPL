@@ -31,6 +31,7 @@ const CFG = {
     u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
     u => `https://corsproxy.org/?url=${encodeURIComponent(u)}`,
     u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u => `https://proxy.cors.sh/${u}`,
   ],
   GW_WEIGHTS: {
     'fdr_short':       { GK:.30, DEF:.25, MID:.25, FWD:.30 },
@@ -7616,8 +7617,10 @@ const UI = {
     if (el) el.innerHTML = '<div class="lookup-pending">Mencari…</div>';
     this._lookupTimer = setTimeout(async () => {
       try {
-        const info = await Fetch.managerInfo(id);
-        if (info?.name) {
+        // Force fresh: hindari cache lama/rusak dari proxy yang pernah gagal
+        Cache.invalidate(CFG.FPL + 'entry/' + id + '/');
+        const info = await Fetch.fpl('entry/' + id + '/', true);
+        if (info?.name && info.id === id) {
           Store.myManagerInfo = info;
           const name = info.name;
           const player = `${info.player_first_name||''} ${info.player_last_name||''}`.trim();
@@ -7627,6 +7630,7 @@ const UI = {
         } else if (!info) {
           if (el) el.innerHTML = '<div class="lookup-err">✗ Gagal menghubungi FPL API (proxy sedang bermasalah) — coba lagi</div>';
         } else {
+          console.warn('[lookupTeamId] unexpected response shape:', info);
           if (el) el.innerHTML = '<div class="lookup-err">✗ Team ID tidak ditemukan</div>';
         }
       } catch {
