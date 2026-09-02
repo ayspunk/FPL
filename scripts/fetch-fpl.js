@@ -204,7 +204,10 @@ function buildEPL(fx,teams){
     else if(f.team_h_score<f.team_a_score){a.w++;a.pts+=3;h.l++;h.form+='L';a.form+='W';}
     else{h.d++;a.d++;h.pts++;a.pts++;h.form+='D';a.form+='D';}
   });
-  return Object.entries(st).map(([id,s])=>{const t=tm[+id]||{};return{...s,gd:s.gf-s.ga,form:s.form.slice(-5),club:t.name,short:t.short_name,strength:t.strength};})
+  return Object.entries(st).map(([id,s])=>{const t=tm[+id]||{};
+    // t.strength is null very early in a season — fall back to avg overall strength
+    const strength=t.strength||Math.round(((t.strength_overall_home||0)+(t.strength_overall_away||0))/2)||null;
+    return{...s,gd:s.gf-s.ga,form:s.form.slice(-5),club:t.name,short:t.short_name,strength};})
     .sort((a,b)=>b.pts-a.pts||b.gd-a.gd||b.gf-a.gf);
 }
 
@@ -212,16 +215,27 @@ function buildFDR(fx,teams){
   const tm={};teams.forEach(t=>{tm[t.id]=t;});
   const up=fx.filter(f=>!f.finished_provisional).sort((a,b)=>a.event-b.event);
   const gws=[...new Set(up.map(f=>f.event))].slice(0,8);
+  // FPL leaves strength_attack_*/strength_defence_* at 0 for every team very early
+  // in a season (its model hasn't seen enough matches yet), which flattens every
+  // FDR value to a constant "3". strength_overall_* IS populated from day one, so
+  // fall back to it when the split atk/def fields are degenerate. Self-heals once
+  // FPL starts populating the split fields again.
   const sD=teams.flatMap(t=>[t.strength_defence_home,t.strength_defence_away]),sA=teams.flatMap(t=>[t.strength_attack_home,t.strength_attack_away]);
-  const[nD,xD,nA,xA]=[Math.min(...sD),Math.max(...sD),Math.min(...sA),Math.max(...sA)];
+  const degenerate=arr=>new Set(arr).size<=1;
+  const useOverall=degenerate(sD)||degenerate(sA);
+  const sO=teams.flatMap(t=>[t.strength_overall_home,t.strength_overall_away]);
+  const dArr=useOverall?sO:sD, aArr=useOverall?sO:sA;
+  const[nD,xD,nA,xA]=[Math.min(...dArr),Math.max(...dArr),Math.min(...aArr),Math.max(...aArr)];
   const fdr=(v,n,x)=>n===x?3:+(1+(v-n)/(x-n)*4).toFixed(1);
+  const atkOf=(o,h)=>useOverall?(h?o.strength_overall_away:o.strength_overall_home):(h?o.strength_attack_away:o.strength_attack_home);
+  const defOf=(o,h)=>useOverall?(h?o.strength_overall_away:o.strength_overall_home):(h?o.strength_defence_away:o.strength_defence_home);
   const rows={def:[],atk:[],ovr:[]};
   teams.forEach(t=>{
     const fixes=gws.map(g=>{
       const fs=up.filter(f=>f.event===g&&(f.team_h===t.id||f.team_a===t.id));
       return fs.map(f=>{const h=f.team_h===t.id,o=tm[h?f.team_a:f.team_h];if(!o)return null;
-        return{opp:o.short_name,isHome:h,def:fdr(h?o.strength_attack_away:o.strength_attack_home,nD,xD),
-          atk:fdr(h?o.strength_defence_away:o.strength_defence_home,nA,xA)};}).filter(Boolean);
+        return{opp:o.short_name,isHome:h,def:fdr(atkOf(o,h),nD,xD),
+          atk:fdr(defOf(o,h),nA,xA)};}).filter(Boolean);
     });
     ['def','atk','ovr'].forEach(type=>{
       const v=fixes.flat().map(f=>type==='def'?f.def:type==='atk'?f.atk:+((f.def+f.atk)/2).toFixed(1));

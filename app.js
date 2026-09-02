@@ -538,6 +538,34 @@ const Fetch = {
 // ═══════════════════════════════════════════════════════
 const Process = {
 
+  // ── FDR strength helper (shared) ───────────────────────
+  // FPL leaves strength_attack_*/strength_defence_* at 0 for every team very
+  // early in a season (its model hasn't seen enough matches yet), which used to
+  // flatten every FDR value to a constant "3". strength_overall_* IS populated
+  // from day one, so fall back to it when the split atk/def fields are degenerate.
+  // Self-heals once FPL starts populating the split fields again.
+  fdrCalc(bs) {
+    const teams  = bs.teams;
+    const strDef = teams.flatMap(t => [t.strength_defence_home, t.strength_defence_away]);
+    const strAtk = teams.flatMap(t => [t.strength_attack_home, t.strength_attack_away]);
+    const degenerate = arr => new Set(arr).size <= 1;
+    const useOverall = degenerate(strDef) || degenerate(strAtk);
+    const atkArr = useOverall ? teams.flatMap(t => [t.strength_overall_home, t.strength_overall_away]) : strAtk;
+    const defArr = useOverall ? teams.flatMap(t => [t.strength_overall_home, t.strength_overall_away]) : strDef;
+    const [mnA,mxA] = [Math.min(...atkArr), Math.max(...atkArr)];
+    const [mnD,mxD] = [Math.min(...defArr), Math.max(...defArr)];
+    const nFDR  = (v,mn,mx) => mn===mx ? 3 : +(1+(v-mn)/(mx-mn)*4);
+    const atkOf = (opp,isHome) => useOverall ? (isHome?opp.strength_overall_away:opp.strength_overall_home) : (isHome?opp.strength_attack_away:opp.strength_attack_home);
+    const defOf = (opp,isHome) => useOverall ? (isHome?opp.strength_overall_away:opp.strength_overall_home) : (isHome?opp.strength_defence_away:opp.strength_defence_home);
+    return {
+      useOverall,
+      // difficulty for MY defenders (clean sheet chance) — driven by opponent's attack
+      fdrDef: (opp, isHome, dp=2) => opp ? +nFDR(atkOf(opp,isHome), mnA, mxA).toFixed(dp) : 3,
+      // difficulty for MY attackers (goal threat) — driven by opponent's defence
+      fdrAtk: (opp, isHome, dp=2) => opp ? +nFDR(defOf(opp,isHome), mnD, mxD).toFixed(dp) : 3,
+    };
+  },
+
   // ── Bootstrap → Players ───────────────────────────────
   fromBootstrap(bs, fixtures, liveData) {
     const gwEv = bs.events.find(e => e.is_current) || bs.events.find(e => e.is_next);
@@ -546,12 +574,8 @@ const Process = {
     const teamMap = {};
     bs.teams.forEach(t => { teamMap[t.id] = t; });
 
-    // FDR normalization
-    const strDef = bs.teams.flatMap(t => [t.strength_defence_home, t.strength_defence_away]);
-    const strAtk = bs.teams.flatMap(t => [t.strength_attack_home, t.strength_attack_away]);
-    const [mnD,mxD] = [Math.min(...strDef), Math.max(...strDef)];
-    const [mnA,mxA] = [Math.min(...strAtk), Math.max(...strAtk)];
-    const nFDR = (v,mn,mx) => mn===mx ? 3 : +(1+(v-mn)/(mx-mn)*4).toFixed(2);
+    // FDR normalization (falls back to overall strength early-season, see fdrCalc)
+    const fc = this.fdrCalc(bs);
 
     // Build next fixture map per team (detect DGW, normal, blank)
     const teamFix = {};
@@ -599,8 +623,8 @@ const Process = {
         return {
           opp: opp.short_name, oppFull: opp.name,
           isHome: isH,
-          fdrDef: nFDR(isH ? opp.strength_attack_away : opp.strength_attack_home, mnA, mxA),
-          fdrAtk: nFDR(isH ? opp.strength_defence_away : opp.strength_defence_home, mnD, mxD),
+          fdrDef: fc.fdrDef(opp, isH),
+          fdrAtk: fc.fdrAtk(opp, isH),
         };
       }).filter(Boolean);
       if (!fixDetails.length) return;
@@ -638,8 +662,8 @@ const Process = {
           const isH = f.team_h === t.id;
           const opp = teamMap[isH ? f.team_a : f.team_h];
           if (!opp) return;
-          fdrVals.def.push(nFDR(isH ? opp.strength_attack_away : opp.strength_attack_home, mnA, mxA));
-          fdrVals.atk.push(nFDR(isH ? opp.strength_defence_away : opp.strength_defence_home, mnD, mxD));
+          fdrVals.def.push(fc.fdrDef(opp, isH));
+          fdrVals.atk.push(fc.fdrAtk(opp, isH));
         });
         // Blank GW — excluded from avg (consistent with FDR table avg)
       });
@@ -1071,7 +1095,10 @@ const Process = {
     if (!bs || !fixtures) return [];
     const teamMap = {};
     const playerMap = {};
-    bs.teams.forEach(t => { teamMap[t.id] = { id:t.id, club:t.name, short:t.short_name, strength:t.strength, p:0,w:0,d:0,l:0,gf:0,ga:0,gd:0,pts:0,results:[],matchDetails:[] }; });
+    // t.strength is null very early in a season (FPL's model hasn't caught up yet) —
+    // fall back to the average of strength_overall_home/away, which is populated from day one.
+    const strengthOf = t => t.strength || Math.round(((t.strength_overall_home||0)+(t.strength_overall_away||0))/2) || null;
+    bs.teams.forEach(t => { teamMap[t.id] = { id:t.id, club:t.name, short:t.short_name, strength:strengthOf(t), p:0,w:0,d:0,l:0,gf:0,ga:0,gd:0,pts:0,results:[],matchDetails:[] }; });
     bs.elements.forEach(p => { playerMap[p.id] = p.web_name; });
     const finished = fixtures.filter(f => f.finished && f.team_h_score != null);
     finished.sort((a,b) => a.event - b.event);
@@ -3513,11 +3540,7 @@ const Render = {
     const gwRange = [...new Set(upcoming.map(f=>f.event))].sort((a,b)=>a-b);
     const type = Store.seasonPlannerType || 'def';
 
-    const strDef = bs.teams.flatMap(t=>[t.strength_defence_home,t.strength_defence_away]);
-    const strAtk = bs.teams.flatMap(t=>[t.strength_attack_home,t.strength_attack_away]);
-    const [mnD,mxD]=[Math.min(...strDef),Math.max(...strDef)];
-    const [mnA,mxA]=[Math.min(...strAtk),Math.max(...strAtk)];
-    const nFDR=(v,mn,mx)=>mn===mx?3:+(1+(v-mn)/(mx-mn)*4).toFixed(1);
+    const fc = Process.fdrCalc(bs);
 
     const teamData = bs.teams.map(t => {
       let totalFdr = 0, count = 0;
@@ -3527,8 +3550,8 @@ const Render = {
         return fixes.map(f => {
           const isH = f.team_h===t.id;
           const opp = teamMap[isH?f.team_a:f.team_h];
-          const fdrD = nFDR(isH?opp?.strength_attack_away:opp?.strength_attack_home, mnA, mxA);
-          const fdrA = nFDR(isH?opp?.strength_defence_away:opp?.strength_defence_home, mnD, mxD);
+          const fdrD = fc.fdrDef(opp, isH, 1);
+          const fdrA = fc.fdrAtk(opp, isH, 1);
           const fdr = type==='def'?fdrD : type==='atk'?fdrA : +((fdrD+fdrA)/2).toFixed(1);
           totalFdr += fdr; count++;
           return { opp:opp?.short_name||'?', fdr, blank:false, dgw:fixes.length>1, isHome:isH };
@@ -3606,14 +3629,10 @@ const Render = {
     const gw = Store.currentGW || 1;
 
     // FDR normalization (OVR = avg DEF+ATK, same bounds as FDR Matrix)
-    const strDef = bs.teams.flatMap(t=>[t.strength_defence_home,t.strength_defence_away]);
-    const strAtk = bs.teams.flatMap(t=>[t.strength_attack_home,t.strength_attack_away]);
-    const [mnD,mxD]=[Math.min(...strDef),Math.max(...strDef)];
-    const [mnA,mxA]=[Math.min(...strAtk),Math.max(...strAtk)];
-    const nFDR=(v,mn,mx)=>mn===mx?3:+(1+(v-mn)/(mx-mn)*4).toFixed(1);
+    const fc = Process.fdrCalc(bs);
     const calcFdrOvr = (opp, isHome) => {
-      const fdrD = nFDR(isHome?opp.strength_attack_away:opp.strength_attack_home, mnA, mxA);
-      const fdrA = nFDR(isHome?opp.strength_defence_away:opp.strength_defence_home, mnD, mxD);
+      const fdrD = fc.fdrDef(opp, isHome, 1);
+      const fdrA = fc.fdrAtk(opp, isHome, 1);
       return +((fdrD + fdrA) / 2).toFixed(1);
     };
 
@@ -3965,7 +3984,11 @@ const Render = {
   // ── Scout Scoring ──────────────────────────────────────
   scoutScoring() {
     const sd = Store.sheetsData?.scoutScoring || [];
-    const pl = sd.length ? sd : Store.scoredPlayers.map(p=>({...p, ScoutScore:p.GWScore}));
+    // all.json's scoutScoring is raw player stats with no ScoutScore computed (older
+    // fetch-fpl.js runs, or pipeline still catching up) — detect that and use the
+    // properly-scored client-side pipeline (Store.scoredPlayers) instead.
+    const sdHasScores = sd.length && sd.some(p => p.ScoutScore != null);
+    const pl = sdHasScores ? sd : Store.scoredPlayers.map(p=>({...p, ScoutScore:p.GWScore}));
 
     // Filter states
     const posF = Store.posFilter || 'ALL';
@@ -4358,9 +4381,12 @@ const Render = {
 
   // ── FDR Matrix ──────────────────────────────────────────
   fdrMatrix(type) {
-    // Try sheets pre-computed first
+    // Try sheets pre-computed first — but skip it if it's degenerate (every value
+    // pinned at 3, from FPL's split attack/defence strength being unpopulated
+    // when all.json was generated) and use the live bootstrap-derived FDR instead.
     const sd = Store.sheetsData?.fdr?.[type];
-    if (sd?.length) return this._renderFDRTable(sd, type.toUpperCase());
+    const sdDegenerate = sd?.length && sd.every(t => (t.avg==null || t.avg===3) && (t.fixes||[]).flat().every(f=>!f || f.val===3));
+    if (sd?.length && !sdDegenerate) return this._renderFDRTable(sd, type.toUpperCase());
     // Fall back to bootstrap-derived FDR
     if (!Store.bootstrap) return H.info('FDR Matrix memerlukan FPL API. Klik Refresh.');
     return this._fdrFromBootstrap(type);
@@ -4372,11 +4398,7 @@ const Render = {
     const teamMap = {};
     bs.teams.forEach(t=>{ teamMap[t.id]=t; });
 
-    const strDef=bs.teams.flatMap(t=>[t.strength_defence_home,t.strength_defence_away]);
-    const strAtk=bs.teams.flatMap(t=>[t.strength_attack_home,t.strength_attack_away]);
-    const [mnD,mxD]=[Math.min(...strDef),Math.max(...strDef)];
-    const [mnA,mxA]=[Math.min(...strAtk),Math.max(...strAtk)];
-    const nFDR=(v,mn,mx)=>mn===mx?3:+(1+(v-mn)/(mx-mn)*4).toFixed(1);
+    const fc = Process.fdrCalc(bs);
 
     const gw0  = Store.currentGW||1;
     const upcoming = fix.filter(f=>!f.finished_provisional).sort((a,b)=>a.event-b.event);
@@ -4391,8 +4413,8 @@ const Render = {
           const isHome=f.team_h===t.id;
           const opp   =teamMap[isHome?f.team_a:f.team_h];
           if(!opp) return null;
-          const fdrD=nFDR(isHome?opp.strength_attack_away:opp.strength_attack_home,mnA,mxA);
-          const fdrA=nFDR(isHome?opp.strength_defence_away:opp.strength_defence_home,mnD,mxD);
+          const fdrD=fc.fdrDef(opp, isHome, 1);
+          const fdrA=fc.fdrAtk(opp, isHome, 1);
           const val  =type==='def'?fdrD:type==='atk'?fdrA:+((fdrD+fdrA)/2).toFixed(1);
           return {opp:opp.short_name,isHome,val};
         }).filter(Boolean);
@@ -4415,10 +4437,10 @@ const Render = {
     });
 
     const gwLabels = gwRange.map(g=>`GW${g}`);
-    return this._renderFDRTableFlat(rows, gwLabels, type.toUpperCase());
+    return this._renderFDRTableFlat(rows, gwLabels, type.toUpperCase(), false);
   },
 
-  _renderFDRTableFlat(rows, gwLabels, label) {
+  _renderFDRTableFlat(rows, gwLabels, label, fromSheets=true) {
     const headGWs = gwLabels.map(g=>`<th class="c">${g}</th>`).join('');
     const trows = rows.map(row => {
       const cells = row.fixes.map(fixArr => {
@@ -4456,7 +4478,7 @@ const Render = {
     }).join('');
 
     return `
-      <div class="section-title">FDR Matrix — ${label}${Store.sheetsData?.fdr?'':' (dari FPL API)'}</div>
+      <div class="section-title">FDR Matrix — ${label}${fromSheets?'':' (dari FPL API)'}</div>
       <div class="table-wrap max-h">
         <table class="fdr-table">
           <thead><tr><th>Tim</th>${headGWs}<th class="c">Avg</th></tr></thead>
@@ -4478,6 +4500,7 @@ const Render = {
   fdrInfo() {
     if (!Store.bootstrap) return H.info('Memerlukan FPL API.');
     const bs = Store.bootstrap;
+    const fc = Process.fdrCalc(bs);
 
     // Min-max normalization from actual data
     const allVals = bs.teams.flatMap(t => [
@@ -4511,6 +4534,7 @@ const Render = {
     return `
       <div class="section-title">Team Strength Breakdown (FPL API)</div>
       ${H.info('Nilai strength digunakan untuk kalkulasi FDR. Lebih tinggi = lebih kuat = lawan lebih sulit.')}
+      ${fc.useOverall ? H.info('⚠ FPL belum mempublikasikan attack/defence strength per tim untuk musim ini (semua bernilai 0) — kolom di bawah akan terlihat kosong. Kalkulasi FDR otomatis beralih memakai <b>strength_overall_home/away</b> sebagai gantinya, jadi tab FDR Matrix/Season Planner tetap akurat.') : ''}
       <div class="table-wrap max-h">
         <table>
           <thead><tr>
@@ -5617,11 +5641,7 @@ const Render = {
       const bs = Store.bootstrap;
       const teamMap = {};
       bs.teams.forEach(t => { teamMap[t.id] = t; });
-      const strDef = bs.teams.flatMap(t=>[t.strength_defence_home,t.strength_defence_away]);
-      const strAtk = bs.teams.flatMap(t=>[t.strength_attack_home,t.strength_attack_away]);
-      const [mnD,mxD]=[Math.min(...strDef),Math.max(...strDef)];
-      const [mnA,mxA]=[Math.min(...strAtk),Math.max(...strAtk)];
-      const nFDR=(v,mn,mx)=>mn===mx?3:+(1+(v-mn)/(mx-mn)*4).toFixed(2);
+      const fc = Process.fdrCalc(bs);
 
       // Find best captain for THIS GW from ALL available players (user can transfer 1 in)
       let bestCap = null, bestCapFDR = 5, bestCapScore = 0;
@@ -5635,7 +5655,7 @@ const Render = {
         const isHome = fix.team_h === teamId;
         const opp = teamMap[isHome?fix.team_a:fix.team_h];
         if (!opp) return;
-        const fdr = nFDR(isHome?opp.strength_defence_away:opp.strength_defence_home,mnD,mxD);
+        const fdr = fc.fdrAtk(opp, isHome);
         const capS = (p.GWScore||0) + (isHome?1.5:0) + (fdr<2.0?3:fdr<2.5?1.5:0) + (p.Form||0)*0.3;
         if (capS > bestCapScore || (capS === bestCapScore && fdr < bestCapFDR)) {
           bestCap = { Player:p.Player, Team:p.Team, Position:p.Position, oppName:opp.short_name, isHome, GWScore:p.GWScore, Form:p.Form };
