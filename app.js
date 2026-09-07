@@ -34,10 +34,10 @@ const CFG = {
     // r.jina.ai: satu-satunya proxy publik yang terverifikasi jalan (2026-09-07),
     // termasuk preflight CORS. Header di bawah wajib - tanpa itu responsnya markdown.
     { name: 'r.jina.ai',    url: u => `https://r.jina.ai/${u}`, headers: { 'x-respond-with': 'text' } },
-    { name: 'codetabs',     url: u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}` },
-    { name: 'corsproxy.io', url: u => `https://corsproxy.io/?url=${encodeURIComponent(u)}` },
-    { name: 'allorigins',   url: u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}` },
-    { name: 'cors.sh',      url: u => `https://proxy.cors.sh/${u}` },
+    // codetabs, corsproxy.io, allorigins, cors.sh dibuang 2026-09-07: keempatnya
+    // gagal bahkan terhadap example.com (layanannya yang mati, bukan ditolak FPL),
+    // dan tiga di antaranya gagal lewat timeout ~19 dtk - bukan asuransi gratis,
+    // tapi pajak waktu di setiap jalur kegagalan.
   ],
   GW_WEIGHTS: {
     'fdr_short':       { GK:.30, DEF:.25, MID:.25, FWD:.30 },
@@ -305,8 +305,10 @@ const Cache = {
 // 4. FETCH LAYER  (semua request melalui Cache)
 // ═══════════════════════════════════════════════════════
 const Fetch = {
-  _lastWorkingProxy: 0, // index into proxyList()
+  _lastWorkingProxy: null, // nama proxy yang terakhir berhasil
   _requestCount: 0,
+  _cooldown: {},           // nama proxy -> kapan (ms) boleh dicoba lagi
+  COOLDOWN_MS: 2 * 60 * 1000,
 
   // Worker sendiri (kalau dikonfigurasi) selalu dicoba duluan.
   proxyList() {
@@ -316,37 +318,32 @@ const Fetch = {
     return [{ name: 'worker', url: u => `${base}/?url=${encodeURIComponent(u)}` }, ...CFG.PROXIES];
   },
 
-  async _net(url, timeout = 12000) {
+  async _net(url, timeout = 6000) {
     const errors = [];
     this._requestCount++;
 
-    // 1. Try direct fetch first (FPL API sometimes allows CORS)
-    try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(timeout/2) });
-      if (r.ok) {
-        const data = await r.json();
-        console.log(`[FPL] ✓ Direct fetch OK: ${url.split('/').slice(-3).join('/')}`);
-        return data;
-      }
-      errors.push(`direct: HTTP ${r.status}`);
-    } catch (e) {
-      errors.push(`direct: ${e.name||'blocked'}`);
-    }
+    // Tidak ada percobaan fetch langsung: FPL API tidak pernah mengirim header
+    // Access-Control-Allow-Origin, jadi browser dijamin memblokirnya. Di jaringan
+    // yang memblokir premierleague.com ia bahkan gagal lewat timeout, bukan error
+    // cepat - membuang detik di setiap request termasuk saat proxy sehat.
+    const all = this.proxyList();
+    const now = Date.now();
 
-    // 2. Try proxies: last working first, then others
-    const list = this.proxyList();
-    const order = [this._lastWorkingProxy];
-    for (let i = 0; i < list.length; i++) {
-      if (i !== this._lastWorkingProxy) order.push(i);
-    }
+    // Lewati proxy yang baru saja gagal. Kalau semuanya sedang cooldown, reset:
+    // lebih baik menunggu sekali lagi daripada tidak punya jalur sama sekali.
+    let list = all.filter(px => !(this._cooldown[px.name] > now));
+    if (!list.length) { this._cooldown = {}; list = all; }
 
-    for (const idx of order) {
-      const px = list[idx];
-      if (!px) continue;
-      const fetchUrl = px.url(url);
-      const label = px.name || `proxy#${idx+1}`;
+    // Yang terakhir berhasil dicoba duluan.
+    const order = [
+      ...list.filter(px => px.name === this._lastWorkingProxy),
+      ...list.filter(px => px.name !== this._lastWorkingProxy),
+    ];
+
+    for (const px of order) {
+      const label = px.name;
       try {
-        const r = await fetch(fetchUrl, { signal: AbortSignal.timeout(timeout), headers: px.headers || {} });
+        const r = await fetch(px.url(url), { signal: AbortSignal.timeout(timeout), headers: px.headers || {} });
         if (r.ok) {
           const text = await r.text();
           try {
@@ -357,7 +354,8 @@ const Fetch = {
             } else if (data && data.contents && typeof data.contents === 'object') {
               data = data.contents;
             }
-            this._lastWorkingProxy = idx;
+            this._lastWorkingProxy = label;
+            delete this._cooldown[label];
             return data;
           } catch {
             errors.push(`${label}: invalid JSON`);
@@ -368,9 +366,11 @@ const Fetch = {
       } catch (e) {
         errors.push(`${label}: ${e.name||e.message}`);
       }
+      // Gagal - istirahatkan supaya request berikutnya tidak menunggu timeout lagi.
+      this._cooldown[label] = Date.now() + this.COOLDOWN_MS;
     }
 
-    console.warn(`[FPL] ✗ All failed for ${url.split('/').slice(-3).join('/')}:`, errors.join(', '));
+    console.warn(`[FPL] ✗ Semua proxy gagal untuk ${url.split('/').slice(-3).join('/')}:`, errors.join(', '));
     Store._lastFetchErrors = errors;
     return null;
   },
