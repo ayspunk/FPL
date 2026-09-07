@@ -1255,32 +1255,49 @@ const Process = {
       }
     }
 
-    // Build cumulative points + transfers per GW per manager
-    // Use total_points from history (official FPL cumulative) for accuracy
+    // Poin kumulatif per GW per manajer.
+    // Pakai total_points dari history (kumulatif resmi FPL) demi akurasi.
     const ptsByGW = {};
-    const transByGW = {};
     managers.forEach(m => {
       const hist = entryEvents[m.entryId] || entryEvents[String(m.entryId)] || [];
-      const h = histories[m.entryId] || histories[String(m.entryId)];
-      const chips = h?.chips || [];
-      const chipGWs = new Set(chips.filter(c => {
-        const n = (c.name||'').toLowerCase().replace(/[_ ]/g,'');
-        return n.includes('wildcard') || n.includes('freehit');
-      }).map(c => Number(c.event)));
-
-      let cumTrans = 0;
       gwLabels.forEach(gw => {
         const ev = hist.find(e => Number(e.event) === gw);
-        // Use total_points (official cumulative) instead of summing points manually
-        const cumPts = Number(ev?.total_points) || 0;
-        if (ev && !chipGWs.has(gw)) {
-          cumTrans += Number(ev.event_transfers) || 0;
-        }
         if (!ptsByGW[gw]) ptsByGW[gw] = {};
-        if (!transByGW[gw]) transByGW[gw] = {};
-        ptsByGW[gw][m.entryId] = cumPts;
-        transByGW[gw][m.entryId] = cumTrans;
+        ptsByGW[gw][m.entryId] = Number(ev?.total_points) || 0;
       });
+    });
+
+    // Peringkat gaya FPL: HANYA total poin yang menentukan. Yang seri berbagi
+    // peringkat sama dan peringkat berikutnya melompat (10, 10, 12). Terbukti
+    // dari leagues-classic standings liga 24873: dua entri 128 pts sama-sama
+    // rank 10, entri berikutnya rank 12. Tidak ada pemecah seri - FPL tidak
+    // punya satu pun. (Sebelumnya di sini dipakai jumlah transfer sebagai
+    // pemecah seri; itu buatan sendiri dan membuat peringkat dashboard
+    // berbeda dari situs FPL.)
+    //
+    // Terpisah dari itu tiap manajer diberi lane unik sebagai posisi vertikal
+    // di bump chart - meniru rank_sort milik FPL - supaya garis yang nilainya
+    // seri tidak saling menumpuk. Label tetap menampilkan peringkat sebenarnya.
+    const ids = managers.map(m => m.entryId);
+    const rankByGW = {}, laneByGW = {};
+    let prevLane = {};
+    gwLabels.forEach(gw => {
+      const pts = ptsByGW[gw] || {};
+      const rank = {};
+      ids.forEach(id => {
+        rank[id] = ids.filter(o => (pts[o] ?? 0) > (pts[id] ?? 0)).length + 1;
+      });
+      // Lane unik: peringkat dulu, lalu posisi GW sebelumnya supaya garis tidak
+      // menyeberang tanpa alasan, lalu entryId sebagai penentu terakhir.
+      const lane = {};
+      ids.slice()
+        .sort((a, b) => rank[a] - rank[b]
+                     || (prevLane[a] ?? 0) - (prevLane[b] ?? 0)
+                     || Number(a) - Number(b))
+        .forEach((id, i) => { lane[id] = i + 1; });
+      rankByGW[gw] = rank;
+      laneByGW[gw] = lane;
+      prevLane = lane;
     });
 
     const series = managers.map(m => ({
@@ -1288,19 +1305,8 @@ const Process = {
       playerName: m.playerName || '',
       entryId: m.entryId,
       isMe:    m.entryName.toLowerCase().includes(CFG.myTeamName.toLowerCase()),
-      ranks:   gwLabels.map(gw => {
-        const pts = ptsByGW[gw] || {};
-        const trans = transByGW[gw] || {};
-        const myPts   = pts[m.entryId] ?? 0;
-        const myTrans = trans[m.entryId] ?? 0;
-        // Rank: higher pts = better. If tied, fewer transfers = better.
-        const rank = Object.keys(pts).filter(eid => {
-          const oPts   = pts[eid] ?? 0;
-          const oTrans = trans[eid] ?? 0;
-          return oPts > myPts || (oPts === myPts && oTrans < myTrans);
-        }).length + 1;
-        return rank;
-      }),
+      ranks:   gwLabels.map(gw => rankByGW[gw]?.[m.entryId] ?? null),
+      lanes:   gwLabels.map(gw => laneByGW[gw]?.[m.entryId] ?? null),
       totalPts: m.total,
       eventPts: m.eventTotal,
     }));
@@ -4896,18 +4902,11 @@ const Render = {
         cumThis[d.entryId] = Number(thisEv?.total_points) || 0;
         cumPrev[d.entryId] = Number(prevEv?.total_points) || 0;
       });
-      // Rank with transfer tiebreaker (same logic as bump chart and rekap)
-      const transAccum = {};
-      gwData.forEach(d => { transAccum[d.entryId] = d.totalTrans; });
+      // Peringkat gaya FPL: hanya total poin, yang seri berbagi peringkat sama.
+      // Harus sama persis dengan buildLeagueRankMatrix - jangan sampai beda.
       gwData.forEach(d => {
-        const posNow = gwData.filter(x =>
-          cumThis[x.entryId] > cumThis[d.entryId] ||
-          (cumThis[x.entryId] === cumThis[d.entryId] && (transAccum[x.entryId]||0) < (transAccum[d.entryId]||0))
-        ).length + 1;
-        const posPrev = gwData.filter(x =>
-          cumPrev[x.entryId] > cumPrev[d.entryId] ||
-          (cumPrev[x.entryId] === cumPrev[d.entryId] && (transAccum[x.entryId]||0) < (transAccum[d.entryId]||0))
-        ).length + 1;
+        const posNow  = gwData.filter(x => cumThis[x.entryId] > cumThis[d.entryId]).length + 1;
+        const posPrev = gwData.filter(x => cumPrev[x.entryId] > cumPrev[d.entryId]).length + 1;
         d._leagueDelta = posPrev - posNow;
         d._leaguePos = posNow;
       });
@@ -6104,8 +6103,19 @@ const Charts = {
     const xOf=i=>PL+(i/(GW-1||1))*IW;
     const yOf=r=>PT+((r-1)/(N-1||1))*IH;
 
+    // Peringkat yang dipakai lebih dari satu manajer di GW terakhir ditandai
+    // "=" (konvensi tabel liga), supaya dua label "#10" tidak terbaca seperti bug.
+    const lastIdx = gwLabels.length - 1;
+    const tieCount = {};
+    series.forEach(x => { const r = x.ranks?.[lastIdx]; if (r != null) tieCount[r] = (tieCount[r]||0) + 1; });
+
     const svgPaths = series.map((s,si)=>{
-      const pts=gwLabels.map((_,gi)=>s.ranks[gi]!=null?{x:xOf(gi),y:yOf(s.ranks[gi])}:null).filter(Boolean);
+      // Posisi vertikal pakai lane (unik) supaya garis yang seri tidak menumpuk;
+      // peringkat sebenarnya tetap ditampilkan di label.
+      const pts=gwLabels.map((_,gi)=>{
+        const lane = s.lanes?.[gi] ?? s.ranks[gi];
+        return lane!=null?{x:xOf(gi),y:yOf(lane)}:null;
+      }).filter(Boolean);
       if(pts.length<2) return '';
       let d=`M${pts[0].x},${pts[0].y}`;
       for(let i=1;i<pts.length;i++){
@@ -6117,11 +6127,12 @@ const Charts = {
       const opa  = s.isMe ? 1 : .4;
       const dots = pts.map(p=>`<circle cx="${p.x}" cy="${p.y}" r="${s.isMe?4:2}" fill="${col}" stroke="none"/>`).join('');
       const lastPt=pts[pts.length-1];
-      const lastR =s.ranks[gwLabels.length-1]||'?';
-      // Label: "TeamName (PlayerName) #rank"
+      const lastR =s.ranks[lastIdx]||'?';
+      const tie = tieCount[lastR] > 1 ? '=' : '';
+      // Label: "TeamName (PlayerName) #rank" ("=" kalau peringkatnya seri)
       const fullName = s.playerName ? `${s.name} (${s.playerName})` : s.name;
       const lbl=`<text x="${lastPt.x+10}" y="${lastPt.y+4}" fill="${col}" font-size="${s.isMe?12:10}"
-        font-weight="${s.isMe?700:400}" font-family="Barlow Condensed,sans-serif">${fullName} #${lastR}</text>`;
+        font-weight="${s.isMe?700:400}" font-family="Barlow Condensed,sans-serif">${fullName} ${tie}#${lastR}</text>`;
       return `<g class="bump-manager">
         <path class="bump-line ${s.isMe?'hl':''}" d="${d}" stroke="${col}" stroke-width="${thick}" opacity="${opa}" fill="none"/>
         ${dots}${lbl}
