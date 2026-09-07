@@ -29,7 +29,7 @@ const CFG = {
   FPL: 'https://fantasy.premierleague.com/api/',
   // Cloudflare Worker milik sendiri. Isi setelah deploy (lihat worker/README.md),
   // mis. 'https://fpl-proxy.<subdomain>.workers.dev'. Kalau terisi otomatis jadi proxy #1.
-  workerUrl: '',
+  workerUrl: 'https://fpl-proxy.ahmad-yusuf-s.workers.dev',
   PROXIES: [
     // r.jina.ai: satu-satunya proxy publik yang terverifikasi jalan (2026-09-07),
     // termasuk preflight CORS. Header di bawah wajib - tanpa itu responsnya markdown.

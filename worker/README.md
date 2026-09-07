@@ -24,7 +24,7 @@ npx wrangler deploy
 `wrangler deploy` akan mencetak URL worker, bentuknya:
 
 ```
-https://fpl-proxy.<subdomain>.workers.dev
+https://fpl-proxy.ahmad-yusuf-s.workers.dev
 ```
 
 ## Sambungkan ke dashboard
@@ -32,7 +32,7 @@ https://fpl-proxy.<subdomain>.workers.dev
 Salin URL itu ke `app.js`, field `CFG.workerUrl`:
 
 ```js
-workerUrl: 'https://fpl-proxy.<subdomain>.workers.dev',
+workerUrl: 'https://fpl-proxy.ahmad-yusuf-s.workers.dev',
 ```
 
 Begitu terisi, worker otomatis jadi proxy **#1** dan dicoba sebelum semua proxy
@@ -49,8 +49,8 @@ PWA yang sudah terpasang di HP menarik `app.js` versi baru.
 > ter-deploy, atau pakai `npx wrangler dev --remote`.
 
 ```
-curl "https://fpl-proxy.<subdomain>.workers.dev/health"
-curl "https://fpl-proxy.<subdomain>.workers.dev/?url=https%3A%2F%2Ffantasy.premierleague.com%2Fapi%2Fevent-status%2F"
+curl "https://fpl-proxy.ahmad-yusuf-s.workers.dev/health"
+curl "https://fpl-proxy.ahmad-yusuf-s.workers.dev/?url=https%3A%2F%2Ffantasy.premierleague.com%2Fapi%2Fevent-status%2F"
 ```
 
 Yang kedua harus mengembalikan JSON `{"status":[...]}`. Header `X-Proxy-Cache`
