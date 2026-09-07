@@ -1891,13 +1891,40 @@ const SUBTABS = {
 
 const Nav = {
   current: 'lineup',
+  LS_KEY: 'fplDashNav',
 
   init() {
     document.querySelectorAll('.tab').forEach(t => {
       t.addEventListener('click', () => this.goTab(t.dataset.tab));
     });
     Object.keys(SUBTABS).forEach(k => { Store.subtab[k] = SUBTABS[k][0]?.k || null; });
-    this.goTab('lineup');
+    this.restore();
+  },
+
+  // Simpan posisi terakhir supaya refresh (atau PWA yang dibuka ulang) tidak
+  // melempar balik ke tab default.
+  save() {
+    try {
+      localStorage.setItem(this.LS_KEY, JSON.stringify({ tab: this.current, subtab: Store.subtab }));
+    } catch {}
+  },
+
+  restore() {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(this.LS_KEY) || 'null'); } catch {}
+
+    // Subtab tersimpan hanya dipakai kalau masih terdaftar di SUBTABS. Kalau
+    // versi baru mengubah/menghapus subtab, yang lama diabaikan supaya tidak
+    // mendarat di panel kosong.
+    if (saved && saved.subtab) {
+      Object.entries(saved.subtab).forEach(([tab, key]) => {
+        if ((SUBTABS[tab] || []).some(x => x.k === key)) Store.subtab[tab] = key;
+      });
+    }
+
+    // Begitu juga tab-nya: harus benar-benar ada di DOM.
+    const tabOk = saved && saved.tab && document.querySelector('.tab[data-tab="' + saved.tab + '"]');
+    this.goTab(tabOk ? saved.tab : 'lineup');
   },
 
   goTab(tab) {
@@ -1906,6 +1933,7 @@ const Nav = {
     document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id===`panel-${tab}`));
     this.renderSubtabs(tab);
     Render.panel(tab, Store.subtab[tab]);
+    this.save();
   },
 
   renderSubtabs(tab) {
@@ -1923,6 +1951,7 @@ const Nav = {
     Store.subtab[tab] = key;
     this.renderSubtabs(tab);
     Render.panel(tab, key);
+    this.save();
   },
 };
 

@@ -3,7 +3,7 @@
 // ============================================================
 // Bump this version string whenever app.js/style.css/index.html changes —
 // it's the only way installed PWAs (HP) detect the update and refresh their cache.
-const CACHE_NAME = 'fpl-dash-v5';
+const CACHE_NAME = 'fpl-dash-v6';
 const CORE_ASSETS = [
   '/FPL/',
   '/FPL/index.html',
