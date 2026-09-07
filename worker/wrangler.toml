@@ -1,0 +1,5 @@
+name = "fpl-proxy"
+main = "src/index.js"
+compatibility_date = "2026-09-07"
+
+# Worker ini tidak butuh KV, D1, atau binding apa pun — murni fetch passthrough.

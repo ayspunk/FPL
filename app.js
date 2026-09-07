@@ -27,11 +27,17 @@ const CFG = {
   // Set to '' to disable, or auto-detect from window.location
   githubDataUrl: '',
   FPL: 'https://fantasy.premierleague.com/api/',
+  // Cloudflare Worker milik sendiri. Isi setelah deploy (lihat worker/README.md),
+  // mis. 'https://fpl-proxy.<subdomain>.workers.dev'. Kalau terisi otomatis jadi proxy #1.
+  workerUrl: '',
   PROXIES: [
-    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
-    u => `https://corsproxy.org/?url=${encodeURIComponent(u)}`,
-    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-    u => `https://proxy.cors.sh/${u}`,
+    // r.jina.ai: satu-satunya proxy publik yang terverifikasi jalan (2026-09-07),
+    // termasuk preflight CORS. Header di bawah wajib - tanpa itu responsnya markdown.
+    { name: 'r.jina.ai',    url: u => `https://r.jina.ai/${u}`, headers: { 'x-respond-with': 'text' } },
+    { name: 'codetabs',     url: u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}` },
+    { name: 'corsproxy.io', url: u => `https://corsproxy.io/?url=${encodeURIComponent(u)}` },
+    { name: 'allorigins',   url: u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}` },
+    { name: 'cors.sh',      url: u => `https://proxy.cors.sh/${u}` },
   ],
   GW_WEIGHTS: {
     'fdr_short':       { GK:.30, DEF:.25, MID:.25, FWD:.30 },
@@ -299,8 +305,16 @@ const Cache = {
 // 4. FETCH LAYER  (semua request melalui Cache)
 // ═══════════════════════════════════════════════════════
 const Fetch = {
-  _lastWorkingProxy: 0, // index into CFG.PROXIES
+  _lastWorkingProxy: 0, // index into proxyList()
   _requestCount: 0,
+
+  // Worker sendiri (kalau dikonfigurasi) selalu dicoba duluan.
+  proxyList() {
+    if (!CFG.workerUrl) return CFG.PROXIES;
+    let base = CFG.workerUrl;
+    while (base.endsWith('/')) base = base.slice(0, -1);
+    return [{ name: 'worker', url: u => `${base}/?url=${encodeURIComponent(u)}` }, ...CFG.PROXIES];
+  },
 
   async _net(url, timeout = 12000) {
     const errors = [];
@@ -320,18 +334,19 @@ const Fetch = {
     }
 
     // 2. Try proxies: last working first, then others
+    const list = this.proxyList();
     const order = [this._lastWorkingProxy];
-    for (let i = 0; i < CFG.PROXIES.length; i++) {
+    for (let i = 0; i < list.length; i++) {
       if (i !== this._lastWorkingProxy) order.push(i);
     }
 
     for (const idx of order) {
-      const px = CFG.PROXIES[idx];
+      const px = list[idx];
       if (!px) continue;
-      const fetchUrl = px(url);
-      const label = `proxy#${idx+1}`;
+      const fetchUrl = px.url(url);
+      const label = px.name || `proxy#${idx+1}`;
       try {
-        const r = await fetch(fetchUrl, { signal: AbortSignal.timeout(timeout) });
+        const r = await fetch(fetchUrl, { signal: AbortSignal.timeout(timeout), headers: px.headers || {} });
         if (r.ok) {
           const text = await r.text();
           try {
@@ -6714,8 +6729,9 @@ const UI = {
     const el = document.getElementById('proxy-test-results');
     if (!el) return;
     const testUrl = CFG.FPL + 'bootstrap-static/';
-    const names = CFG.PROXIES.map((_,i)=>`Proxy #${i+1}`);
-    const urls  = CFG.PROXIES.map(px=>px(testUrl));
+    const list  = Fetch.proxyList();
+    const names = list.map((px,i)=>px.name||`Proxy #${i+1}`);
+    const urls  = list.map(px=>px.url(testUrl));
 
     el.innerHTML = '<div style="color:var(--text3);font-size:12px;margin-bottom:8px">ℹ Direct fetch ke FPL API selalu gagal dari browser karena CORS policy — ini normal. Dashboard menggunakan CORS proxy.</div>'
       + '<div style="color:var(--gold)">⏳ Testing… mohon tunggu.</div>';
@@ -6726,7 +6742,7 @@ const UI = {
       const url  = urls[i];
       const t0   = performance.now();
       try {
-        const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+        const r = await fetch(url, { signal: AbortSignal.timeout(10000), headers: list[i].headers || {} });
         const ms = Math.round(performance.now() - t0);
         if (r.ok) {
           const text = await r.text();

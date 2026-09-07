@@ -3,5 +3,5 @@ git stash
 git pull --rebase origin main
 git stash pop
 git add -A
-git commit -m "feat: live polling, DGW/BGW planner, share fix"
+git commit -m "updat"
 git push origin main
