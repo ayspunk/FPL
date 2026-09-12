@@ -8260,13 +8260,79 @@ const App = {
     if (sub === 'optimize' || sub === 'soptimize') Nav.goSubtab(Nav.current, sub);
   },
 
+  // transfer-impact.json digenerate GitHub Actions dari CFG.MY_ENTRY_ID milik
+  // PEMILIK repo, bukan milik pembacanya. Dulu dipakai tanpa cek isOwner(), jadi
+  // setiap user non-owner melihat transfer orang lain disajikan sebagai miliknya
+  // sendiri — persis seperti picks.json/manager.json yang sudah dijaga di
+  // loadMySquad(), tapi yang satu ini kelewat.
   async loadSetForget() {
-    const sf = await Fetch.githubJSON('transfer-impact.json');
-    if (sf?.impactData) {
-      Store.setForgetData = sf;
-      console.log(`[App] ✓ Transfer Impact: ${sf.impactData.length} GWs, net=${sf.totalImpact}`);
-      if (Nav.current==='other' && Store.subtab['other']==='setforget') Nav.goSubtab('other','setforget');
+    if (isOwner()) {
+      const sf = await Fetch.githubJSON('transfer-impact.json');
+      if (sf?.impactData) {
+        Store.setForgetData = sf;
+        console.log(`[App] ✓ Transfer Impact dari GitHub (owner): ${sf.impactData.length} GW, net=${sf.totalImpact}`);
+        this._rerenderSetForget();
+        return;
+      }
     }
+    await this.buildTransferImpact();
+  },
+
+  // Hitung sendiri dari transfer tim SENDIRI. Struktur hasilnya sama dengan
+  // transfer-impact.json supaya renderer-nya tidak perlu tahu bedanya.
+  async buildTransferImpact() {
+    const tid = CFG.myTeamId;
+    if (!tid || !Store.bootstrap) return;
+
+    let tr = null;
+    try { tr = await Fetch.managerTransfers(tid); } catch {}
+    Store.myTransfers = tr || [];
+    if (!tr?.length) { console.log('[App] Transfer Impact: belum ada transfer'); return; }
+
+    const nm = {};
+    Store.bootstrap.elements.forEach(p => { nm[p.id] = p.web_name; });
+
+    // Poin per GW tiap pemain yang terlibat, dari element-summary
+    const ids = [...new Set(tr.flatMap(t => [t.element_in, t.element_out]))];
+    const need = ids.filter(id => !Store.playerFixtures[id]);
+    if (need.length) {
+      const bo = Fetch.batchOpts();
+      await Fetch.batch(need.map(id => async () => {
+        const d = await Fetch.playerSummary(id);
+        if (d) Store.playerFixtures[id] = d;
+      }), bo.concurrency, bo.delayMs);
+    }
+
+    // Dijumlah, bukan ditimpa: kalau pemain punya dua laga di GW yang sama (DGW)
+    // keduanya ikut dihitung.
+    const ptsOf = (id, gw) => (Store.playerFixtures[id]?.history || [])
+      .filter(h => h.round === gw)
+      .reduce((s, h) => s + (h.total_points || 0), 0);
+
+    const imp = [];
+    for (let g = 1; g <= (Store.currentGW || 0); g++) {
+      const gt = tr.filter(t => t.event === g);
+      if (!gt.length) { imp.push({ gw: g, impact: 0, transfers: [] }); continue; }
+      let ti = 0;
+      const det = gt.map(t => {
+        const ip = ptsOf(t.element_in, g), op = ptsOf(t.element_out, g), d = ip - op;
+        ti += d;
+        return { playerIn: nm[t.element_in]||'?', playerOut: nm[t.element_out]||'?', inPts: ip, outPts: op, impact: d };
+      });
+      imp.push({ gw: g, impact: ti, transfers: det });
+    }
+
+    Store.setForgetData = {
+      impactData: imp,
+      totalImpact: imp.reduce((s, d) => s + d.impact, 0),
+      generated: new Date().toISOString(),
+    };
+    console.log(`[App] ✓ Transfer Impact dihitung untuk ${tid}: ${imp.length} GW, net=${Store.setForgetData.totalImpact}`);
+    this._rerenderSetForget();
+  },
+
+  _rerenderSetForget() {
+    if (Nav.current==='other' && Store.subtab['other']==='setforget') Nav.goSubtab('other','setforget');
   },
 
   async loadMySquad(gw) {
