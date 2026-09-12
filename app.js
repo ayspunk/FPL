@@ -8271,6 +8271,23 @@ const App = {
     }
 
     if (info) Store.myManagerInfo = info;
+
+    // History tim SENDIRI. Selama ini Store.managerHistory hanya diisi oleh
+    // loader liga (50 manajer teratas), jadi kalau kamu tidak masuk top-50 liga
+    // sendiri, history-mu tidak pernah terambil dan Set & Forget selamanya
+    // bilang "Memerlukan data history. Pastikan Team ID benar." — padahal Team
+    // ID-nya benar.
+    if (!Store.managerHistory[tid] && !Store.managerHistory[String(tid)]) {
+      try {
+        const mh = await Fetch.managerHistory(tid);
+        if (mh?.current?.length) {
+          Store.managerHistory[tid] = mh;
+          console.log(`[App] ✓ My history: ${mh.current.length} GWs`);
+          if (Nav.current==='other' && Store.subtab['other']==='setforget') Nav.goSubtab('other','setforget');
+        }
+      } catch {}
+    }
+
     if (!picks) { console.warn('[App] My picks: not available'); return; }
     Store.myPicks    = picks;
     Store.mySquadData= Process.buildMySquad(picks, Store.bootstrap);
