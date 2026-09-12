@@ -1431,9 +1431,19 @@ const Process = {
       Store._activeBacktestWeights = null;
     }
     players.forEach(p => { p.GWScore = +Process.calcGWScore(p, weights); });
-    const minMin = +document.getElementById('min-minutes')?.value || CFG.minMinutes;
-    Store.scoredPlayers = players.filter(p => p.minutes >= minMin);
+    Store.scoredPlayers = players.filter(p => p.minutes >= this.minMinutesFilter(players));
     Store.formations    = this.rankFormations(this.buildAllFormations(Store.scoredPlayers));
+  },
+
+  // Ambang menit efektif. CFG.minMinutes (450 = 5 laga penuh) tidak bisa dicapai
+  // siapa pun sebelum ~GW5 — di awal musim ambang itu membuang SELURUH pemain,
+  // scoredPlayers kosong, dan semua tab turunannya (Line-up, Scout, Best XV, dst)
+  // ikut mati. Jadi ambang dipotong ke separuh menit pemain paling sering main,
+  // sehingga selalu ada kandidat berapa pun GW-nya.
+  minMinutesFilter(players) {
+    const setting = +document.getElementById('min-minutes')?.value || CFG.minMinutes;
+    const maxMin  = players.reduce((m, p) => Math.max(m, p.minutes || 0), 0);
+    return Math.min(setting, Math.round(maxMin * 0.5));
   },
 
   // Transpose {GK:{ppg:0.3,...},DEF:{...}} → {ppg:{GK:0.3,...},form:{...}}
