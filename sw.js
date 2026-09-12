@@ -95,11 +95,18 @@ self.addEventListener('fetch', e => {
   // menggeledah SEMUA cache di origin, termasuk generasi lama yang belum sempat
   // terhapus — app.js basi bisa tersaji walau CACHE_NAME sudah naik versi.
 
-  // App shell: network-first, cache sebagai jaring pengaman offline
+  // App shell: network-first, cache sebagai jaring pengaman offline.
+  //
+  // cache:'no-cache' WAJIB. fetch() biasa masih melewati HTTP cache browser, dan
+  // GitHub Pages mengirim Cache-Control: max-age=600 — jadi tanpa ini "network-
+  // first" tetap menyajikan app.js basi sampai 10 menit setelah deploy. Ini tidak
+  // kelihatan saat diuji lewat python -m http.server, yang tidak mengirim header
+  // cache sama sekali. 'no-cache' memaksa revalidasi ke server, bukan unduh ulang:
+  // Pages mengirim ETag, jadi kalau tidak berubah balasannya 304 yang murah.
   if (e.request.mode === 'navigate' ||
       APP_SHELL.some(a => url.pathname === a || url.href.includes(a))) {
     e.respondWith(
-      fetch(e.request)
+      fetch(e.request.url, { cache: 'no-cache', credentials: 'same-origin' })
         .then(res => {
           if (res.ok) {
             const clone = res.clone();
