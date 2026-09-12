@@ -230,10 +230,40 @@ const Store = {
 // ═══════════════════════════════════════════════════════
 const Cache = {
   TTL:    { STATIC: 6*3600e3, LEAGUE: 30*60e3, LIVE: 5*60e3, SHEETS: 15*60e3 },
-  PREFIX: 'fplDash_v1_',
+  PREFIX: 'fplDash_v2_',
+  LEGACY_PREFIX: 'fplDash_v1_',
 
-  _k(url) {
-    return this.PREFIX + btoa(unescape(encodeURIComponent(url))).slice(0,48).replace(/[+/=]/g,'_');
+  // Hash 53-bit (cyrb53) atas URL PENUH.
+  //
+  // Versi lama: btoa(url).slice(0,48). 48 karakter base64 hanya mewakili 36 byte
+  // pertama input, sedangkan CFG.FPL sendiri sudah 38 byte — pemotongannya jatuh
+  // SEBELUM path dimulai. Akibatnya setiap endpoint FPL (entry/, history/,
+  // transfers/, event/{gw}/picks/, leagues-classic/) berbagi satu key localStorage
+  // dan saling menimpa: managerPicks() bisa mengembalikan payload history, lalu
+  // buildMySquad() menghasilkan 0 pemain dan tab My FPL nyangkut di "sedang dimuat".
+  _hash(str) {
+    let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+  },
+
+  _k(url) { return this.PREFIX + this._hash(url); },
+
+  // Buang entri v1 yang isinya tercampur akibat tabrakan key di atas.
+  purgeLegacy() {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k?.startsWith(this.LEGACY_PREFIX)) keys.push(k);
+    }
+    keys.forEach(k => { try { localStorage.removeItem(k); } catch {} });
+    if (keys.length) console.log(`[Cache] Purge ${keys.length} entri v1 (key bertabrakan)`);
   },
 
   get(url) {
@@ -2532,10 +2562,14 @@ const Render = {
 
     // ── Require snapshot data to avoid data leakage ──────────────────────
     if (!Store._snapshotsData || !Store._liveAllData) {
+      App.ensureHistoricalData();   // fire-and-forget; render ulang sendiri saat selesai
+      const msg = Store._historicalTried
+        ? `Data historis (snapshots + live-all) tidak tersedia.<br>
+           File <code>data/snapshots.json</code> / <code>data/live-all.json</code> gagal dimuat atau masih kosong.`
+        : 'Memuat data historis (snapshots + live-all)…';
       return `
         <div class="section-title">⚡ ${mode==='gw'?'GW':'Scout'} Weight Optimizer</div>
-        ${H.info(`Data historis (snapshots + live-all) belum dimuat.<br>
-          Buka tab <b>Lineup → GW Evaluation</b> lalu pilih GW sebelumnya untuk memuat data, kemudian kembali ke sini.`)}
+        ${H.info(msg)}
         <div class="btn-row"><button class="btn btn-secondary" onclick="Nav.goSubtab('${parentTab}','${backTab}')">← Kembali</button></div>`;
     }
 
@@ -8177,6 +8211,35 @@ const App = {
       .slice(0, 10);
   },
 
+  // snapshots.json + live-all.json cuma dimuat lazily oleh UI.setTargetGW saat
+  // user membuka GW Evaluation dan memilih GW lampau. Weight Optimizer butuh
+  // keduanya, jadi dulu panelnya cuma menampilkan instruksi ritual itu dan
+  // terlihat seperti fitur mati. Padahal ini file same-origin biasa — muat saja.
+  async ensureHistoricalData() {
+    if (Store._historicalLoading || Store._historicalTried) return;
+    Store._historicalLoading = true;
+    try {
+      if (!Store._snapshotsData) {
+        const snap = await Fetch.githubJSON('snapshots.json');
+        if (snap) Store._snapshotsData = snap;
+      }
+      if (!Store._liveAllData) {
+        const la = await Fetch.githubJSON('live-all.json');
+        if (la) Store._liveAllData = la;
+      }
+      if (!Store._weightsHistory) {
+        const wh = await Fetch.githubJSON('weights-history.json');
+        if (wh) Store._weightsHistory = wh;
+      }
+    } finally {
+      Store._historicalLoading = false;
+      Store._historicalTried   = true;   // sekali saja, supaya render ulang tidak jadi loop
+    }
+    console.log(`[App] Historical: snapshots=${Object.keys(Store._snapshotsData||{}).length} GW, live-all=${Object.keys(Store._liveAllData||{}).length} GW`);
+    const sub = Store.subtab[Nav.current];
+    if (sub === 'optimize' || sub === 'soptimize') Nav.goSubtab(Nav.current, sub);
+  },
+
   async loadSetForget() {
     const sf = await Fetch.githubJSON('transfer-impact.json');
     if (sf?.impactData) {
@@ -8242,6 +8305,7 @@ const App = {
   },
 
   async init() {
+    Cache.purgeLegacy();
     UI.loadSettings();
     UI.initTheme();
     UI.buildLeagueSelect();

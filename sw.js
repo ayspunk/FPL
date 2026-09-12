@@ -1,17 +1,33 @@
 // ============================================================
 // FPL Dashboard — Service Worker (PWA)
 // ============================================================
-// Bump this version string whenever app.js/style.css/index.html changes —
-// it's the only way installed PWAs (HP) detect the update and refresh their cache.
-const CACHE_NAME = 'fpl-dash-v8';
-const CORE_ASSETS = [
+// CACHE_NAME sekarang cuma penanda generasi cache: sejak app shell dilayani
+// network-first, rilis app.js/style.css/index.html sudah langsung sampai ke user
+// TANPA perlu bump. Bump hanya kalau isi CORE_ASSETS berubah (mis. ganti versi
+// Chart.js) atau saat ingin memaksa buang cache lama.
+const CACHE_NAME = 'fpl-dash-v9';
+
+// App shell (same-origin) — NETWORK-FIRST.
+// Dulu ini cache-first, dan itu artinya setiap rilis selalu tersaji satu versi
+// terlambat: saat halaman dimuat, index.html/app.js sudah keburu dilayani dari
+// cache lama sebelum SW baru sempat aktif dan claim. skipWaiting() saja tidak
+// menyelesaikannya — request-nya sudah terlanjur jalan. Network-first bikin
+// rilis langsung kelihatan di buka pertama; cache tetap dipakai kalau offline.
+const APP_SHELL = [
   '/FPL/',
   '/FPL/index.html',
   '/FPL/app.js',
   '/FPL/style.css',
+];
+
+// Vendor CDN — CACHE-FIRST. Versinya di-pin di URL, jadi isinya tidak pernah
+// berubah; tidak ada gunanya menembak jaringan tiap kali.
+const VENDOR_ASSETS = [
   'https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap',
   'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js',
 ];
+
+const CORE_ASSETS = [...APP_SHELL, ...VENDOR_ASSETS];
 
 const DATA_CACHE = 'fpl-data-v1';
 const DATA_ASSETS = [
@@ -75,24 +91,39 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // Core assets: cache-first
-  if (CORE_ASSETS.some(a => url.href.includes(a) || url.pathname === a)) {
+  // cacheName wajib di setiap caches.match() di bawah: tanpa opsi itu ia
+  // menggeledah SEMUA cache di origin, termasuk generasi lama yang belum sempat
+  // terhapus — app.js basi bisa tersaji walau CACHE_NAME sudah naik versi.
+
+  // App shell: network-first, cache sebagai jaring pengaman offline
+  if (e.request.mode === 'navigate' ||
+      APP_SHELL.some(a => url.pathname === a || url.href.includes(a))) {
     e.respondWith(
-      // cacheName wajib: caches.match() tanpa opsi menggeledah SEMUA cache di
-      // origin, termasuk generasi lama yang belum sempat terhapus — app.js basi
-      // bisa tersaji walau CACHE_NAME sudah naik versi.
-      caches.match(e.request, { cacheName: CACHE_NAME }).then(cached => {
-        // Return cached but also update in background
-        const fetchPromise = fetch(e.request).then(res => {
+      fetch(e.request)
+        .then(res => {
           if (res.ok) {
             const clone = res.clone();
             caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
           }
           return res;
-        }).catch(() => null);
+        })
+        .catch(() => caches.match(e.request, { cacheName: CACHE_NAME }))
+    );
+    return;
+  }
 
-        return cached || fetchPromise;
-      })
+  // Vendor CDN: cache-first (URL sudah ter-pin versinya)
+  if (VENDOR_ASSETS.some(a => url.href.includes(a))) {
+    e.respondWith(
+      caches.match(e.request, { cacheName: CACHE_NAME }).then(cached =>
+        cached || fetch(e.request).then(res => {
+          if (res.ok) {
+            const clone = res.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
+          }
+          return res;
+        })
+      )
     );
     return;
   }
