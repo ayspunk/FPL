@@ -3,7 +3,7 @@
 // ============================================================
 // Bump this version string whenever app.js/style.css/index.html changes —
 // it's the only way installed PWAs (HP) detect the update and refresh their cache.
-const CACHE_NAME = 'fpl-dash-v7';
+const CACHE_NAME = 'fpl-dash-v8';
 const CORE_ASSETS = [
   '/FPL/',
   '/FPL/index.html',
@@ -25,12 +25,21 @@ const DATA_ASSETS = [
 ];
 
 // Install: cache core assets
+// skipWaiting() dipanggil duluan dan DI LUAR rantai caching. Sebelumnya ia
+// dirangkai setelah addAll, jadi kalau satu aset gagal (Google Fonts / cdnjs
+// diblokir atau lambat) .catch() menelan errornya, skipWaiting tidak pernah
+// jalan, SW baru nyangkut di status "waiting", activate tidak jalan, dan cache
+// lama tidak pernah dihapus — update baru kelihatan setelah app dibuka 2x.
 self.addEventListener('install', e => {
+  self.skipWaiting();
   e.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(CORE_ASSETS))
-      .then(() => self.skipWaiting())
-      .catch(err => console.log('[SW] Install error:', err))
+    caches.open(CACHE_NAME).then(cache =>
+      // Per-aset, bukan addAll: addAll bersifat all-or-nothing, satu CDN meleset
+      // bikin seluruh cache inti kosong.
+      Promise.all(CORE_ASSETS.map(a =>
+        cache.add(a).catch(err => console.log('[SW] Lewati cache:', a, err))
+      ))
+    )
   );
 });
 
@@ -61,7 +70,7 @@ self.addEventListener('fetch', e => {
           }
           return res;
         })
-        .catch(() => caches.match(e.request))
+        .catch(() => caches.match(e.request, { cacheName: DATA_CACHE }))
     );
     return;
   }
@@ -69,7 +78,10 @@ self.addEventListener('fetch', e => {
   // Core assets: cache-first
   if (CORE_ASSETS.some(a => url.href.includes(a) || url.pathname === a)) {
     e.respondWith(
-      caches.match(e.request).then(cached => {
+      // cacheName wajib: caches.match() tanpa opsi menggeledah SEMUA cache di
+      // origin, termasuk generasi lama yang belum sempat terhapus — app.js basi
+      // bisa tersaji walau CACHE_NAME sudah naik versi.
+      caches.match(e.request, { cacheName: CACHE_NAME }).then(cached => {
         // Return cached but also update in background
         const fetchPromise = fetch(e.request).then(res => {
           if (res.ok) {
