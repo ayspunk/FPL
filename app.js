@@ -421,6 +421,17 @@ const Fetch = {
     return data;
   },
 
+  // Seberapa agresif boleh menembak proxy saat memuat liga (~89 request sekali
+  // muat). Worker sendiri tidak punya rate limit, nge-cache di edge 90 detik,
+  // kuotanya 100k/hari, dan latensinya terukur ~107ms — aman diparalelkan.
+  // Proxy publik beda cerita: r.jina.ai balas HTTP 429 bahkan pada 2 request
+  // paralel, jadi kalau jalurnya jatuh ke sana, tetap pelan-pelan.
+  batchOpts() {
+    return this._lastWorkingProxy === 'worker'
+      ? { concurrency: 8, delayMs: 0 }
+      : { concurrency: 2, delayMs: 500 };
+  },
+
   async batch(tasks, concurrency = 5, delayMs = 0) {
     const results = new Array(tasks.length).fill(null);
     let idx = 0;
@@ -8143,7 +8154,11 @@ const App = {
         if (i < tasks.length) allTasks.push(tasks[i]);
         if (i < pTasks.length) allTasks.push(pTasks[i]);
       }
-      if (allTasks.length) await Fetch.batch(allTasks, 2, 250);
+      const bo1 = Fetch.batchOpts();
+      if (allTasks.length) {
+        console.log(`[League] Proxy batch: ${allTasks.length} task, concurrency ${bo1.concurrency} (via ${Fetch._lastWorkingProxy||'?'})`);
+        await Fetch.batch(allTasks, bo1.concurrency, bo1.delayMs);
+      }
       histOK = Object.keys(Store.managerHistory).length;
       console.log(`[League] After proxy: History ${histOK}, Picks ${Object.keys(Store.leaguePicks).length}`);
     } else {
@@ -8187,9 +8202,14 @@ const App = {
         try { const i = await Fetch.managerInfo(m.entryId); if (i) Store.managerInfos[m.entryId] = i; } catch {}
       }),
     ];
-    if (bgTasks.length) await Fetch.batch(bgTasks, 2, 500);
+    const bo2 = Fetch.batchOpts();
+    const t0 = Date.now();
+    if (bgTasks.length) {
+      console.log(`[League] Transfers+Info batch: ${bgTasks.length} task, concurrency ${bo2.concurrency} (via ${Fetch._lastWorkingProxy||'?'})`);
+      await Fetch.batch(bgTasks, bo2.concurrency, bo2.delayMs);
+    }
     Store.transferMatrix = Process.buildTransferMatrix(managers, Store.managerTransfers);
-    console.log(`[League] Transfers+Info done. Transfer matrix: ${Store.transferMatrix?.rows?.length||0} GWs`);
+    console.log(`[League] Transfers+Info done in ${((Date.now()-t0)/1000).toFixed(1)}s. Transfer matrix: ${Store.transferMatrix?.rows?.length||0} GWs`);
 
     // Final re-render
     if (Nav.current === 'league') Nav.goTab('league');
