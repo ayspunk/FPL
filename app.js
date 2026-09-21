@@ -18,6 +18,7 @@ const CFG = {
   myTeamName:   '',
   minMinutes:   450,
   maxPerTeam:   3,
+  budgetCap:    100,   // batas total harga 15 pemain (XI + bench) untuk rekomendasi; 0 = tanpa batas
   sheetsUrl:    '',
   githubOwner:  'ayspunk',  // GitHub username (owner repo)
   githubRepo:   'FPL',      // Nama repo GitHub Pages
@@ -1547,13 +1548,7 @@ const Process = {
     const defP = this.pickN(DEF, nD, gkP);
     const midP = this.pickN(MID, nM, [...gkP,...defP]);
     const fwdP = this.pickN(FWD, nF, [...gkP,...defP,...midP]);
-    const all  = [...gkP,...defP,...midP,...fwdP];
-    const total= +all.reduce((s,p)=>s+(p.GWScore||0),0).toFixed(2);
-    // DGW players get a 1.5× bonus for captaincy: they play twice so expected pts are ~double
-    const capSortScore = p => (p.GWScore || 0) * (p.isDGW ? 1.5 : 1);
-    const field= [...defP,...midP,...fwdP].sort((a,b)=>capSortScore(b)-capSortScore(a));
-    const cap  = field[0]||null;
-    const vc   = field[1]||null;
+    let all  = [...gkP,...defP,...midP,...fwdP];
 
     // Bench: 1 GK + 3 best outfield not in starting XI
     const xiIds = new Set(all.map(p=>p.id));
@@ -1575,7 +1570,49 @@ const Process = {
       benchOut.push(p);
       teamCount[p.TeamKey] = tc + 1;
     }
-    const bench = [benchGK, ...benchOut].filter(Boolean);
+    let bench = [benchGK, ...benchOut].filter(Boolean);
+
+    // Batas budget 15 pemain: tukar pemain dengan kehilangan skor terkecil per £ yang dihemat
+    const cap$ = CFG.budgetCap || 0;
+    if (cap$ > 0) {
+      const sq = [...all, ...bench];
+      const cost = () => sq.reduce((s,p)=>s+(p.Price||0),0);
+      const inXI = new Set(all.map(p=>p.id));
+      for (let it = 0; it < 80 && cost() > cap$ + 1e-9; it++) {
+        const tc = {}; sq.forEach(p => { tc[p.TeamKey] = (tc[p.TeamKey]||0) + 1; });
+        let best = null;
+        sq.forEach((cur, idx) => {
+          eligible.forEach(c => {
+            if (c.Position !== cur.Position || (c.Price||0) >= (cur.Price||0)) return;
+            if (sq.some(x => x.id === c.id)) return;
+            if (c.TeamKey !== cur.TeamKey && (tc[c.TeamKey]||0) >= maxPT) return;
+            const save = cur.Price - c.Price, loss = (cur.GWScore||0) - (c.GWScore||0);
+            const ratio = loss / save;
+            if (!best || ratio < best.ratio) best = { idx, c, ratio };
+          });
+        });
+        if (!best) break;
+        const old = sq[best.idx];
+        if (inXI.has(old.id)) { inXI.delete(old.id); inXI.add(best.c.id); }
+        sq[best.idx] = best.c;
+      }
+      const xiSet = new Set(inXI);
+      const fitted = sq.filter(p => xiSet.has(p.id));
+      const pick = pos => fitted.filter(p=>p.Position===pos).sort((a,b)=>b.GWScore-a.GWScore);
+      gkP.splice(0, gkP.length, ...pick('GK'));
+      defP.splice(0, defP.length, ...pick('DEF'));
+      midP.splice(0, midP.length, ...pick('MID'));
+      fwdP.splice(0, fwdP.length, ...pick('FWD'));
+      all = [...gkP,...defP,...midP,...fwdP];
+      bench = sq.filter(p => !xiSet.has(p.id));
+    }
+
+    const total= +all.reduce((s,p)=>s+(p.GWScore||0),0).toFixed(2);
+    // DGW players get a 1.5× bonus for captaincy: they play twice so expected pts are ~double
+    const capSortScore = p => (p.GWScore || 0) * (p.isDGW ? 1.5 : 1);
+    const field= [...defP,...midP,...fwdP].sort((a,b)=>capSortScore(b)-capSortScore(a));
+    const cap  = field[0]||null;
+    const vc   = field[1]||null;
 
     // Actual points calculation
     const hasLive     = all.some(p => p.livePoints != null);
@@ -2885,7 +2922,13 @@ const Render = {
       ? `<div style="font-size:10px;color:var(--red);margin-top:2px">⚠ Over £${BUDGET_LIMIT} (+${(budget-BUDGET_LIMIT).toFixed(1)})</div>`
       : '';
 
-    const summaryStrip = `
+    const budgetCtl = `
+      <div class="info-box" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;font-size:12px">
+        <label for="budget-cap"><b>Batas total budget (15 pemain)</b></label>
+        <span>£ <input id="budget-cap" type="number" step="0.5" min="0" value="${CFG.budgetCap||0}" style="width:80px" onchange="UI.setBudgetCap(this.value)"></span>
+        <span class="dim">0 = tanpa batas · default 100.0 agar rekomendasi realistis</span>
+      </div>`;
+    const summaryStrip = budgetCtl + `
       <div class="eval-summary-strip">
         <div class="eval-stat">
           <div class="eval-stat-label">Formasi</div>
@@ -7822,12 +7865,19 @@ const UI = {
     }, 800);
   },
 
+  setBudgetCap(v) {
+    const n = parseFloat(v);
+    CFG.budgetCap = isNaN(n) || n < 0 ? 0 : n;
+    this._persistSettings();
+    if (Store.players?.length) { Process.applyScores(Store.players); Nav.goTab(Nav.current); }
+  },
+
   _persistSettings() {
     try {
       localStorage.setItem('fplDashCfg', JSON.stringify({
         myTeamId: CFG.myTeamId, myTeamName: CFG.myTeamName,
         sheetsUrl: CFG.sheetsUrl, minMinutes: CFG.minMinutes,
-        maxPerTeam: CFG.maxPerTeam, selectedLeagueIdx: CFG.selectedLeagueIdx,
+        maxPerTeam: CFG.maxPerTeam, budgetCap: CFG.budgetCap, selectedLeagueIdx: CFG.selectedLeagueIdx,
         leagues: CFG.leagues, githubToken: CFG.githubToken,
       }));
     } catch {}
@@ -7906,6 +7956,7 @@ const UI = {
         if (saved.sheetsUrl)                      CFG.sheetsUrl         = saved.sheetsUrl;
         if (saved.minMinutes)                     CFG.minMinutes        = saved.minMinutes;
         if (saved.maxPerTeam)                     CFG.maxPerTeam        = saved.maxPerTeam;
+        if (saved.budgetCap !== undefined)        CFG.budgetCap         = +saved.budgetCap || 0;
         if (saved.selectedLeagueIdx !== undefined) CFG.selectedLeagueIdx = saved.selectedLeagueIdx;
         if (saved.leagues?.length)                CFG.leagues           = saved.leagues;
         if (saved.githubToken)                    CFG.githubToken       = saved.githubToken;

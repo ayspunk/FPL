@@ -5,7 +5,7 @@
 // network-first, rilis app.js/style.css/index.html sudah langsung sampai ke user
 // TANPA perlu bump. Bump hanya kalau isi CORE_ASSETS berubah (mis. ganti versi
 // Chart.js) atau saat ingin memaksa buang cache lama.
-const CACHE_NAME = 'fpl-dash-v10';
+const CACHE_NAME = 'fpl-dash-v11';
 
 // App shell (same-origin) — NETWORK-FIRST.
 // Dulu ini cache-first, dan itu artinya setiap rilis selalu tersaji satu versi
