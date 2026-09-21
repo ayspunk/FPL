@@ -25,6 +25,9 @@ jobs:
       - name: Fetch FPL data
         run: node scripts/fetch-fpl.js
 
+      - name: Save lineup recommendation
+        run: node scripts/save-recommendation.js
+
       - name: Commit & Push
         run: |
           git config user.name "FPL Bot"

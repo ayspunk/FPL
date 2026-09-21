@@ -1308,25 +1308,46 @@ const Process = {
       });
     });
 
-    // Peringkat gaya FPL: HANYA total poin yang menentukan. Yang seri berbagi
-    // peringkat sama dan peringkat berikutnya melompat (10, 10, 12). Terbukti
-    // dari leagues-classic standings liga 24873: dua entri 128 pts sama-sama
-    // rank 10, entri berikutnya rank 12. Tidak ada pemecah seri - FPL tidak
-    // punya satu pun. (Sebelumnya di sini dipakai jumlah transfer sebagai
-    // pemecah seri; itu buatan sendiri dan membuat peringkat dashboard
-    // berbeda dari situs FPL.)
+    // Transfer kumulatif per GW per manajer (tidak termasuk GW pakai wildcard/
+    // free hit) - dipakai sebagai pemecah seri, harus sama persis dengan
+    // pemecah seri di leagueRekap supaya peringkat di grafik konsisten dengan
+    // peringkat di rekap.
+    const transByGW = {};
+    managers.forEach(m => {
+      const hist = entryEvents[m.entryId] || entryEvents[String(m.entryId)] || [];
+      const h = histories[m.entryId] || histories[String(m.entryId)];
+      const chips = h?.chips || [];
+      const chipGWs = new Set(chips.filter(c => {
+        const n = (c.name||'').toLowerCase().replace(/[_ ]/g,'');
+        return n.includes('wildcard') || n.includes('freehit');
+      }).map(c => Number(c.event)));
+      let cum = 0;
+      gwLabels.forEach(gw => {
+        const ev = hist.find(e => Number(e.event) === gw);
+        if (ev && !chipGWs.has(gw)) cum += Number(ev.event_transfers) || 0;
+        if (!transByGW[gw]) transByGW[gw] = {};
+        transByGW[gw][m.entryId] = cum;
+      });
+    });
+
+    // Peringkat: total poin lebih tinggi menang, seri dipecah dengan jumlah
+    // transfer lebih sedikit - sama seperti peringkat di rekap liga (lihat
+    // leagueRekap) supaya grafik dan rekap tidak pernah berbeda posisi.
     //
-    // Terpisah dari itu tiap manajer diberi lane unik sebagai posisi vertikal
-    // di bump chart - meniru rank_sort milik FPL - supaya garis yang nilainya
-    // seri tidak saling menumpuk. Label tetap menampilkan peringkat sebenarnya.
+    // Tiap manajer juga diberi lane unik sebagai posisi vertikal di bump
+    // chart supaya garis tidak saling menumpuk saat masih seri di kedua
+    // kriteria itu. Label tetap menampilkan peringkat sebenarnya.
     const ids = managers.map(m => m.entryId);
     const rankByGW = {}, laneByGW = {};
     let prevLane = {};
     gwLabels.forEach(gw => {
       const pts = ptsByGW[gw] || {};
+      const trans = transByGW[gw] || {};
+      const better = (o, id) => (pts[o] ?? 0) > (pts[id] ?? 0)
+        || ((pts[o] ?? 0) === (pts[id] ?? 0) && (trans[o] ?? 0) < (trans[id] ?? 0));
       const rank = {};
       ids.forEach(id => {
-        rank[id] = ids.filter(o => (pts[o] ?? 0) > (pts[id] ?? 0)).length + 1;
+        rank[id] = ids.filter(o => o !== id && better(o, id)).length + 1;
       });
       // Lane unik: peringkat dulu, lalu posisi GW sebelumnya supaya garis tidak
       // menyeberang tanpa alasan, lalu entryId sebagai penentu terakhir.
@@ -3081,10 +3102,14 @@ const Render = {
   lineupEval() {
     const fms = Store.formations;
     if (!fms.length) return H.error('Data belum siap.');
+    // Evaluasi hanya untuk GW berjalan / yang sudah berjalan — bukan GW depan (mode Auto = GW depan)
+    if ((!Store.targetGW || Store.targetGW > Store.currentGW) && Store.currentGW > 0 && !Store._evalSwitching) {
+      Store._evalSwitching = true;
+      UI.changeTargetGW(Store.currentGW).finally(() => { Store._evalSwitching = false; });
+      return H.info(`Memuat evaluasi GW${Store.currentGW}…`);
+    }
     const targetGW = Store.targetGW || Store.currentGW;
-    const isPastGW = Store.targetGW > 0 && Store.targetGW < Store.currentGW;
-    const isCurrentFinished = Store.targetGW === Store.currentGW && Store.bootstrap?.events?.find(e=>e.id===Store.currentGW)?.finished;
-    const isPast = isPastGW || isCurrentFinished;
+    const isPast = Store.targetGW > 0 && Store.targetGW <= Store.currentGW;
     const hasLive = fms[0]?.hasLive && isPast;
 
     if (!hasLive) {
@@ -3096,13 +3121,29 @@ const Render = {
             Atau coba klik ulang GW${targetGW} di dropdown — akan mencoba direct fetch + CORS proxy.
           </div>`;
       }
-      return H.gwTargetBanner() + H.info('Data poin aktual belum tersedia. Poin akan muncul setelah pertandingan GW selesai.');
+      return H.gwTargetBanner() + H.info(`Data poin aktual belum tersedia untuk GW${targetGW}. Poin muncul setelah pertandingan dimulai.`);
     }
 
     // Sort formations by actual pts
     const byPts = [...fms].sort((a,b)=>b.totalWithCap-a.totalWithCap);
     const maxPts = Math.max(...byPts.map(f=>f.totalWithCap), 1);
-    const bestForm = byPts[0];
+    const bestPtsForm = byPts[0];
+    // Formasi yang direkomendasikan = skor prediksi tertinggi (bukan poin tertinggi)
+    let bestForm = [...fms].sort((a,b)=>b.total-a.total)[0];
+    // Rekomendasi asli yang disimpan bot sebelum deadline (bukan hasil hitung ulang)
+    const savedRec = Store._recsData?.[targetGW];
+    if (savedRec) {
+      const byId = new Map((Store.players||[]).map(p=>[p.id,p]));
+      const all = savedRec.xi.map(x => {
+        const p = byId.get(x.id);
+        return p ? {...p, GWScore: x.score, opponent: x.opp || p.opponent} : null;
+      }).filter(Boolean);
+      const cap = all.find(p=>p.id===savedRec.captain) || null;
+      const totalActual = all.reduce((s,p)=>s+(p.livePoints??0),0);
+      const capBonus = cap?.livePoints ?? 0;
+      if (all.length) bestForm = { name: savedRec.formation, total: savedRec.total, all, cap, rank: 1, totalActual, capBonus, totalWithCap: totalActual + capBonus, saved: true };
+    }
+    const recPtsRank = 1 + byPts.filter(f=>f.totalWithCap>bestForm.totalWithCap).length;
 
     // Percentile for eval
     let evalPercentile = '';
@@ -3133,19 +3174,21 @@ const Render = {
     let html = `
       <div class="eval-summary-strip">
         <div class="eval-stat highlight">
-          <div class="eval-stat-label">Formasi Terbaik (Poin)</div>
+          <div class="eval-stat-label">Formasi Rekomendasi</div>
           <div class="eval-stat-val" style="color:var(--gold)">${bestForm.name}</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px">GW Score ${bestForm.total.toFixed(2)}</div>
         </div>
         <div class="eval-stat">
-          <div class="eval-stat-label">Total Poin Tertinggi</div>
+          <div class="eval-stat-label">Total Poin Rekomendasi</div>
           <div class="eval-stat-val" style="color:var(--green)">${bestForm.totalWithCap}</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px">Peringkat poin #${recPtsRank} dari ${fms.length} formasi</div>
         </div>
         <div class="eval-stat">
-          <div class="eval-stat-label">GW Score Tertinggi</div>
-          <div class="eval-stat-val" style="color:var(--blue)">${[...fms].sort((a,b)=>b.total-a.total)[0].name} (${[...fms].sort((a,b)=>b.total-a.total)[0].total.toFixed(2)})</div>
+          <div class="eval-stat-label">Formasi Poin Tertinggi</div>
+          <div class="eval-stat-val" style="color:var(--blue)">${bestPtsForm.name} (${bestPtsForm.totalWithCap})</div>
         </div>
         <div class="eval-stat">
-          <div class="eval-stat-label">Captain Terbaik</div>
+          <div class="eval-stat-label">Captain Rekomendasi</div>
           <div class="eval-stat-val" style="color:var(--gold)">${bestForm.cap?bestForm.cap.Player+' ('+((bestForm.cap.livePoints||0)*2)+' pts)':'–'}</div>
         </div>
         ${evalPercentile}
@@ -3216,7 +3259,7 @@ const Render = {
 
     // Detail pemain formasi terbaik
     html += `
-      <div class="section-title" style="margin-top:24px">Detail Poin — ${bestForm.name} (Total: ${bestForm.totalWithCap} pts) · GW${targetGW}</div>
+      <div class="section-title" style="margin-top:24px">Detail Poin Rekomendasi — ${bestForm.name} (Total: ${bestForm.totalWithCap} pts) · GW${targetGW}</div>
       <div class="table-wrap">
         <table>
           <thead><tr>
@@ -4986,10 +5029,15 @@ const Render = {
         cumThis[d.entryId] = Number(thisEv?.total_points) || 0;
         cumPrev[d.entryId] = Number(prevEv?.total_points) || 0;
       });
-      // Peringkat gaya FPL: hanya total poin, yang seri berbagi peringkat sama.
-      // Harus sama persis dengan buildLeagueRankMatrix - jangan sampai beda.
+      // Peringkat: total poin lebih tinggi menang, seri dipecah dengan jumlah
+      // transfer lebih sedikit - harus sama persis dengan buildLeagueRankMatrix
+      // dan leagueRekap supaya posisi tidak pernah berbeda antar tampilan.
+      const transOf = {};
+      gwData.forEach(d => { transOf[d.entryId] = d.totalTrans; });
+      const better = (o, id) => cumThis[o] > cumThis[id]
+        || (cumThis[o] === cumThis[id] && (transOf[o]||0) < (transOf[id]||0));
       gwData.forEach(d => {
-        const posNow  = gwData.filter(x => cumThis[x.entryId] > cumThis[d.entryId]).length + 1;
+        const posNow  = gwData.filter(x => x.entryId !== d.entryId && better(x.entryId, d.entryId)).length + 1;
         const posPrev = gwData.filter(x => cumPrev[x.entryId] > cumPrev[d.entryId]).length + 1;
         d._leagueDelta = posPrev - posNow;
         d._leaguePos = posNow;
@@ -7589,6 +7637,10 @@ const UI = {
       if (!Store._liveAllData) {
         const la = await Fetch.githubJSON('live-all.json');
         if (la) { Store._liveAllData = la; console.log(`[UI] ✓ Live-all loaded: ${Object.keys(la).length} GWs`); }
+      }
+      if (!Store._recsData) {
+        const rc = await Fetch.githubJSON('recommendations.json');
+        if (rc) Store._recsData = rc;
       }
       if (!Store._weightsHistory) {
         const wh = await Fetch.githubJSON('weights-history.json');
