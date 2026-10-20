@@ -1127,6 +1127,7 @@ tr.row-rank { background: rgba(0,230,118,.03); }
 .bump-line:hover { opacity: 1; stroke-width: 3; }
 .bump-line.hl { opacity: 1; stroke-width: 3; }
 .bump-dot { cursor: pointer; }
+.bump-missing { font-size: 11px; color: var(--text3); margin-top: 6px; }
 
 /* Transfer heatmap */
 .heatmap-wrap { overflow-x: auto; }

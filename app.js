@@ -1297,6 +1297,13 @@ const Process = {
       }
     }
 
+    // Manajer tanpa history (gagal dimuat) jangan dihitung 0 poin — itu bikin garis
+    // palsu yang flat di dasar dan menggeser peringkat manajer lain. Keluarkan dari
+    // grafik dan laporkan namanya.
+    const hasHist = m => (entryEvents[m.entryId] || entryEvents[String(m.entryId)] || []).length > 0;
+    const missing = managers.filter(m => !hasHist(m)).map(m => m.entryName);
+    managers = managers.filter(hasHist);
+
     // Poin kumulatif per GW per manajer.
     // Pakai total_points dari history (kumulatif resmi FPL) demi akurasi.
     const ptsByGW = {};
@@ -1374,7 +1381,7 @@ const Process = {
       eventPts: m.eventTotal,
     }));
 
-    return { gwLabels, series };
+    return { gwLabels, series, missing };
   },
 
   // ── Transfer heatmap data ─────────────────────────────
@@ -6260,7 +6267,8 @@ const Charts = {
     if (Store.leagueManagers?.length) this.buildStandingsBar(Store.leagueManagers);
   },
 
-  buildBump(matrix) {
+  // opts.compact: lebar plot ikut jumlah GW (50px/GW, tanpa minimum 900px) — dipakai saat capture gambar
+  buildBump(matrix, opts = {}) {
     const wrap = document.getElementById('bump-chart-wrap');
     if (!wrap) return;
     const { gwLabels, series } = matrix;
@@ -6272,8 +6280,8 @@ const Charts = {
     const gridStroke = cs.getPropertyValue('--border').trim() || 'rgba(30,48,72,.4)';
 
     const N=series.length, GW=gwLabels.length;
-    const W=Math.max(900, GW*50), H_svg=N*26+60;
     const PL=16, PR=280, PT=28, PB=20;
+    const W=opts.compact ? PL+Math.max(GW-1,1)*50+PR : Math.max(900, GW*50), H_svg=N*26+60;
     const IW=W-PL-PR, IH=H_svg-PT-PB;
     const xOf=i=>PL+(i/(GW-1||1))*IW;
     const yOf=r=>PT+((r-1)/(N-1||1))*IH;
@@ -6326,7 +6334,7 @@ const Charts = {
 
     wrap.innerHTML=`<svg class="bump-svg" width="${W}" height="${H_svg}" viewBox="0 0 ${W} ${H_svg}">
       ${gridH}${rnkHd}${gwHd}${svgPaths}
-    </svg>`;
+    </svg>${matrix.missing?.length ? `<div class="bump-missing">⚠ History belum termuat, tidak ditampilkan: ${matrix.missing.join(', ')}</div>` : ''}`;
 
     wrap.querySelectorAll('.bump-manager').forEach(g=>{
       const line=g.querySelector('.bump-line');
@@ -6455,8 +6463,49 @@ const UI = {
     </div>`;
   },
 
-  async _captureDesktop(el, minWidth = 1600) {
-    const isMobile = window.innerWidth < 700;
+  // Bump chart: gambar dipotong sesuai isi chart (bukan lebar card); lebar plot ikut jumlah GW
+  async _captureCard(el) {
+    return el.id === 'card-bumpchart' ? this._captureBumpFit(el) : this._captureDesktop(el);
+  },
+
+  async _captureBumpFit(el) {
+    const matrix = Store.leagueMatrix;
+    if (!matrix?.series?.length) return this._captureDesktop(el);
+    Charts.buildBump(matrix, { compact: true });
+    const wrap = el.querySelector('#bump-chart-wrap');
+    const svg = wrap?.querySelector('.bump-svg');
+    const saved = [el, wrap].filter(Boolean).map(n => ({ n, style: n.getAttribute('style') }));
+    try {
+      if (svg) {
+        // html2canvas merender SVG sebagai gambar terpisah tanpa web font (jatuh ke font generik),
+        // jadi ukur label dengan font generik yang sama supaya nama pemain tidak terpotong.
+        svg.querySelectorAll('text').forEach(t => {
+          const fam = t.getAttribute('font-family') || '';
+          t.setAttribute('font-family', fam.split(',').pop().trim() || 'sans-serif');
+        });
+        const svgH = parseInt(svg.getAttribute('height')) || 300;
+        const bbox = svg.getBBox();
+        const x0 = Math.min(0, Math.floor(bbox.x) - 4);
+        const cropW = Math.ceil(bbox.x + bbox.width) + 16 - x0;
+        svg.setAttribute('width', cropW);
+        svg.setAttribute('viewBox', `${x0} 0 ${cropW} ${svgH}`);
+        svg.style.setProperty('width', cropW + 'px', 'important');
+        svg.style.setProperty('min-width', '0', 'important');
+        wrap.style.setProperty('width', 'max-content', 'important');
+        const note = wrap.querySelector('.bump-missing');
+        if (note) note.style.setProperty('width', cropW + 'px', 'important');
+      }
+      el.style.setProperty('width', 'max-content', 'important');
+      return await this._captureDesktop(el, 0, { fit: true });
+    } finally {
+      saved.forEach(({ n, style }) => style ? n.setAttribute('style', style) : n.removeAttribute('style'));
+      Charts.buildBump(matrix);
+    }
+  },
+
+  // opts.fit: pakai ukuran natural elemen (tanpa paksa lebar desktop & tanpa rotasi di mobile)
+  async _captureDesktop(el, minWidth = 1600, opts = {}) {
+    const isMobile = !opts.fit && window.innerWidth < 700;
     const isPortrait = window.innerHeight > window.innerWidth;
     const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#080d14';
 
@@ -6492,6 +6541,7 @@ const UI = {
       backgroundColor: bgColor,
       scale: 2,
       ...(isMobile ? { width: minWidth, windowWidth: minWidth, scrollX: 0, scrollY: -window.scrollY } : {}),
+      ...(opts.fit ? { windowWidth: Math.max(window.innerWidth, Math.ceil(el.getBoundingClientRect().width) + 32) } : {}),
       useCORS: true, allowTaint: true,
     });
 
@@ -6525,7 +6575,7 @@ const UI = {
     const el = document.getElementById(cardId);
     if (!el) return;
     try {
-      const canvas = await this._captureDesktop(el);
+      const canvas = await this._captureCard(el);
       const link = document.createElement('a');
       link.download = `${title.replace(/[^a-zA-Z0-9]/g,'_')}_GW${Store.currentGW||''}.png`;
       link.href = canvas.toDataURL('image/png');
@@ -6537,7 +6587,7 @@ const UI = {
     const el = document.getElementById(cardId);
     if (!el) return;
     try {
-      const canvas = await this._captureDesktop(el);
+      const canvas = await this._captureCard(el);
       const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
       const file = new File([blob], `${title}_GW${Store.currentGW||''}.png`, { type:'image/png' });
 
@@ -6723,7 +6773,7 @@ const UI = {
       const el = document.getElementById(cardIds[i]);
       if (!el) continue;
       try {
-        const canvas = await this._captureDesktop(el);
+        const canvas = await this._captureCard(el);
         const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
         files.push(new File([blob], `${cardTitles[i]}_GW${Store.currentGW||''}.png`, { type:'image/png' }));
       } catch {}
@@ -8261,6 +8311,17 @@ const App = {
       if (allTasks.length) {
         console.log(`[League] Proxy batch: ${allTasks.length} task, concurrency ${bo1.concurrency} (via ${Fetch._lastWorkingProxy||'?'})`);
         await Fetch.batch(allTasks, bo1.concurrency, bo1.delayMs);
+      }
+      // Proxy kadang gagal sesaat (rate limit) — ulangi history yang masih kosong,
+      // pelan-pelan, supaya manajer tidak hilang dari grafik.
+      for (let round = 1; round <= 3; round++) {
+        const still = missing.filter(m => !Store.managerHistory[m.entryId] && !Store.managerHistory[String(m.entryId)]);
+        if (!still.length) break;
+        console.log(`[League] Retry history ${round}: ${still.length} manajer…`);
+        const lt = document.querySelector('#hist-loader .loader-text');
+        if (lt) lt.textContent = `Mengulang history yang gagal (${still.length})…`;
+        await new Promise(r => setTimeout(r, 4000 * round));
+        await Fetch.batch(still.map(m => tasks[missing.indexOf(m)]), 1, 800);
       }
       histOK = Object.keys(Store.managerHistory).length;
       console.log(`[League] After proxy: History ${histOK}, Picks ${Object.keys(Store.leaguePicks).length}`);
