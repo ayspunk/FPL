@@ -143,11 +143,14 @@ async function main(){
 
     // 8. LEAGUE
     log('Fetching league data...');
-    const mgrs=[];
+    const mgrs=[],byLeague={};
     for(const lid of CFG.LEAGUE_IDS){
       try{const d=await get(CFG.FPL+`/leagues-classic/${lid}/standings/`);
+        // Simpan respons per liga apa adanya: app memakainya sebagai fallback kalau FPL/proxy tak terjangkau.
+        if(d?.standings?.results)byLeague[lid]={league:d.league,standings:{results:d.standings.results}};
         (d?.standings?.results||[]).forEach(e=>{if(!mgrs.some(m=>m.entry===e.entry))mgrs.push(e);});}catch(e){log(`⚠ league ${lid}:${e.message}`);}
     }
+    if(Object.keys(byLeague).length)save('league-standings.json',byLeague);
     log(`▸ ${mgrs.length} managers — fetching history+transfers+picks (parallel)...`);
     const mTasks=mgrs.flatMap(m=>[
       async()=>{const h=await get(CFG.FPL+`/entry/${m.entry}/history/`);return{t:'h',id:m.entry,d:h};},

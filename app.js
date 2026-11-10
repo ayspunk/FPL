@@ -553,7 +553,7 @@ const Fetch = {
     if (!base) return null;
     const url = base + filename;
     // League data files: always bust cache (CDN may be stale)
-    const volatile = ['league-picks','history','transfers','live'].some(k => filename.includes(k));
+    const volatile = ['league-picks','league-standings','history','transfers','live'].some(k => filename.includes(k));
     if (!volatile) {
       const hit = Cache.get(url);
       if (hit) return hit.data;
@@ -8196,6 +8196,19 @@ const App = {
         ? await Fetch.fpl('leagues-classic/' + lid + '/standings/?page_standings=1', true)
         : await Fetch.leagueStandings(lid);
     } catch(e) { console.warn('[League] standings error:', e); }
+
+    // Fallback: FPL & proxy bisa tak terjangkau dari jaringan tertentu — pakai standings
+    // yang disimpan bot di GitHub (hanya untuk liga di LEAGUE_IDS scripts/fetch-fpl.js).
+    if (!ls?.standings?.results) {
+      const ghStd = await Fetch.githubJSON('league-standings.json');
+      const hit = ghStd?.[lid] || ghStd?.[String(lid)];
+      if (hit?.standings?.results?.length) {
+        ls = hit;
+        console.log(`[League] ✓ Standings dari GitHub (fallback): ${hit.standings.results.length} manajer`);
+      } else {
+        console.warn(`[League] ✗ Standings gagal: proxy tak terjangkau dan liga ${lid} tidak ada di league-standings.json`);
+      }
+    }
 
     if (!ls) {
       if (Nav.current === 'league') Nav.goTab('league');
