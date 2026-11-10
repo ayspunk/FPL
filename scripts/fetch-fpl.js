@@ -4,7 +4,7 @@
 // Credit: ays
 // ============================================================
 const fs=require('fs'),path=require('path'),https=require('https');
-const CFG={LEAGUE_IDS:[24873,611927,2150310],MY_ENTRY_ID:5947685,FPL:'https://fantasy.premierleague.com/api',DIR:path.join(__dirname,'..','data'),C:10,RETRY:3,RETRY_MS:1000};
+const CFG={LEAGUE_IDS:[49397,1107412,1445102,1739100],MY_ENTRY_ID:5947685,FPL:'https://fantasy.premierleague.com/api',DIR:path.join(__dirname,'..','data'),C:10,RETRY:3,RETRY_MS:1000};
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 const log=m=>console.log(`[${new Date().toISOString().slice(11,19)}] ${m}`);
 function save(f,d){const p=path.join(CFG.DIR,f);fs.writeFileSync(p,JSON.stringify(d));log(`  💾 ${f} (${(fs.statSync(p).size/1024).toFixed(1)}KB)`);}
